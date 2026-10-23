@@ -63,9 +63,10 @@ h2.section { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; 
 .bubble {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 10px 12px 6px; min-width: 0; position: relative; overflow: hidden;
+  container-type: inline-size;
 }
 .bubble .label { font-size: 11px; color: var(--muted); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bubble .value { font: 700 24px/1.2 var(--mono); margin-top: 2px; }
+.bubble .value { font: 700 clamp(15px, 12cqi, 24px)/1.2 var(--mono); margin-top: 2px; white-space: nowrap; overflow: hidden; }
 .bubble .value .unit { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 3px; }
 .bubble .sub { font-size: 10.5px; color: var(--muted); min-height: 13px; }
 .bubble .sub b { color: var(--text); font-weight: 600; }
@@ -101,7 +102,7 @@ table.data td { padding: 6px 8px; border-bottom: 1px solid #161d29; font-family:
 @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
 
 /* hub cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
 .card h3 { margin: 0 0 4px; font-size: 15px; }
 .card .desc { color: var(--muted); font-size: 12.5px; min-height: 34px; }

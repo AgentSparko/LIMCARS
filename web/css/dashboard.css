@@ -16,9 +16,13 @@
 .probe-box { margin-top: 12px; }
 .probe-out { font: 13px/1.55 var(--mono); margin-top: 8px; word-break: break-word; }
 .probe-out b { color: var(--text); font-weight: 700; }
-.main { min-width: 0; }
-.cards.hero { grid-template-columns: repeat(5, 1fr); }
-@media (max-width: 1400px) { .cards.hero { grid-template-columns: repeat(3, 1fr); } }
+.main { min-width: 0; container-type: inline-size; }
+/* One strip = N rows of exactly 3 bubbles at any desktop resolution and
+   regardless of browser chrome (vertical tab bars): the 3-column rule is
+   fixed, only the collapse to 2/1 is viewport-gated for small windows. */
+.cards, .cards.hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 980px) { .cards, .cards.hero { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .cards, .cards.hero { grid-template-columns: 1fr; } }
 .bub-group { margin-top: 6px; }
 .bub-group h2.section { margin: 16px 0 8px; }
 #charts-grid { grid-template-columns: 1fr 1fr; }
