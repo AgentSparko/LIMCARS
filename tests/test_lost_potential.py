@@ -49,14 +49,33 @@ def test_fresh_install_single_bucket(tmp_path):
     assert r["avg_hour_tokens"] == 5_000_000 and r["pct_usage"] == 100.0
 
 
-def test_money_projections_from_best_hour(tmp_path):
+def test_money_measured_not_x8760(tmp_path):
     st = Store(str(tmp_path / "t.db"))
     _m(st, "e1", 0, p=60e6)                  # one minute, $60 hot bill
     r = lost_potential(st, [{"id": "e1", "model": "M"}], PRICE)
     assert abs(r["best_hour_cost"] - 60.0) < 0.01
-    assert abs(r["proj_day_cost"] - 1440.0) < 0.01
-    assert abs(r["proj_month_cost"] - 60.0 * 730) < 0.01
-    assert abs(r["proj_year_cost"] - 60.0 * 8760) < 0.01
+    assert abs(r["best_day_cost"] - 60.0) < 0.01
+    assert abs(r["best_month_cost"] - 60.0) < 0.01
+    assert abs(r["best_year_cost"] - 60.0) < 0.01
+    assert "proj_year_cost" not in r         # ceiling fantasy is gone
+
+
+def test_best_month_year_are_real_calendar_aggregates(tmp_path):
+    import time as _t
+    st = Store(str(tmp_path / "t.db"))
+    _m(st, "e1", 0, p=20e6)                  # $20 in month A
+    later = 45 * 1440                        # +45 days -> a different month
+    _m(st, "e1", later, p=50e6)              # $50 day in month B
+    _m(st, "e1", later + 1441, p=10e6)       # $10 NEXT day, same month B
+    r = lost_potential(st, [{"id": "e1", "model": "M"}], PRICE)
+    y0 = _t.gmtime(BASE).tm_year
+    y1 = _t.gmtime(BASE + later * 60).tm_year
+    assert abs(r["best_day_cost"] - 50.0) < 0.01
+    assert abs(r["best_month_cost"] - 60.0) < 0.01   # month B: 50+10
+    if y1 == y0:
+        assert abs(r["best_year_cost"] - 80.0) < 0.01  # whole year total
+    else:
+        assert abs(r["best_year_cost"] - 60.0) < 0.01  # richer year wins
 
 
 def test_synthetic_excluded_from_window(tmp_path):
@@ -79,7 +98,7 @@ def test_biggest_peak_wins_and_no_price(tmp_path, monkeypatch):
     r = lost_potential(st, [{"id": "small", "model": "S"},
                             {"id": "huge", "model": "H"}], {})
     assert r["model"] == "H" and r["peak_hour_tokens"] == 50_000_000
-    assert r["best_hour_cost"] is None and r["proj_year_cost"] is None
+    assert r["best_hour_cost"] is None and r["best_year_cost"] is None
 
 
 def test_empty_store():

@@ -956,10 +956,29 @@ function hexRgba(hex, a) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
+// Per-browser preference in a cookie (not server settings): each person
+// browsing the dash from their own browser keeps their own theme, and the
+// click applies instantly with no server round-trip that an SSE settings
+// update could race back and revert.
+const UI_COOKIE = 'limcars_ui';
+function readUiPrefs() {
+  try {
+    const m = document.cookie.match(new RegExp('(?:^|; )' + UI_COOKIE + '=([^;]+)'));
+    return m ? JSON.parse(decodeURIComponent(m[1])) : {};
+  } catch (e) { return {}; }
+}
+function writeUiPrefs(patch) {
+  const p = Object.assign(readUiPrefs(), patch);
+  document.cookie = UI_COOKIE + '=' +
+    encodeURIComponent(JSON.stringify(p)) +
+    ';path=/;max-age=31536000;samesite=lax';
+  return p;
+}
+let uiPrefs = readUiPrefs();
 function applyTheme() {
-  const mode = sideSettings.theme === 'light' ? 'light' : 'dark';
+  const mode = uiPrefs.theme === 'light' ? 'light' : 'dark';
   document.documentElement.dataset.theme = mode;
-  const base = PALETTES[sideSettings.palette] || PALETTES.orange;
+  const base = PALETTES[uiPrefs.palette] || PALETTES.orange;
   const rs = document.documentElement.style;
   rs.setProperty('--accent', base);
   rs.setProperty('--accent-weak', hexRgba(base, .12));
@@ -976,34 +995,38 @@ function wireThemeUi() {
   const pop = document.getElementById('palette-pop');
   if (!tb || !pb || !pop) return;
   tb.addEventListener('click', () => {
-    const next = (sideSettings.theme === 'light') ? 'dark' : 'light';
-    sideSettings.theme = next; applyTheme();
-    postSettings({ theme: next });
+    const next = (uiPrefs.theme === 'light') ? 'dark' : 'light';
+    uiPrefs = writeUiPrefs({ theme: next });
+    applyTheme();
   });
   const openPop = () => {
     pop.innerHTML = Object.entries(PALETTES).map(([name, hex]) =>
       `<button data-pal="${name}" title="${name}" style="background:${hex}"` +
-      `${sideSettings.palette === name ? ' class="sel"' : ''}></button>`).join('');
+      `${uiPrefs.palette === name ? ' class="sel"' : ''}></button>`).join('');
     const r = pb.getBoundingClientRect();
     pop.style.top = (r.bottom + 6) + 'px';
     pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 210)) + 'px';
     pop.hidden = false;
   };
+  const closePop = () => { pop.hidden = true; };
   pb.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (pop.hidden) openPop(); else pop.hidden = true;
+    if (pop.hidden) openPop(); else closePop();
   });
   pop.addEventListener('click', (e) => {
+    e.stopPropagation();
     const b = e.target.closest('button[data-pal]');
     if (!b) return;
-    sideSettings.palette = b.dataset.pal; applyTheme();
-    postSettings({ palette: b.dataset.pal });
+    uiPrefs = writeUiPrefs({ palette: b.dataset.pal });
+    applyTheme();
     openPop();           // refresh the selection ring
   });
-  document.addEventListener('click', (e) => {
-    if (!pop.hidden && !pop.contains(e.target) && e.target !== pb) pop.hidden = true;
+  document.addEventListener('click', () => { if (!pop.hidden) closePop(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closePop();
   });
 }
+applyTheme();
 wireThemeUi();
 
 // ---------------- lost potential bubble ----------------
@@ -1038,9 +1061,9 @@ async function renderLostPotential() {
     ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.';
   if (d.best_hour_cost != null) {
     msg += ' Savings registered: best hour ' + fmtUsd0(d.best_hour_cost) +
-      ', projected best day ' + fmtUsd0(d.proj_day_cost) +
-      ', best month ' + fmtUsd0(d.proj_month_cost) +
-      ', best year ' + fmtUsd0(d.proj_year_cost) +
+      ', best day ' + fmtUsd0(d.best_day_cost) +
+      ', best month ' + fmtUsd0(d.best_month_cost) +
+      ', best year ' + fmtUsd0(d.best_year_cost) +
       ' — so put this baby to work!';
   }
   const title = 'avg recorded hour ' + fmtTokShort(d.avg_hour_tokens) +

@@ -230,12 +230,29 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
         }
         if price:
             cand["best_hour_cost"] = round(peak_cost_w, 2)
-            cand["proj_day_cost"] = round(peak_cost_w * 24, 2)
-            cand["proj_month_cost"] = round(peak_cost_w * 730, 2)
-            cand["proj_year_cost"] = round(peak_cost_w * 8760, 2)
+            # MEASURED best calendar day/month/year hot bill — not best-hour
+            # x24/730/8760: one busy hour scaled to a full year is a ceiling
+            # fantasy ($115k/yr), not a savings projection (user audit).
+            def _cal(keyfn):
+                cal: dict[int, float] = {}
+                for m, _, c in mins:
+                    k = keyfn(m * 60)
+                    cal[k] = cal.get(k, 0.0) + c
+                return round(max(cal.values()), 2) if cal else None
+
+            def _month(ts):
+                tm = time.gmtime(ts)
+                return tm.tm_year * 12 + tm.tm_mon - 1
+
+            def _year(ts):
+                return time.gmtime(ts).tm_year
+            cand["best_day_cost"] = _cal(lambda ts: ts // 86400)
+            cand["best_month_cost"] = _cal(_month)
+            cand["best_year_cost"] = _cal(_year)
         else:
-            cand["best_hour_cost"] = cand["proj_day_cost"] = None
-            cand["proj_month_cost"] = cand["proj_year_cost"] = None
+            for _k in ("best_hour_cost", "best_day_cost",
+                       "best_month_cost", "best_year_cost"):
+                cand[_k] = None
         cand["proj_month_tokens"] = round(avg_hour * 730)
         cand["proj_year_tokens"] = round(avg_hour * 8760)
         if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:
