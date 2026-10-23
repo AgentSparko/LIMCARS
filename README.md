@@ -128,6 +128,26 @@ Want a dry run before installing anything system-wide?
 `bash scripts/boot-test.sh` boots LIMCARS on a scratch port and asserts the
 health endpoint and dashboard answer. 🔍
 
+## 🧬 Had another dashboard before? Bring your history
+
+Don't start from zero — LIMCARS can absorb the measured usage your previous
+dashboard recorded (token totals per minute), so the Lost-potential bubble 💡
+and daily money-saved chart 📈 have real history from day one.
+
+**Just tell your AI agent:**
+
+> "I used <old dashboard name> on this machine before LIMCARS. Read
+> `AGENTS.md` in the LIMCARS repo and migrate my history from it."
+
+The agent gets a complete contract there: the exact
+`counter_buckets` schema, the field-mapping traps (cached vs prompt is the
+classic one), the no-double-count and measured-data-only rules, and a
+verify-before-claiming loop. `scripts/import_legacy_history.py` ships as a
+worked reference (it migrates old LIMCARS classic's `dash_events`, and it's
+also how this repo's own history got populated). Every source dashboard
+needs its own mapping pass — but that is precisely the kind of work a coding
+agent does well. 🤖
+
 ## 🔐 Security
 
 - 🔒 One shared password (set from the sidebar) guards recipe add/edit/delete

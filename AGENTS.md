@@ -1,0 +1,92 @@
+# AGENTS.md — instructions for AI agents working with LIMCARS
+
+You are an AI assistant helping the user install, operate, or extend LIMCARS
+(Local Inference Monitor · Cost Analyzer · Recipe Server) on their machine.
+
+## What LIMCARS is
+
+A dependency-free Python (stdlib + psutil) dashboard for local LLM inference
+servers. Entry point: `python3 -m app` (NOT `python3 -m app.server`).
+Server: `http://127.0.0.1:8951`. Backend lives in `app/`, frontend in
+`web/`, tests in `tests/` (`/usr/bin/python3 -m pytest tests/ -q`).
+
+## Your most useful job: migrate the user's dashboard history
+
+If the user previously tracked their engine with another dashboard
+(an older LIMCARS build, a custom Streamlit panel, a Prometheus/Grafana
+setup, a stream-tail logger…), do NOT let them start LIMCARS with an empty
+history. The "Lost potential" bubble, the daily money-saved chart and the
+counters page all read one table — import the measured past into it.
+
+### The target schema (SQLite, default `data/limcars.db`)
+
+```sql
+CREATE TABLE counter_buckets(          -- one row per minute bucket
+  engine TEXT, ts INTEGER,             -- UTC, minute-aligned SECONDS (not ms)
+  prompt REAL,                         -- TOTAL input tokens, cache hits included
+  cached REAL,                         -- cache-hit tokens (a SUBSET of prompt)
+  gen REAL,                            -- generated tokens
+  reqs REAL, iters REAL,               -- requests / decode iterations (may be 0)
+  dec_min REAL, dec_peak REAL,         -- decode tok/s min/peak that minute (NULL ok)
+  spec_sum REAL, spec_n INTEGER,       -- speculative acceptance (NULL/0 ok)
+  synthetic INTEGER DEFAULT 0,         -- 1 ONLY for estimated seed/gap data
+  PRIMARY KEY(engine, ts));
+```
+
+`engine` must equal an engine id from `data/config.json` (the id LIMCARS
+scrapes), not the old dashboard's name.
+
+### Rules you must follow
+
+1. **Import measured data only.** Never fabricate or "round up" numbers to
+   make charts look good — the user checks against what their old dashboard
+   showed them, and honest math is the product.
+2. **Map cached correctly.** The #1 migration bug: if the source stores
+   `prompt` and `cached` as disjoint fields, target `prompt = prompt + cached`;
+   if the source's prompt already includes cached, copy as-is. Verify with a
+   same-minute cross-check against a period both dashboards recorded, like
+   `scripts/import_legacy_history.py`'s reference case (old LIMCARS
+   `dash_events`: `prompt = new_tok + cached_tok`, `gen` from decode rows).
+3. **Minute-align ts** (`ts // 60 * 60`, UTC seconds) — non-aligned rows
+   fragment the hourly sliding windows and the money chart.
+4. **Never double-count.** Skip `(engine, ts)` minutes LIMCARS already
+   sampled live. If both dashboards watched the same window, one of them
+   owns each minute.
+5. **`synthetic=1` only for estimates** (gap fills, extrapolated totals).
+   Real recorded usage is `0`. Synthetic rows are excluded from rate anchors
+   and the daily chart by design.
+6. **Retention:** rows older than 366 days are pruned on write — do not
+   fight it, filter your import instead.
+7. **Stop the server before bulk-importing** (single-writer SQLite), or go
+   through the running app only if it exposes a write API. The bundled
+   importer stops nothing and expects YOU to stop `python3 -m app` first.
+8. **Read-only on the source.** Open the old database `mode=ro`. Never
+   modify someone's legacy install.
+9. **Validate after import:** restart the server, then
+   `curl -s localhost:8951/api/lost-potential` and `/api/savings-history?days=30`
+   must show sane, source-matching numbers (`peak_hour_tokens`, day totals
+   within a few % of the old dashboard's own charts). State the cross-check
+   numbers to the user; don't just claim success.
+10. **Price honesty:** all `$` figures are computed live from
+    `data/pricing.json` at import time — import tokens, never dollars.
+
+### Reference implementation
+
+`scripts/import_legacy_history.py` migrates the old LIMCARS (classic)
+`app.db → dash_events` table. Use it as the template: read-only source,
+engine→model attribution filter, minute aggregation, existing-minute skip,
+`--dry-run` first, printed receipt (events → buckets → days). For other
+source dashboards, adapt the field mapping, keep every rule above, and keep
+the dry-run/verify loop.
+
+## Other agent-facing notes
+
+- Settings are plain JSON (`data/settings.json`); theme + palette are
+  per-browser cookies (`limcars_ui`), not server settings.
+- After any frontend change bump the cache stamp in `web/dashboard.html`
+  (`?v=YYYYMMDDx`) and validate the module with
+  `node --input-type=module --check < web/js/dashboard.js`.
+- UI verification must use computed styles (`getComputedStyle`) and real
+  input events — the `.hidden` attribute lies when CSS sets `display`.
+- `tests/` must stay green: `/usr/bin/python3 -m pytest tests/ -q`.
+- Do not commit `data/` — it holds the user's history and credentials.
