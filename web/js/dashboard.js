@@ -592,6 +592,11 @@ async function openTraces() {
       }
     } catch (e) { /* gate check failed: open anyway, server decides */ }
     tracesFrame.src = src;
+    // the new-tab pill must carry the SAME authenticated URL — without ?pw=
+    // the standalone page loads but every trace fetch 401s (user-caught:
+    // 'goes to a page that is not populated with any traces')
+    const nt = document.querySelector('#traces-newtab');
+    if (nt) nt.href = src;
   }
   dashPane.style.display = 'none';
   tracesPane.style.display = 'block';

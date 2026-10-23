@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LIMCARS — Local Inference Monitor · Cost Analyzer · Recipe Server</title>
 <link rel="stylesheet" href="/css/style.css">
-<link rel="stylesheet" href="/css/dashboard.css?v=20261023i">
+<link rel="stylesheet" href="/css/dashboard.css?v=20261023j">
 </head>
 <body>
 <header class="top">
@@ -111,7 +111,7 @@
        <div class="head" style="padding:8px 12px;border-bottom:1px solid var(--line)">
          <span class="title">🐝 Hermes Traces</span>
          <span class="muted small">live transcripts · browse · follow · export</span>
-         <a class="pill tiny" href="/subagent-watch/" target="_blank" rel="noopener" style="margin-left:10px">open in new tab ↗</a>
+         <a class="pill tiny" id="traces-newtab" href="/subagent-watch/" target="_blank" rel="noopener" style="margin-left:10px">open in new tab ↗</a>
          <button class="btn" id="btn-traces-back" style="margin-left:8px;background:var(--orange,#ff8c3a);color:#0b111c;border-color:var(--orange,#ff8c3a);font-weight:700">← Dashboard</button>
        </div>
        <iframe id="traces-frame" src="about:blank" style="width:100%;height:calc(100vh - 150px);border:0"></iframe>
@@ -120,6 +120,6 @@
   </main>
 </div>
 
-<script type="module" src="/js/dashboard.js?v=20261023i"></script>
+<script type="module" src="/js/dashboard.js?v=20261023j"></script>
 </body>
 </html>
