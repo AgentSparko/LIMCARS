@@ -375,8 +375,14 @@ function refresh() {
         // rolling 60-min hot-cost $/hr from persisted minute-buckets — the
         // three bubbles get 6 h / 3 d / 7 d windows, so lines truly vary
         const rows = state._savSparks[ref.d.savings];
+        // day = rolling $/hr history; month/year = the bubble's own monthly/
+        // yearly projection (audit F1: one shared '/hr' formatter labelled a
+        // $43k yearly projection "$43000/hr" — 8760x wrong)
+        const sfmt = ref.d.savings === 'day'
+          ? (v => '$' + v.toFixed(2) + '/hr')
+          : (v => '$' + v.toLocaleString('en-US', {maximumFractionDigits: 0}));
         spark(ref.sp, rows.map(r => r[1]), ref.d.color,
-              { times: rows.map(r => r[0]), fmt: v => '$' + v.toFixed(2) + '/hr' });
+              { times: rows.map(r => r[0]), fmt: sfmt });
       } else {
         const now = Date.now() / 1000;
         let rows = state.store.at(`${eng()}.${ref.d.series}`).filter(([t]) => t >= now - 3600);
@@ -688,6 +694,7 @@ const SET_OPTS = {
   charts_infer: 'Charts · infer (KV/PP/gen)',
   chart_per_client: 'Chart · per-client context',
   chart_per_model: 'Table · stats by model',
+  chart_savings_daily: 'Chart · daily money saved',
   requests_feed: 'Table · recent requests',
 };
 function applySettings(s) {
@@ -701,6 +708,7 @@ function applySettings(s) {
   hide('#bub-savings', sideSettings.bubbles_savings === false, '.bub-group');
   hide('#charts-grid', sideSettings.charts_infer === false);
   hide('#mtbl', sideSettings.chart_per_model === false, '.chart-card');
+  hide('#sav-card', sideSettings.chart_savings_daily === false);
   hide('#cc-card', sideSettings.chart_per_client === false);
   hide('#req-feed', sideSettings.requests_feed === false, '.chart-card');
   const rsel = document.querySelector('#refresh-sel');
@@ -796,7 +804,139 @@ async function fetchCacheLife() {
   } catch (err) { /* offline */ }
 }
 
+// ---------------- daily money saved · real usage (user feature) ----------------
+// Per-model per-day hot-tier $ from persisted minute-buckets. 1w/1m/3m/1y
+// switch; bars up to 3 months, lines beyond; hover = per-model cost, total
+// tokens and write (cache-write prompt) / read (cache-hit) / decode split.
+const SAV_COLORS = ['#4fa3ff', '#ffb454', '#5dd39e', '#e06c9f',
+                    '#b48cff', '#ffd75d', '#5ad1d1', '#ff8a65'];
+let savDays = 365;
+
+function _savMoney(v) {
+  return '$' + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(4));
+}
+function _savDate(day) {
+  // UTC getters: day indices are UTC days; local getters would render the
+  // previous day in any timezone west of UTC (audit F3)
+  const d = new Date(day * 86400000);
+  return String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+
+async function renderSavingsChart() {
+  const host = document.querySelector('#sav-chart');
+  if (!host || host.closest('[style*="display: none"]')) return;
+  let d;
+  try {
+    const res = await fetch('/api/savings-history?days=' + savDays);
+    d = await res.json();
+    if (!d.ok) throw new Error(d.error || 'bad response');
+  } catch (e) {
+    host.innerHTML = '<span class="muted small">savings history unreachable</span>';
+    return;
+  }
+  const ids = Object.keys(d.models || {});
+  if (!d.days.length) {
+    host.innerHTML = '<span class="muted small">no usage in this window</span>';
+    const st0 = document.querySelector('#sav-stats');
+    if (st0) st0.innerHTML = 'total saved <b>$0.00</b>';
+    return;
+  }
+  const color = {};
+  ids.forEach((id, i) => color[id] = SAV_COLORS[i % SAV_COLORS.length]);
+  const nowDay = Math.floor(Date.now() / 86400000);
+  const n = d.days_n;
+  const start = nowDay - n + 1;
+  const byDay = new Map(d.days.map(x => [x.day, x.engines]));
+  const W = Math.max(300, host.clientWidth || 900), H = 190;
+  const padL = 58, padR = 12, padT = 10, padB = 22;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  let maxV = 0;
+  for (const x of d.days) for (const e of Object.values(x.engines)) maxV = Math.max(maxV, e.cost);
+  maxV = maxV || 1;
+  const xOf = day => padL + ((day - start) / Math.max(1, n - 1)) * iw;
+  const yOf = v => padT + ih - (v / maxV) * ih;
+  let svg = `<svg width="${W}" height="${H}" style="display:block">`;
+  for (let i = 0; i <= 4; i++) {
+    const v = maxV * i / 4, y = yOf(v);
+    svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--line)"/>`;
+    svg += `<text x="${padL - 6}" y="${y + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${_savMoney(v)}</text>`;
+  }
+  // x labels: start, middle, today
+  for (const day of [start, Math.round((start + nowDay) / 2), nowDay])
+    svg += `<text x="${xOf(day)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${_savDate(day)}</text>`;
+  const bars = n <= 92;
+  if (bars) {
+    const bw = Math.max(2, Math.min(12, (iw / n) * 0.72));
+    for (const x of d.days) {
+      const cx = xOf(x.day);
+      Object.entries(x.engines).forEach(([id, e], j) => {
+        const bx = cx - (bw * ids.length) / 2 + j * bw;
+        const by = yOf(e.cost);
+        svg += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${Math.max(1, padT + ih - by).toFixed(1)}" fill="${color[id]}" rx="1"/>`;
+      });
+    }
+  } else {
+    for (const id of ids) {
+      const pts = d.days.filter(x => x.engines[id])
+        .map(x => `${xOf(x.day).toFixed(1)},${yOf(x.engines[id].cost).toFixed(1)}`);
+      if (pts.length > 1)
+        svg += `<polyline points="${pts.join(' ')}" fill="none" stroke="${color[id]}" stroke-width="1.6"/>`;
+    }
+  }
+  // hover crosshair + tooltip
+  svg += `<line id="sav-cross" x1="0" y1="${padT}" x2="0" y2="${padT + ih}" stroke="var(--accent)" stroke-width="1" opacity="0"/>`;
+  svg += `</svg><div id="sav-tip" style="position:absolute;top:6px;left:0;display:none;pointer-events:none;
+          background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 9px;
+          font-size:11px;z-index:5;box-shadow:0 4px 14px rgba(0,0,0,.4)"></div>`;
+  host.innerHTML = svg;
+  const tip = host.querySelector('#sav-tip');
+  const cross = host.querySelector('#sav-cross');
+  // byDay maps day -> engines map (see Map(d.days.map(x => [x.day, x.engines])))
+  const dayTot = engines => Object.values(engines).reduce((a, e) => a + e.cost, 0);
+  // on* property assignment: render runs every 60 s on a persistent host —
+  // addEventListener would stack a new handler (and stale closure) per render
+  host.onmousemove = ev => {
+    const r = host.getBoundingClientRect();
+    const px = ev.clientX - r.left;
+    const day = Math.round(start + ((px - padL) / iw) * (n - 1));
+    const rec = byDay.get(day);
+    if (day < start || day > nowDay) { tip.style.display = 'none'; cross.setAttribute('opacity', 0); return; }
+    const cx = xOf(day);
+    cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('opacity', .6);
+    let html = `<b>${new Date(day * 86400000).toISOString().slice(0, 10)}</b>`;
+    if (!rec || !Object.keys(rec).length) {
+      html += '<br><span class="muted">no usage</span>';
+    } else {
+      for (const [id, e] of Object.entries(rec)) {
+        html += `<br><span style="color:${color[id]}">●</span> ${escH(d.models[id] || id)}
+          <b>${_savMoney(e.cost)}</b> · ${fmtK(e.tokens)} tok
+          <br><span class="muted" style="margin-left:14px">w ${fmtK(e.prompt)} · r ${fmtK(e.cached)} · d ${fmtK(e.gen)}</span>`;
+      }
+      html += `<br><b>${_savMoney(dayTot(rec))}</b> <span class="muted">total</span>`;
+    }
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(px + 14, W - 220) + 'px';
+  };
+  host.onmouseleave = () => { tip.style.display = 'none'; cross.setAttribute('opacity', 0); };
+  // stats + legend (total saved with ALL models in total — user spec)
+  const st = document.querySelector('#sav-stats');
+  if (st) {
+    const leg = ids.map(id => `<span style="color:${color[id]}">●</span> ${escH(d.models[id] || id)}`).join('  ');
+    st.innerHTML = `total saved <b style="color:var(--green,#5dd39e)">${_savMoney(d.totals.cost)}</b>`
+      + ` · ${fmtK(d.totals.tokens)} tokens · ${d.days.length} active day${d.days.length === 1 ? '' : 's'}`
+      + (ids.length ? ` &nbsp;${leg}` : '');
+  }
+}
+document.querySelectorAll('#sav-seg [data-days]').forEach(b =>
+  b.addEventListener('click', () => {
+    savDays = +b.dataset.days;
+    document.querySelectorAll('#sav-seg [data-days]').forEach(x => x.classList.toggle('on', x === b));
+    renderSavingsChart();
+  }));
+
 // boot extras
+renderSavingsChart(); setInterval(renderSavingsChart, 60000);
 renderCounters(); setInterval(renderCounters, 30000);
 renderInfo(); setInterval(renderInfo, 60000);
 setInterval(renderSessionTokens, 15000);

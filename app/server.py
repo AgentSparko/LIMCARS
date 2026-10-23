@@ -42,8 +42,9 @@ SETTINGS_DEFAULTS = {
     "bubbles_savings": True,    # cost-savings bubbles
     "charts_infer": True,       # KV / prefill / decode chart row
     "charts_prom": True,        # TTFT / e2e / hit% chart row
-    "chart_per_client": True,   # per-client context chart
-    "chart_per_model": True,    # stats-by-model table
+    "chart_per_client": True,    # per-client context chart
+    "chart_per_model": True,     # stats-by-model table
+    "chart_savings_daily": True,  # daily money-saved chart (real usage)
     "requests_feed": True,      # recent completed requests table
     "refresh_s": 1.0,           # base UI refresh interval (0.5-30 s)
     "stats_scope": "all",       # all | active engine
@@ -92,6 +93,7 @@ class Limcars:
         self.recipes = Recipes(str(config.DATA))
         from .live_engines import LiveEngines
         self.live_engines = LiveEngines()
+        self._savhist_cache: dict[int, tuple] = {}   # days -> (ts, payload)
         from .clients import ClientSampler
         self.clients = ClientSampler(self.broker)
         self.clients.start()
@@ -385,6 +387,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "rows": app.store.history("hw_samples", None, secs)})
         if path == "/api/events":
             return self._sse(qs)
+        if path == "/api/savings-history":
+            # daily money-saved chart data (real persisted usage, per model)
+            from . import counters as counters_mod
+            try:
+                days = int((qs.get("days") or ["30"])[0])
+            except ValueError:
+                return self._err(400, "bad days")
+            if days not in (7, 30, 92, 365):
+                days = 30
+            # 60 s TTL cache: the chart re-renders every 60 s per open tab;
+            # day buckets move at most once per minute anyway (audit F4)
+            cache = getattr(app, "_savhist_cache", None)
+            if cache is None:
+                cache = app._savhist_cache = {}
+            hit = cache.get(days)
+            now = time.time()
+            if hit and now - hit[0] < 60.0:
+                return self._json(hit[1])
+            engines = [{"id": s.id, "model": s.model} for s in app.engines.all()]
+            payload = {"ok": True, **counters_mod.daily_savings(
+                app.store, engines, app.cfg.get("pricing"), days)}
+            cache[days] = (now, payload)
+            return self._json(payload)
         m = re.fullmatch(r"/api/counters/?", path)
         if m:
             from . import counters as counters_mod

@@ -135,6 +135,36 @@ class Store:
                 " WHERE engine=? AND ts>=? ORDER BY ts",
                 (engine, int(time.time() - seconds))).fetchall()
 
+    def daily_bucket_totals(self, engine: str, since_ts: int) -> list[tuple]:
+        """(utc_day, prompt, cached, gen) calendar-day sums for the daily
+        money-saved chart. SYNTHETIC buckets (seed/gap) are EXCLUDED: the
+        lifetime seed bucket parked at "today" would otherwise render as one
+        engine-lifetime-sized bar dominating the chart (audit F7), and gap
+        backfill covers downtime, not the measured day. The chart therefore
+        means "what was measured live", consistent with every other rate view."""
+        with self._lock:
+            return self._con.execute(
+                "SELECT ts/86400, COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
+                " COALESCE(SUM(gen),0) FROM counter_buckets"
+                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
+                " GROUP BY ts/86400 ORDER BY ts/86400",
+                (engine, int(since_ts))).fetchall()
+
+    def series_tail(self, engine: str, key: str, seconds: float,
+                    stride_s: int = 60) -> list[tuple]:
+        """(t, value) samples of ONE json field, SQL-side strided (~1 per
+        stride_s seconds) and json_extract'ed server-side. Sparklines need
+        ~200 points; fetching all 2 Hz rows + json.loads under the store
+        lock per poll was needlessly heavy (audit F4)."""
+        cutoff = time.time() - seconds
+        with self._lock:
+            cur = self._con.execute(
+                "SELECT t, json_extract(data, ?) FROM engine_samples"
+                " WHERE engine=? AND t>=? AND CAST(t AS INTEGER) % ? = 0"
+                " ORDER BY t", (f"$.{key}", engine, cutoff, int(stride_s)))
+            out = [(t, v) for t, v in cur.fetchall() if v is not None]
+        return out
+
     def last_active_hour(self, engine: str) -> dict:
         """Totals of the most recent 60-min span that actually has REAL
         buckets (anchor = newest non-synthetic bucket, window =

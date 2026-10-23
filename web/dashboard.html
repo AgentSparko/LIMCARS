@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LIMCARS — Local Inference Monitor · Cost Analyzer · Recipe Server</title>
 <link rel="stylesheet" href="/css/style.css">
-<link rel="stylesheet" href="/css/dashboard.css?v=20261023l">
+<link rel="stylesheet" href="/css/dashboard.css?v=20261023m">
 </head>
 <body>
 <header class="top">
@@ -100,6 +100,18 @@
       <p class="muted small" id="cnt-note"></p>
     </div>
 
+    <div class="chart-card" style="margin-top:12px" id="sav-card">
+      <div class="head"><span class="title">Daily money saved · real usage</span>
+        <span id="sav-seg" style="display:flex;gap:4px;margin-left:10px">
+          <button class="pill tiny" data-days="7">1w</button>
+          <button class="pill tiny" data-days="30">1m</button>
+          <button class="pill tiny" data-days="92">3m</button>
+          <button class="pill tiny on" data-days="365">1y</button>
+        </span>
+        <span class="muted small" id="sav-stats" style="margin-left:auto"></span></div>
+      <div id="sav-chart" style="position:relative;height:190px"><span class="muted small">loading…</span></div>
+    </div>
+
     <div class="chart-card" style="margin-top:12px">
       <div class="head"><span class="title">Server config</span></div>
       <table class="data" id="info-tbl"><tr><td class="muted">loading…</td></tr></table>
@@ -120,6 +132,6 @@
   </main>
 </div>
 
-<script type="module" src="/js/dashboard.js?v=20261023l"></script>
+<script type="module" src="/js/dashboard.js?v=20261023m"></script>
 </body>
 </html>
