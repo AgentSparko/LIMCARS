@@ -16,18 +16,9 @@
 .probe-box { margin-top: 12px; }
 .probe-out { font: 13px/1.55 var(--mono); margin-top: 8px; word-break: break-word; }
 .probe-out b { color: var(--text); font-weight: 700; }
-.main { min-width: 0; container-type: inline-size; }
-/* Always 4 bubbles per row at any resolution / browser-chrome width (tab
-   sidebars): the old auto-fill minmax(300px) + viewport media query made the
-   row count depend on pixels outside the page. Column counts now answer to
-   the CONTENT width via container queries on .main, not the viewport. */
-.cards, .cards.hero { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-@container (max-width: 760px) {
-  .cards, .cards.hero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@container (max-width: 420px) {
-  .cards, .cards.hero { grid-template-columns: 1fr; }
-}
+.main { min-width: 0; }
+.cards.hero { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 1400px) { .cards.hero { grid-template-columns: repeat(3, 1fr); } }
 .bub-group { margin-top: 6px; }
 .bub-group h2.section { margin: 16px 0 8px; }
 #charts-grid { grid-template-columns: 1fr 1fr; }
