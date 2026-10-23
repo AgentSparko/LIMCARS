@@ -77,6 +77,8 @@ class Store:
             self._con.commit()
 
     def save_counter_bucket(self, engine: str, ts: int, b: dict) -> None:
+        ts = int(ts) // 60 * 60      # defensive: minute buckets must align,
+                                     # unaligned rows fragment hourly windows
         with self._lock:
             self._con.execute(
                 "INSERT OR REPLACE INTO counter_buckets"

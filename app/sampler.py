@@ -387,7 +387,11 @@ class EngineSampler(threading.Thread):
                 # all-time semantics are engine-lifetime, not tracker uptime —
                 # without inflating current-hour rates or the savings rate basis.
                 if self.store and self.store.counter_totals(self.id, None).get("empty"):
-                    self.store.save_counter_bucket(self.id, int(now - 3660), {
+                    # minute-ALIGNED or the importer/live buckets can't see
+                    # the collision and the same minute counts twice
+                    # (observed: lifetime seed at ts%60=44 -> fake 311M peak
+                    # hour in the lost-potential bubble)
+                    self.store.save_counter_bucket(self.id, int((now - 3660) // 60) * 60, {
                         "prompt": cur_p, "cached": cur_c, "gen": cur_g,
                         "reqs": cur_r, "iters": cur_i, "dec_min": None,
                         "dec_peak": None, "spec_sum": None, "spec_n": 0,

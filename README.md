@@ -1,176 +1,70 @@
-# 🚗 LIMCARS
+# LIMCARS-NEXT
 
-**L**ocal **I**nference **M**onitor · **C**ost **A**nalyzer · **R**ecipe **S**erver
+Live observability for this box's inference engines — rebuilt from zero,
+inspired by the old LIMCARS, pattern-copied from TandemLLM's live dashboard.
 
-Your GPU rig, finally with a dashboard that tells the truth. LIMCARS watches
-your self-hosted LLM engines 2× per second and paints a live dashboard —
-speeds, KV cache, thermals, hardware, token ledgers and real **money saved vs
-cloud pricing** — plus a one-click recipe launcher for the engines themselves.
+## Why this exists
+The old LIMCARS grew to a 7,600-line `server.js` plus a Streamlit dash whose
+rings only advanced while a browser held the page open and were trimmed to
+180 s — so prefill/decode bubbles effectively "sampled every 3 minutes" and
+the charts did not reflect reality. TandemLLM proved the right pattern: a
+sampler thread ticking 1–4 Hz while requests run, streaming over resumable
+SSE, with lightweight SVG charts.
 
-⚡ One Python process · 🧩 zero dependencies beyond `psutil` · 📡 no cloud, no telemetry, no accounts
+## What it does
+- **2 Hz engine sampler** per engine (`app/sampler.py`): polls the engine's
+  Prometheus `/metrics` and turns cumulative counters into honest rates —
+  `Δgen_tokens/Δt` for decode tok/s, `Δprompt_tokens/Δt` for prefill,
+  windowed (30 s) averages, prefix-cache hit %, spec-decode accept %, and
+  **p50s computed from histogram-bucket deltas over the window** (Prometheus
+  method), so a chart point is the last half-second, not the last boot.
+- **1 Hz hardware sampler** (`app/hw.py`): CPU, load, memory, swap, disk/net
+  throughput (counter diffs), GB10 GPU util/temp/power via one `nvidia-smi`
+  per tick (GB10 `memory.used` is N/A — unified memory shows in MemAvail,
+  we do not fake it), package temps from hwmon.
+- **Always-on rings** (in-memory, 15 min) + 1 s sqlite downsample (1 h) —
+  history accrues with zero browsers attached.
+- **Resumable SSE** (`/api/events`): per-topic sequence ids, `Last-Event-ID`
+  replay, keepalive pings; slow tabs drop frames, the sampler never blocks.
+- **Engine dialects** (`app/dialects.py`): vLLM, SGLang, llama.cpp,
+  TandemLLM/qwen38 — one logical schema; a missing metric renders “–”.
+- **Admin**: whitelisted service start/stop cards on the hub.
 
+## Stack discipline
+Python **stdlib only** (the single third-party import is `psutil`). No npm,
+no pip requirements, no build step, no Streamlit, no ECharts. Frontend is
+vanilla ES modules + hand-rolled SVG charts (`web/js/charts.js`) following
+the TandemLLM house rule: **orange is now**.
+
+## Run
 ```bash
-python3 -m app          # → http://localhost:8951
+./scripts/start.sh                      # foreground, port 8951
+LIMCARS_PORT=8990 ./scripts/start.sh    # override port
+# systemd:
+sudo cp scripts/limcars-next.service /etc/systemd/system/
+sudo systemctl enable --now limcars-next
 ```
 
-![LIMCARS — live bubbles, hardware sidebar and projected savings](docs/screenshots/1.jpg)
+## Config
+`data/config.json` (see `app/config.py` DEFAULTS): engines list, sampler
+rates (`live_hz` 1–4, `hw_hz`), ring/persist depth, window, services,
+optional `auth_token` (then `/api/*` needs `X-Limcars-Token`).
+Env overrides: `LIMCARS_PORT`, `LIMCARS_HOST`, `LIMCARS_DB`, `LIMCARS_TOKEN`.
 
-## ✨ What you get
-
-### 📊 Live dashboard
-- **Bubble strip** of everything that matters: decode & prefill tok/s, KV cache
-  in tokens, running requests, TTFT, end-to-end latency, speculative
-  acceptance, prefix-cache hits, peak gen speed — pushed live over SSE, no
-  polling loops.
-- **Hardware sidebar**: CPU/GPU utilization, temperatures, power, clocks,
-  unified RAM, SSD and network ↓↑ — each with its own sparkline, smart axes
-  and hover readouts.
-- **Honest lights**: prefill/decode bubbles glow only while the engine is
-  genuinely in that phase; idle latency holds its last real value instead of
-  lying with a fat zero.
-- 🎯 **Engine probe**: run a real streamed completion and see true TTFT,
-  prefill and decode speed — measured, not estimated.
-
-### 💰 Cost & tokens
-- Per-model token ledger (write / cache-read / decode) in 1-minute buckets,
-  kept for a year, reconciled to the engine's own counters to 0.00 %.
-- Projected **$/day and $/year saved vs the equivalent cloud API**, computed
-  from your last active hour at market prices.
-- 🏦 **Daily money-saved chart** with week / month / 3-month / year switch —
-  one color per model, hover for per-model cost and the full write/read/decode
-  token split, totals across all models.
-
-![Charts — decode/prefill speed, KV pool, spec accept, per-session context](docs/screenshots/2.jpg)
-
-### 🍳 Recipe server
-- Save each engine launch command as an emoji-named recipe and
-  **Start / Stop from the sidebar** — per-recipe detached logs included.
-- 🛰️ **Live engine detection** scans GPU compute apps, listening ports and
-  process groups, so stray engines show up with their own Stop button.
-
-### 🕵️ Hermes Traces (bonus)
-If [Hermes Agent](https://hermes-agent.nousresearch.com) sessions live on your
-box, LIMCARS doubles as a two-pane live browser of agent & subagent
-transcripts — tailing logs, summaries, session stats, export.
-
-![Stats by model & request completions](docs/screenshots/3.jpg)
-
-## 🔌 Works with your engine
-
-Engine kind is **auto-detected** — mix and match engines with zero
-configuration. Missing metrics degrade to `–`, never to fake zeros.
-
-| Engine | Support |
+## API
+| route | what |
 |---|---|
-| 🟣 vLLM (v1) | full — counters, histograms, KV cache, spec decode |
-| 🔶 SGLang | full — true live prefill rate |
-| 🧊 exl3 | full — exact prefill/generate pairing |
-| 🧮 TensorFold | full — dual metric families, spec decode |
-| 🦙 llama.cpp | basic — running requests + token counters |
-| 🔁 TandemLLM-family | basic — inflight + token counters |
+| `GET /api/health` | ok/version/uptime |
+| `GET /api/snapshot` | engines + hw latest + full rings + services |
+| `GET /api/history?engine=&seconds=` | sqlite downsample |
+| `GET /api/events?topics=engine:x,hw,requests,events` | SSE (resumable) |
+| `POST /api/services/<id>/start|stop` | whitelisted actions |
 
-Prefill speed is measured **honestly**: prefix-cache hits are excluded and each
-engine family is read through the most exact counter pairing it offers — so you
-never see the phantom "100k tokens in half a second" spikes other dashboards
-happily plot. 🧮
+## Tests
+`python3 -m pytest tests/ -q` (parser, dialect detect, diff math, SSE broker,
+quantile math — all pure, no engine needed).
 
-![Token counters ledger & money saved](docs/screenshots/4.jpg)
-
-## 🚀 Quick start
-
-```bash
-git clone https://github.com/AgentSparko/LIMCARS.git
-cd LIMCARS
-python3 -m pytest tests/ -q     # optional sanity check — 23 tests, instant
-python3 -m app                  # open http://localhost:8951 🎉
-```
-
-**Requirements:** Python ≥ 3.10 and `pip install psutil` — that's it. Linux,
-any NVIDIA/AMD/CPU box. No npm, no CDN, no database server.
-
-Engines are discovered automatically from listening OpenAI-API ports; to pin
-one explicitly, edit `data/config.json`:
-
-```json
-{ "engines": [ { "name": "MyModel", "url": "http://127.0.0.1:8000", "model": "org/model" } ] }
-```
-
-Handy environment variables:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `LIMCARS_HOST` | `0.0.0.0` | bind address (`127.0.0.1` = local-only) |
-| `LIMCARS_PORT` | `8951` | dashboard port |
-| `LIMCARS_DB` | `data/limcars.db` | history database path |
-
-## 🔁 Autorun — survive reboots, forget about it
-
-### systemd (recommended)
-
-```bash
-sudo cp scripts/limcars.service /etc/systemd/system/
-sudo nano /etc/systemd/system/limcars.service   # set User= and WorkingDirectory= to your clone path
-sudo systemctl enable --now limcars
-```
-
-Starts at boot ✅ restarts itself on failure ✅ plays nice under load (`Nice=5`) ✅
-Watch it with `systemctl status limcars` or `journalctl -u limcars -f`.
-
-### cron @reboot (no systemd?)
-
-```bash
-crontab -e
-# add one line:
-@reboot cd /path/to/LIMCARS && /usr/bin/python3 -m app >> data/server.log 2>&1
-```
-
-Want a dry run before installing anything system-wide?
-`bash scripts/boot-test.sh` boots LIMCARS on a scratch port and asserts the
-health endpoint and dashboard answer. 🔍
-
-## 🧬 Had another dashboard before? Bring your history
-
-Don't start from zero — LIMCARS can absorb the measured usage your previous
-dashboard recorded (token totals per minute), so the Lost-potential bubble 💡
-and daily money-saved chart 📈 have real history from day one.
-
-**Just tell your AI agent:**
-
-> "I used <old dashboard name> on this machine before LIMCARS. Read
-> `AGENTS.md` in the LIMCARS repo and migrate my history from it."
-
-The agent gets a complete contract there: the exact
-`counter_buckets` schema, the field-mapping traps (cached vs prompt is the
-classic one), the no-double-count and measured-data-only rules, and a
-verify-before-claiming loop. `scripts/import_legacy_history.py` ships as a
-worked reference (it migrates old LIMCARS classic's `dash_events`, and it's
-also how this repo's own history got populated). Every source dashboard
-needs its own mapping pass — but that is precisely the kind of work a coding
-agent does well. 🤖
-
-## 🔐 Security
-
-- 🔒 One shared password (set from the sidebar) guards recipe add/edit/delete
-  and Hermes trace data. Start/Stop, probe and the dashboard stay open for
-  convenience; localhost is exempt.
-- 🧱 Escalating per-IP lockout — 3 wrong tries → 1 min, 6 → 5 min, 9 → 30 min,
-  12 → 2 h. Passwords are stored as salted **scrypt** hashes and compared in
-  constant time.
-- ⚠️ The recipe server executes stored commands — treat the password as your
-  admin boundary, and on shared networks bind `LIMCARS_HOST=127.0.0.1`.
-
-## 🕊️ Data & privacy
-
-Everything stays on your box. `data/` (history, settings, recipes, password
-hash, logs) is gitignored and never leaves the machine. LIMCARS makes no
-outbound requests except to the inference engines you point it at. 🏠
-
-## 🤝 Contributing
-
-Fork → branch → `python3 -m pytest tests/ -q` before opening a PR — dialects,
-auth lockout and counter conservation all have tests. Bug reports with an
-engine name + `/metrics` snippet are extra welcome. 🙏
-
-## 📜 License
-
-MIT — see [LICENSE](LICENSE).
+## External prerequisites (documented, not vendored)
+- The monitored engine (vLLM container on :8000 by default).
+- `nvidia-smi` for GPU telemetry (absent → GPU rows read “–”).
+- `psutil` (`pip install psutil`).

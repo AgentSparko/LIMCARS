@@ -217,11 +217,26 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
             if cur_cost > peak_cost_w:
                 peak_cost_w = cur_cost
         total_tok = sum(t for _, t, _ in mins)
-        span_hours = max(1.0, (mins[-1][0] - mins[0][0] + 1) / 60.0)
+        # "recorded period" = time the dash was ACTUALLY watching: sum of
+        # contiguous minute-clusters (gaps > 2 days split clusters), so a
+        # backfill from two separate eras doesn't dilute usage% with months
+        # of nobody running the model, while a 90-minute fresh install still
+        # measures a 90-minute span
+        days = sorted({m // 1440 for m, _, _ in mins})
+        span_hours = 0.0
+        c0 = prev = mins[0][0]
+        for m, _, _ in mins[1:] + [(None,) * 3]:
+            if m is None or m - prev > 2 * 1440:
+                span_hours += (prev - c0 + 1) / 60.0
+                if m is not None:
+                    c0 = prev = m
+            else:
+                prev = m
+        span_hours = max(1.0, span_hours)
         avg_hour = total_tok / span_hours
         cand = {
             "engine": eid, "model": model or eid,
-            "recorded_days": len({m // 1440 for m, _, _ in mins}),
+            "recorded_days": len(days),
             "period_days": round(span_hours / 24.0, 1),
             "peak_hour_tokens": round(peak_tok_w),
             "avg_hour_tokens": round(avg_hour),
@@ -230,9 +245,11 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
         }
         if price:
             cand["best_hour_cost"] = round(peak_cost_w, 2)
-            # MEASURED best calendar day/month/year hot bill — not best-hour
-            # x24/730/8760: one busy hour scaled to a full year is a ceiling
-            # fantasy ($115k/yr), not a savings projection (user audit).
+            cand["best_day_cost"] = None
+            # MEASURED calendar claims are only allowed when the period was
+            # actually watched end-to-end: a "best month" over 21 recorded
+            # days measures nothing (user audit). Below that bar, month/year
+            # become pace-based PROJECTIONS from the recorded average day.
             def _cal(keyfn):
                 cal: dict[int, float] = {}
                 for m, _, c in mins:
@@ -246,15 +263,41 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
 
             def _year(ts):
                 return time.gmtime(ts).tm_year
-            cand["best_day_cost"] = _cal(lambda ts: ts // 86400)
-            cand["best_month_cost"] = _cal(_month)
-            cand["best_year_cost"] = _cal(_year)
+            rec_days = len({m // 1440 for m, _, _ in mins})
+            period_days = max((mins[-1][0] // 1440) - (mins[0][0] // 1440) + 1, 1)
+            # gates count days ACTUALLY seen, not the calendar span: a
+            # backfill that leaves idle gaps must not unlock "best month"
+            if period_days >= 2 and rec_days >= 2:      # >=2 real days watched
+                cand["best_day_cost"] = _cal(lambda ts: ts // 86400)
+            cand["best_month_cost"] = _cal(_month) if rec_days >= 31 else None
+            cand["best_year_cost"] = _cal(_year) if rec_days >= 366 else None
+            tot_cost = sum(c for _, _, c in mins)
+            # pace anchored on recorded CALENDAR days, floored at 1, so a
+            # two-hour-old install can't project its one busy hour across a
+            # month (1440x inflation)
+            avg_day_cost = tot_cost / max(rec_days, 1)   # pace on days actually used
+            cand["proj_day_cost"] = round(avg_day_cost, 2)
+            cand["proj_month_cost"] = round(avg_day_cost * 30.4, 2)
+            cand["proj_year_cost"] = round(avg_day_cost * 365, 2)
+            # "Your token usage rate makes you lose $X USD a year" (user
+            # spec): best-hour ceiling (best hour x 8760) minus the year
+            # annualized at the RECORDED pace. Same formula the old dash
+            # showed (~$12K) — it is a CEILING minus actual, never "actual x
+            # 8760".
+            cand["loss_year_cost"] = round(peak_cost_w * 8760 - avg_day_cost * 365, 2)
         else:
-            for _k in ("best_hour_cost", "best_day_cost",
-                       "best_month_cost", "best_year_cost"):
+            for _k in ("best_hour_cost", "best_day_cost", "best_month_cost",
+                       "best_year_cost", "proj_day_cost",
+                       "proj_month_cost", "proj_year_cost", "loss_year_cost"):
                 cand[_k] = None
-        cand["proj_month_tokens"] = round(avg_hour * 730)
-        cand["proj_year_tokens"] = round(avg_hour * 8760)
+        # "This model is projected to do" = what it DEMONSTRATED it can do:
+        # the best recorded hour scaled to a month/year (25M/h -> 600M/day,
+        # matching the old dashboard's daily projection). The recorded-pace
+        # numbers are kept for the tooltip.
+        cand["proj_month_tokens"] = round(peak_tok_w * 24 * 30.4)
+        cand["proj_year_tokens"] = round(peak_tok_w * 24 * 365)
+        cand["pace_month_tokens"] = round(avg_hour * 730)
+        cand["pace_year_tokens"] = round(avg_hour * 8760)
         if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:
             best = cand
     if best is None:

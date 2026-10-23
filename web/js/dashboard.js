@@ -20,49 +20,49 @@ const HERO = [];
 
 const BUBS = {
   'bub-main': [
-    { label: 'Gen speed', series: 'decode_tps_now', color: COLORS.green,
+    { label: 'Gen speed', series: 'decode_tps_now', color: () => COLORS.green,
       dimWhen: 'decode_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.decode_tps_now), sub: l => `tok/s now · avg ${tps(l.decode_tps_avg)}` },
-    { label: 'Prefill speed', series: 'prefill_tps_avg', color: COLORS.teal, dimZero: true,
+    { label: 'Prefill speed', series: 'prefill_tps_avg', color: () => COLORS.teal, dimZero: true,
       dimWhen: 'prefill_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.prefill_tps_avg), sub: l => `uncached tok / prefill-sec · burst ${tps(l.prefill_tps_now)}` },
-    { label: 'KV cache used', hot: true, series: 'kv_pct', color: COLORS.yellow, holdZero: true,
+    { label: 'KV cache used', hot: true, series: 'kv_pct', color: () => COLORS.yellow, holdZero: true,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.kv_pct),
       sub: l => l.kv_pool_tokens
         ? `${(l.kv_used_tokens ?? 0).toLocaleString()} / ${l.kv_pool_tokens.toLocaleString()} tok used · ${(l.kv_free_tokens ?? 0).toLocaleString()} free`
         : '% of token pool' },
-    { label: 'Running reqs', series: 'running', color: COLORS.green,
+    { label: 'Running reqs', series: 'running', color: () => COLORS.green,
       sparkFmt: v => String(Math.round(v)),
       main: l => num(l.running), sub: l => `${num(l.waiting)} waiting` },
-    { label: 'TTFT (p50)', series: 'ttft_p50_ms', color: COLORS.violet, hist: true,
+    { label: 'TTFT (p50)', series: 'ttft_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => Math.round(v) + ' ms',
       main: l => ms(l.ttft_p50_ms), sub: () => 'time to first token · 30 s window' },
-    { label: 'e2e latency (p50)', series: 'e2e_p50_ms', color: COLORS.violet, hist: true,
+    { label: 'e2e latency (p50)', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
       main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : l.e2e_p50_ms),
       sub: l => `median · last hour · now ${num(l.e2e_p50_ms)} ms · lifetime ${num(l.e2e_life_avg_ms)} ms` },
-    { label: 'Spec acceptance', series: 'spec_accept_pct', color: COLORS.violet,
+    { label: 'Spec acceptance', series: 'spec_accept_pct', color: () => COLORS.violet,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.spec_accept_pct),
       sub: l => `accept len ${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'} tok · `
               + `${l.draft_tok_per_step != null ? l.draft_tok_per_step.toFixed(1) : '–'} draft tok/step · DFlash` },
-    { label: 'Prefix cache hit', series: 'cache_hit_pct', life: true, color: COLORS.teal,
+    { label: 'Prefix cache hit', series: 'cache_hit_pct', life: true, color: () => COLORS.teal,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.cache_hit_med_1h != null ? l.cache_hit_med_1h : l.cache_hit_pct),
       sub: l => `median · last hour · now ${pct(l.cache_hit_pct)} · lifetime ${pct(l.cache_hit_life_pct)}` },
-    { label: 'Gen speed peak', series: 'gen_peak', color: COLORS.cobalt,
+    { label: 'Gen speed peak', series: 'gen_peak', color: () => COLORS.cobalt,
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.gen_peak), sub: () => 'tok/s · last hour' },
   ],
   'bub-savings': [
-    { label: 'Projected save · day', hot: true, series: 'savings_day', savings: 'day', color: COLORS.green,
+    { label: 'Projected save · day', hot: true, series: 'savings_day', savings: 'day', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(2) },
-    { label: 'Projected save · month', hot: true, series: 'savings_month', savings: 'month', color: COLORS.green,
+    { label: 'Projected save · month', hot: true, series: 'savings_month', savings: 'month', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(2) },
-    { label: 'Projected save · year', hot: true, series: 'savings_year', savings: 'year', color: COLORS.green,
+    { label: 'Projected save · year', hot: true, series: 'savings_year', savings: 'year', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(0) },
   ],
 };
@@ -160,19 +160,19 @@ function buildCharts() {
       c.setAutoY(on); btn.classList.toggle('on', on);
     });
     const leg = card.querySelector('.legend');
-    leg.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('');
+    leg.innerHTML = series.map(s => `<span><i style="background:${typeof s.color==='function'?s.color():s.color}"></i>${s.label}</span>`).join('');
     card._chart = c; card._cur = card.querySelector('.cur'); card._series = series;
     state.charts.push(card);
     return c;
   };
   mk(0, `Decode speed · last <span class="w">15 min</span>`, [
-    { key: `${e}.decode_tps_now`, label: 'tok/s', color: COLORS.cobalt, fill: true }], { curFmt: v => v != null ? Math.round(v) + ' tok/s' : '' });
+    { key: `${e}.decode_tps_now`, label: 'tok/s', color: () => COLORS.cobalt, fill: true }], { curFmt: v => v != null ? Math.round(v) + ' tok/s' : '' });
   mk(0, 'Prefill speed · last <span class="w">15 min</span>', [
-    { key: `${e}.prefill_tps_avg`, label: 'Δtok/Δprefill-sec', color: COLORS.teal, fill: true }]);
+    { key: `${e}.prefill_tps_avg`, label: 'Δtok/Δprefill-sec', color: () => COLORS.teal, fill: true }]);
   mk(0, 'KV pool (0–100%) · last <span class="w">15 min</span>', [
-    { key: `${e}.kv_pct`, label: '%', color: COLORS.yellow, fill: true }], { yCeil: 100, yFmt: v => v.toFixed(0) });
+    { key: `${e}.kv_pct`, label: '%', color: () => COLORS.yellow, fill: true }], { yCeil: 100, yFmt: v => v.toFixed(0) });
   mk(0, 'Speculative accept length · last <span class="w">15 min</span>', [
-    { key: `${e}.spec_accept_len`, label: 'tok accepted/step', color: COLORS.violet, fill: true }]);
+    { key: `${e}.spec_accept_len`, label: 'tok accepted/step', color: () => COLORS.violet, fill: true }]);
 
   // Tokens per session (today) — replaces the old cumulative-tokens chart,
   // which was just two flat lines. Source: Hermes state.db per-session totals.
@@ -220,20 +220,24 @@ function buildCharts() {
   };
   // yCeil = physical maximum: with AUTO Y OFF the view is 0..ceiling (real
   // amplitude vs the hardware range); ON zooms to the data extremes.
-  side('#sch-power', [{ key: 'hw.gpu_power_w', label: 'W', color: COLORS.cobalt, fill: true }], v => v != null ? v.toFixed(1) + ' W' : '', { yCeil: 110, autoY: false });
-  side('#sch-temp', [{ key: 'hw.cpu_temp_c', label: 'CPU °C', color: COLORS.rose },
-                     { key: 'hw.gpu_temp_c', label: 'GPU °C', color: COLORS.cobalt }], v => v != null ? v.toFixed(1) + '°' : '', { yCeil: 100 });
-  side('#sch-clock', [{ key: 'hw.gpu_clock_mhz', label: 'MHz', color: COLORS.teal, fill: true }], v => v != null ? Math.round(v) + ' MHz' : '', { yCeil: 3003 });
-  side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: COLORS.rose, fill: true }],
+  side('#sch-power', [{ key: 'hw.gpu_power_w', label: 'W', color: () => COLORS.cobalt, fill: true }], v => v != null ? v.toFixed(1) + ' W' : '', { yCeil: 110, autoY: false });
+  side('#sch-temp', [{ key: 'hw.cpu_temp_c', label: 'CPU °C', color: () => COLORS.rose },
+                     { key: 'hw.gpu_temp_c', label: 'GPU °C', color: () => COLORS.cobalt }], v => v != null ? v.toFixed(1) + '°' : '', { yCeil: 100 });
+  side('#sch-clock', [{ key: 'hw.gpu_clock_mhz', label: 'MHz', color: () => COLORS.teal, fill: true }], v => v != null ? Math.round(v) + ' MHz' : '', { yCeil: 3003 });
+  side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: () => COLORS.rose, fill: true }],
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
 }
 
 const escH = s => String(s || '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const CC_COLORS = ['rgb(148,217,168)','rgb(232,193,141)','rgb(74,127,168)','rgb(208,92,74)',
-  'rgb(167,139,250)','rgb(94,190,182)','rgb(217,140,180)','rgb(180,200,90)',
-  'rgb(230,160,110)','rgb(130,150,220)','rgb(120,210,140)','rgb(200,170,120)'];
+// Client-context category colors are THEME-REACTIVE: stored as base hues,
+// rotated with the accent palette (applyTheme) so NO chart is left behind;
+// category separation (relative hues) is preserved.
+const CC_BASE = ['#94d9a8', '#e8c18d', '#4a7fa8', '#d05c4a', '#a78bfa',
+                 '#5ebeba', '#d98cb4', '#b4c85a', '#e6a06e', '#8296dc',
+                 '#78d28c', '#c8aa78'];
+const CC_COLORS = CC_BASE.slice();
 const ccColor = c => { let h = 0; for (let i = 0; i < c.length; i++) h = (h * 31 + c.charCodeAt(i)) >>> 0; return CC_COLORS[h % CC_COLORS.length]; };
 
 let ccAutoY = true;   // panel AUTO Y state (matches reference dash_stream.py chart)
@@ -316,7 +320,7 @@ async function renderSessionTokens() {
     const hit = s.cache_r ? ' <span class="muted">· ' + fmtK(s.cache_r) + ' cached</span>' : '';
     return `<div class="st-row" title="${escH(s.id)} · ${s.calls} API calls · last seen ${new Date(s.last * 1000).toLocaleTimeString()}">
       <span class="st-lbl mono" title="${escH(s.title)}">${t} ${escH(s.profile !== 'default' ? s.profile + ' · ' : '')}${escH(s.title || s.id.slice(0, 18))}</span>
-      <span class="st-bar"><i style="width:${wi}%;background:${COLORS.cobalt}"></i><i style="width:${wo}%;background:${COLORS.orange || '#ff8c3a'}"></i></span>
+      <span class="st-bar"><i style="width:${wi}%;background:${COLORS.cobalt}"></i><i style="width:${wo}%;background:${COLORS.now}"></i></span>
       <span class="st-val mono">${fmtK(s.in)} in / ${fmtK(s.out)} out${hit}</span></div>`;
   }).join('');
 }
@@ -811,8 +815,9 @@ async function fetchCacheLife() {
 // Per-model per-day hot-tier $ from persisted minute-buckets. 1w/1m/3m/1y
 // switch; bars up to 3 months, lines beyond; hover = per-model cost, total
 // tokens and write (cache-write prompt) / read (cache-hit) / decode split.
-const SAV_COLORS = ['#4fa3ff', '#ffb454', '#5dd39e', '#e06c9f',
-                    '#b48cff', '#ffd75d', '#5ad1d1', '#ff8a65'];
+const SAV_BASE = ['#4fa3ff', '#ffb454', '#5dd39e', '#e06c9f',
+                  '#b48cff', '#ffd75d', '#5ad1d1', '#ff8a65'];
+const SAV_COLORS = SAV_BASE.slice();      // rotated by applyTheme (reactive)
 let savDays = 365;
 
 function _savMoney(v) {
@@ -975,6 +980,40 @@ function writeUiPrefs(patch) {
   return p;
 }
 let uiPrefs = readUiPrefs();
+// Family hues: every chart/bubble accent is the house palette ROTATED to
+// the chosen base — relationships between roles (decode vs prefill vs
+// latency hues) stay exactly as in the default orange theme (user spec:
+// "nuances of the base color the same way as in the default theme now").
+const NOW_HUE = 29;                        // hue of house orange #ff8c1a
+const FAMILY_BASE = { cobalt: '#4f8cff', teal: '#2dd4bf', violet: '#a78bfa',
+                      rose: '#fb7185', yellow: '#facc15', green: '#34d399' };
+function hexToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > .5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h = mx === r ? (g - b) / d + (g < b ? 6 : 0)
+      : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+function hslToHex(h, s, l) {
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)))));
+  };
+  return '#' + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function rotateCategorical(arr, base, delta, aroundHue) {
+  for (let i = 0; i < base.length; i++) {
+    if (delta === null) { arr[i] = base[i]; continue; }   // house exact
+    const [, s, l] = hexToHsl(base[i]);
+    // categories fan out evenly across ±90 deg of the chosen base hue
+    const spread = (arr.length > 1 ? (i / (arr.length - 1)) * 180 - 90 : 0);
+    arr[i] = hslToHex(((aroundHue || 0) + spread + 720) % 360, s, l);
+  }
+}
 function applyTheme() {
   const mode = uiPrefs.theme === 'light' ? 'light' : 'dark';
   document.documentElement.dataset.theme = mode;
@@ -983,51 +1022,127 @@ function applyTheme() {
   rs.setProperty('--accent', base);
   rs.setProperty('--accent-weak', hexRgba(base, .12));
   rs.setProperty('--accent-border', hexRgba(base, .45));
-  COLORS.now = base;                       // charts' "now" signal follows
+  // Chart lines follow the CHOSEN color (user audit of the old full-wheel
+  // rotation: "the change is not to the color I selected but to a totally
+  // different color"). Each role keeps its identity through a fixed
+  // analogous offset from the base hue + its own saturation/lightness, so
+  // every line is a nuance of the palette color while multi-line charts
+  // (CPU vs GPU temp) stay clearly distinct.
+  const baseH = hexToHsl(base)[0];
+  const warm = base === PALETTES.orange;   // house theme: keep EXACT hexes,
+  const ROLE_OFFSET = { cobalt: 0, teal: 24, violet: -24, rose: 50,
+                        yellow: -50, green: 14 };
+  for (const [key, hex0] of Object.entries(FAMILY_BASE)) {
+    const [, s, l] = hexToHsl(hex0);       // role's own s/l identity
+    const hex = warm ? hex0 : hslToHex((baseH + ROLE_OFFSET[key] + 720) % 360, s, l);
+    COLORS[key] = hex;
+    rs.setProperty('--' + key, hex);       // CSS consumers (links, tiles)
+  }
+  COLORS.now = base;
   COLORS.muted = mode === 'light' ? '#5b6a84' : '#7f8ca3';
   COLORS.grid = mode === 'light' ? '#e2e7f0' : '#1c2432';
+  // categorical charts follow the chosen color too: spread the categories
+  // symmetrically around the base hue (±90 deg) instead of full rotation,
+  // so they read as one family of the user's color
+  rotateCategorical(CC_COLORS, CC_BASE, warm ? null : true, baseH);
+  rotateCategorical(SAV_COLORS, SAV_BASE, warm ? null : true, baseH);
+  // Page tint: the SECOND palette (user's original idea) — tints the whole
+  // page (background/panels/grid lines) with a desaturated shade of the
+  // chosen color. 'default'/unset keeps the exact house navy.
+  const bgKey = uiPrefs.bg;
+  if (bgKey && bgKey !== 'default' && PALETTES[bgKey]) {
+    const [h, s] = hexToHsl(PALETTES[bgKey]);
+    const ss = Math.min(s, .65);
+    const tint = (sat, l) => hslToHex(h, sat, l);
+    if (mode === 'light') {
+      rs.setProperty('--bg', tint(ss * .52, .940));
+      rs.setProperty('--panel', tint(ss * .34, .985));
+      rs.setProperty('--panel-2', tint(ss * .44, .962));
+      const line = tint(ss * .40, .868);
+      rs.setProperty('--line', line); COLORS.grid = line;
+    } else {
+      rs.setProperty('--bg', tint(ss * .60, .062));
+      rs.setProperty('--panel', tint(ss * .52, .108));
+      rs.setProperty('--panel-2', tint(ss * .56, .085));
+      const line = tint(ss * .46, .178);
+      rs.setProperty('--line', line); COLORS.grid = line;
+    }
+  } else {
+    for (const v of ['--bg', '--panel', '--panel-2', '--line']) rs.removeProperty(v);
+  }
   const tb = document.getElementById('btn-theme');
   if (tb) tb.textContent = mode === 'light' ? '☀️' : '🌙';
+  // legends are built once at chart-build time — repaint them now
+  for (const card of (state.charts || [])) {
+    const leg = card.querySelector && card.querySelector('.legend');
+    if (leg && card._series)
+      leg.innerHTML = card._series.map(s =>
+        `<span><i style="background:${typeof s.color === 'function' ? s.color() : s.color}"></i>${s.label}</span>`).join('');
+    if (card._chart && card._chart.mark) card._chart.mark();
+  }
 }
 function wireThemeUi() {
   const tb = document.getElementById('btn-theme');
-  const pb = document.getElementById('btn-palette');
-  const pop = document.getElementById('palette-pop');
-  if (!tb || !pb || !pop) return;
+  if (!tb) return;
   tb.addEventListener('click', () => {
     const next = (uiPrefs.theme === 'light') ? 'dark' : 'light';
     uiPrefs = writeUiPrefs({ theme: next });
     applyTheme();
   });
-  const openPop = () => {
-    pop.innerHTML = Object.entries(PALETTES).map(([name, hex]) =>
-      `<button data-pal="${name}" title="${name}" style="background:${hex}"` +
-      `${uiPrefs.palette === name ? ' class="sel"' : ''}></button>`).join('');
-    const r = pb.getBoundingClientRect();
-    pop.style.top = (r.bottom + 6) + 'px';
-    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 210)) + 'px';
-    pop.hidden = false;
-  };
-  const closePop = () => { pop.hidden = true; };
-  pb.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (pop.hidden) openPop(); else closePop();
-  });
-  pop.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const b = e.target.closest('button[data-pal]');
-    if (!b) return;
-    uiPrefs = writeUiPrefs({ palette: b.dataset.pal });
-    applyTheme();
-    openPop();           // refresh the selection ring
-  });
-  document.addEventListener('click', () => { if (!pop.hidden) closePop(); });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closePop();
-  });
+  // two popovers built from the same swatch list: accent palette and page
+  // tint (the tint one carries an extra 'default' swatch = house navy)
+  const pops = [
+    { btn: document.getElementById('btn-palette'), pop: document.getElementById('palette-pop'),
+      key: 'palette', attr: 'data-pal', withDefault: false },
+    { btn: document.getElementById('btn-bg'), pop: document.getElementById('bg-pop'),
+      key: 'bg', attr: 'data-bg', withDefault: true },
+  ];
+  const closeAll = () => pops.forEach(p => { if (p.pop) p.pop.hidden = true; });
+  for (const P of pops) {
+    if (!P.btn || !P.pop) continue;
+    const openPop = () => {
+      const sel = uiPrefs[P.key] || (P.withDefault ? 'default' : 'orange');
+      const sw = (P.withDefault
+        ? `<button ${P.attr}="default" title="house default"` +
+          ` style="background:linear-gradient(135deg,#0b0e13,#121722)"` +
+          `${sel === 'default' ? ' class="sel"' : ''}></button>`
+        : '') + Object.entries(PALETTES).map(([name, hex]) =>
+        `<button ${P.attr}="${name}" title="${name}" style="background:${hex}"` +
+        `${sel === name ? ' class="sel"' : ''}></button>`).join('');
+      P.pop.innerHTML = sw;
+      const r = P.btn.getBoundingClientRect();
+      P.pop.style.top = (r.bottom + 6) + 'px';
+      P.pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 210)) + 'px';
+      closeAll();
+      P.pop.hidden = false;
+    };
+    P.btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (P.pop.hidden) openPop(); else P.pop.hidden = true;
+    });
+    P.pop.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const b = e.target.closest(`button[${P.attr}]`);
+      if (!b) return;
+      uiPrefs = writeUiPrefs({ [P.key]: b.getAttribute(P.attr) });
+      applyTheme();
+      openPop();           // refresh the selection ring
+    });
+  }
+  document.addEventListener('click', closeAll);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(); });
 }
 applyTheme();
 wireThemeUi();
+window.__setTheme = (p, b) => {   // test hook: recolor without page reload
+  const patch = {};
+  if (p !== undefined && p !== null) patch.palette = p;
+  if (b !== undefined) patch.bg = b;
+  uiPrefs = writeUiPrefs(patch);
+  applyTheme();
+};
+window.__themeDbg = { COLORS, CC_COLORS, SAV_COLORS, CC_BASE, SAV_BASE,
+                      PALETTES, uiPrefsGet: () => uiPrefs };
 
 // ---------------- lost potential bubble ----------------
 // One wide strip under the cost-savings row: what this model demonstrated
@@ -1041,7 +1156,8 @@ const fmtTokShort = n => {
   return String(Math.round(n));
 };
 const fmtUsd0 = n => n == null || !isFinite(n) ? null
-  : '$' + Math.round(n).toLocaleString('en-US');
+  : n < 10 ? '$' + n.toFixed(2)                      // cents matter at the hour
+  : '$' + Math.round(n).toLocaleString('en-US');      // scale up, drop cents
 async function renderLostPotential() {
   const host = document.getElementById('bub-potential');
   if (!host) return;
@@ -1052,18 +1168,33 @@ async function renderLostPotential() {
   if (!d || !d.ok) { if (grp) grp.style.display = 'none'; host.innerHTML = ''; return; }
   if (grp) grp.style.display = '';
   const pct = d.pct_usage == null ? '—' : d.pct_usage + '%';
-  let msg = '⚠️ Attention! Lost potential detected. ' + escH(d.model) +
-    ' was recorded doing ' + fmtTokShort(d.peak_hour_tokens) + ' tokens an hour ' +
-    'and historically you use barely ' + pct + ' of that for the ' +
-    d.period_days + '-day recorded period — it\u2019s projected to do ' +
+  // User-approved wording: lead with the yearly LOSS (best-hour ceiling x
+  // 8760 minus the year at recorded pace), then demonstrated peak rate,
+  // then CAPACITY projections (best hour scaled to month/year — the old
+  // dash's "600M tokens a day" basis), then what was actually used.
+  let msg = '⚠️ Attention! Lost potential detected. ';
+  if (d.loss_year_cost != null && d.loss_year_cost > 0)
+    msg += 'Your token usage rate makes you lose ' + fmtUsd0(d.loss_year_cost) +
+      ' USD a year! ';
+  msg += escH(d.model) + ' was recorded doing up to ' +
+    fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
+    'use barely ' + pct + ' of that for the ' + d.period_days +
+    '-day recorded period. This model is projected to do ' +
     fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
     fmtTokShort(d.proj_year_tokens) + '/year. Over the ' + d.recorded_days +
     ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.';
   if (d.best_hour_cost != null) {
-    msg += ' Savings registered: best hour ' + fmtUsd0(d.best_hour_cost) +
-      ', best day ' + fmtUsd0(d.best_day_cost) +
-      ', best month ' + fmtUsd0(d.best_month_cost) +
-      ', best year ' + fmtUsd0(d.best_year_cost) +
+    // measured only for windows we actually watched; anything longer is a
+    // pace-based projection, labeled as such (user rule: never claim a
+    // "best month" the dashboard has not seen a month of)
+    const parts = ['best hour ' + fmtUsd0(d.best_hour_cost)];
+    if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost));
+    else if (d.proj_day_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_day_cost) + '/day');
+    if (d.best_month_cost != null) parts.push('best month ' + fmtUsd0(d.best_month_cost) + ' (measured)');
+    else if (d.proj_month_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_month_cost) + '/month');
+    if (d.best_year_cost != null) parts.push('best year ' + fmtUsd0(d.best_year_cost) + ' (measured)');
+    else if (d.proj_year_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_year_cost) + '/year');
+    msg += ' Historic savings registered: ' + parts.join(', ') +
       ' — so put this baby to work!';
   }
   const title = 'avg recorded hour ' + fmtTokShort(d.avg_hour_tokens) +

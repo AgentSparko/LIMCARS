@@ -33,8 +33,15 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["total_tokens"] == 210_000_000
     assert r["avg_hour_tokens"] == round(210e6 / 1.5)  # 90 min = 1.5 h span
     assert abs(r["pct_usage"] - round(100.0 * (210e6 / 1.5) / 180e6, 1)) < 0.05
-    assert r["proj_month_tokens"] == round(140e6 * 730)
-    assert r["proj_year_tokens"] == round(140e6 * 8760)
+    # capacity projections: the BEST hour scaled (what the model showed it
+    # can do), not the recorded pace (user spec; pace stays in pace_* fields)
+    assert r["proj_month_tokens"] == round(180e6 * 24 * 30.4)
+    assert r["proj_year_tokens"] == round(180e6 * 24 * 365)
+    assert r["pace_month_tokens"] == round(140e6 * 730)
+    assert r["pace_year_tokens"] == round(140e6 * 8760)
+    # "makes you lose $X a year" = best-hour ceiling - year at recorded pace
+    assert abs(r["loss_year_cost"] - (r["best_hour_cost"] * 8760 -
+                                      r["proj_year_cost"])) < 1.0
     assert r["recorded_days"] == 1
 
 
@@ -54,28 +61,39 @@ def test_money_measured_not_x8760(tmp_path):
     _m(st, "e1", 0, p=60e6)                  # one minute, $60 hot bill
     r = lost_potential(st, [{"id": "e1", "model": "M"}], PRICE)
     assert abs(r["best_hour_cost"] - 60.0) < 0.01
-    assert abs(r["best_day_cost"] - 60.0) < 0.01
-    assert abs(r["best_month_cost"] - 60.0) < 0.01
-    assert abs(r["best_year_cost"] - 60.0) < 0.01
-    assert "proj_year_cost" not in r         # ceiling fantasy is gone
+    # period is hours, not days: NOTHING longer than the hour may claim
+    # "best" (user rule) — month/year are pace projections
+    assert r["best_day_cost"] is None
+    assert r["best_month_cost"] is None and r["best_year_cost"] is None
+    assert abs(r["proj_day_cost"] - 60.0) < 0.01     # day floor: 1 full day
+    assert abs(r["proj_month_cost"] - 60.0 * 30.4) < 1
+    assert abs(r["proj_year_cost"] - 60.0 * 365) < 1
 
 
-def test_best_month_year_are_real_calendar_aggregates(tmp_path):
-    import time as _t
+def test_best_month_only_when_a_month_was_watchable(tmp_path):
+    # 21 recorded days: no measured best-month/best-year allowed
     st = Store(str(tmp_path / "t.db"))
-    _m(st, "e1", 0, p=20e6)                  # $20 in month A
-    later = 45 * 1440                        # +45 days -> a different month
-    _m(st, "e1", later, p=50e6)              # $50 day in month B
-    _m(st, "e1", later + 1441, p=10e6)       # $10 NEXT day, same month B
+    for d in range(21):
+        _m(st, "e1", d * 1440, p=10e6)       # $10/day for 21 days
     r = lost_potential(st, [{"id": "e1", "model": "M"}], PRICE)
-    y0 = _t.gmtime(BASE).tm_year
-    y1 = _t.gmtime(BASE + later * 60).tm_year
-    assert abs(r["best_day_cost"] - 50.0) < 0.01
-    assert abs(r["best_month_cost"] - 60.0) < 0.01   # month B: 50+10
-    if y1 == y0:
-        assert abs(r["best_year_cost"] - 80.0) < 0.01  # whole year total
-    else:
-        assert abs(r["best_year_cost"] - 60.0) < 0.01  # richer year wins
+    assert r["best_day_cost"] == 10.0               # days were watched
+    assert r["best_month_cost"] is None
+    assert r["best_year_cost"] is None
+    assert abs(r["proj_month_cost"] - (210 / 21) * 30.4) < 1
+    assert abs(r["proj_year_cost"] - (210 / 21) * 365) < 1
+
+
+def test_best_month_measured_after_31_days(tmp_path):
+    st = Store(str(tmp_path / "t.db"))
+    for d in range(46):                      # 46-day span crosses months
+        _m(st, "e1", d * 1440, p=(10e6 if d != 40 else 50e6))
+    r = lost_potential(st, [{"id": "e1", "model": "M"}], PRICE)
+    # with >=31 days watched the month claim is allowed, and the richer
+    # month (contains the $50 day) must win
+    assert r["best_month_cost"] is not None
+    assert r["best_month_cost"] >= 50.0
+    assert r["best_year_cost"] is None       # <366 days: still projected
+    assert r["proj_year_cost"] is not None
 
 
 def test_synthetic_excluded_from_window(tmp_path):

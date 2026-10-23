@@ -12,6 +12,9 @@ export const COLORS = {
   muted: '#7f8ca3', grid: '#1c2432',
 };
 
+const scol = v => typeof v === 'function' ? v() : v;  // palette-reactive:
+                                                       // series may carry a
+                                                       // getter resolved at draw
 export function fmt(v, d = 1) {
   if (v === null || v === undefined || !Number.isFinite(v)) return '–';
   if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString('en-US');
@@ -160,9 +163,9 @@ export class LineChart {
       if (s.fill) {
         const base = y(Math.max(min, 0));
         const area = d + `L${x(pts[pts.length - 1][0]).toFixed(1)},${base}L${x(pts[0][0]).toFixed(1)},${base}Z`;
-        out += `<path d="${area}" fill="${s.color}" opacity="0.10"/>`;
+        out += `<path d="${area}" fill="${scol(s.color)}" opacity="0.10"/>`;
       }
-      out += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.6" ${s.dash ? 'stroke-dasharray="4 3"' : ''} stroke-linejoin="round"/>`;
+      out += `<path d="${d}" fill="none" stroke="${scol(s.color)}" stroke-width="1.6" ${s.dash ? 'stroke-dasharray="4 3"' : ''} stroke-linejoin="round"/>`;
       const last = pts[pts.length - 1];
       out += `<circle cx="${x(last[0])}" cy="${y(last[1])}" r="3" fill="${COLORS.now}"/>`;
     });
@@ -193,7 +196,7 @@ export class LineChart {
         if (d < bd) { bd = d; best = v; }
       }
       if (best === null || bd > 3) return null;
-      return `<span style="color:${s.color}">●</span> ${s.label}: <b>${(this.opts.yFmt || fmt)(best)}</b>`;
+      return `<span style="color:${scol(s.color)}">●</span> ${s.label}: <b>${(this.opts.yFmt || fmt)(best)}</b>`;
     }).filter(Boolean);
     if (!rows.length) { tip.style.display = 'none'; return null; }
     return `<div class="t">${tLabel}</div>` + rows.join('<br>');
@@ -203,6 +206,7 @@ export class LineChart {
 // ---------------- sparkline (bubbles) ----------------
 
 export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
+  color = typeof color === 'function' ? color() : color;
   const W = svgEl.clientWidth || 150, H = 30, n = values.length;
   svgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
   if (!n) { svgEl.innerHTML = ''; return; }
@@ -260,7 +264,7 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
       tip.style.top = (e.clientY + 12) + 'px';
       if (!svgEl._mk) {
         svgEl._mk = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        svgEl._mk.setAttribute('r', '2.6'); svgEl._mk.setAttribute('fill', s.color);
+        svgEl._mk.setAttribute('r', '2.6'); svgEl._mk.setAttribute('fill', scol(s.color));
       }
       svgEl.appendChild(svgEl._mk);   // spark() rewrites innerHTML per tick — keep it attached
       svgEl._mk.setAttribute('cx', s.x(i)); svgEl._mk.setAttribute('cy', s.y(v));

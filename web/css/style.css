@@ -10,6 +10,11 @@
   --text: #dce3ee;
   --muted: #7f8ca3;
   --accent: #ff8c1a;        /* "now" orange */
+  --orange: var(--accent);  /* legacy hooks (traces btn, checkboxes) follow
+                               the palette — they used to fall back to a
+                               hardcoded hex because --orange never existed */
+  --accent-weak: rgba(255, 140, 26, .12);
+  --accent-border: rgba(255, 140, 26, .45);
   --cobalt: #4f8cff;        /* decode */
   --teal: #2dd4bf;          /* prefill */
   --violet: #a78bfa;        /* latency */

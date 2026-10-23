@@ -1,6 +1,5 @@
+data/*.db*
+data/server.log
 __pycache__/
-*.pyc
-data/
-*.log
 .pytest_cache/
-.codemap/
+data/auth.json

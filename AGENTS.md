@@ -45,8 +45,19 @@ scrapes), not the old dashboard's name.
    `prompt` and `cached` as disjoint fields, target `prompt = prompt + cached`;
    if the source's prompt already includes cached, copy as-is. Verify with a
    same-minute cross-check against a period both dashboards recorded, like
-   `scripts/import_legacy_history.py`'s reference case (old LIMCARS
-   `dash_events`: `prompt = new_tok + cached_tok`, `gen` from decode rows).
+   the bundled reference importer does (`new_tok + cached_tok` style event
+   tables ⇒ target `prompt = new + cached`, `gen` from decode rows).
+2a. **One model often hides behind many engine rows.** The source's engine
+   table usually has several rows for the SAME model recorded under
+   different names over time: quant or hardware variant suffixes
+   (`-hybrid48`, `-nvidia`, `-fp8`, build tags), missing/extra org prefix
+   (`Org/Model` vs `model`), case and punctuation drift. Normalize names
+   before matching — lowercase, strip everything outside `[a-z0-9]`, strip
+   repeated leading org/model-family prefixes — then include every matching
+   engine id and SUM their minutes together. If a variant's identity is
+   ambiguous (e.g. a different model family with a similar name), ask the
+   user before importing it; missing an era of their history is worse than
+   one clarifying question.
 3. **Minute-align ts** (`ts // 60 * 60`, UTC seconds) — non-aligned rows
    fragment the hourly sliding windows and the money chart.
 4. **Never double-count.** Skip `(engine, ts)` minutes LIMCARS already
@@ -72,12 +83,23 @@ scrapes), not the old dashboard's name.
 
 ### Reference implementation
 
-`scripts/import_legacy_history.py` migrates the old LIMCARS (classic)
-`app.db → dash_events` table. Use it as the template: read-only source,
-engine→model attribution filter, minute aggregation, existing-minute skip,
+`scripts/import_legacy_history.py` is the bundled example that migrates an
+event-table style history (`dash_events`-like schema) into
+`counter_buckets`. Use it as the template: read-only source, model-alias
+engine matching (rule 2a), minute aggregation, existing-minute skip,
 `--dry-run` first, printed receipt (events → buckets → days). For other
 source dashboards, adapt the field mapping, keep every rule above, and keep
-the dry-run/verify loop.
+the dry-run/verify loop. If the source keeps its own daily rollup table,
+DO NOT import it — daily totals cannot feed the hourly best-window math;
+rebuild minutes from the finest-grain table the source has.
+
+### What NOT to import
+
+Only tokens are imported; every `$` and every projection (best hour, pace
+projections, "lost potential") is DERIVED by LIMCARS at render time from
+`data/pricing.json`. Never port dollar figures — they go stale the moment
+pricing changes, and mixing them into token data breaks the honesty rules
+the dashboard's lost-potential bubble depends on (measured vs projected).
 
 ## Other agent-facing notes
 

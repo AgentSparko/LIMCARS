@@ -54,9 +54,16 @@ def main() -> int:
               f"fetch the old LIMCARS checkout or pass --source", file=sys.stderr)
         return 2
     src = sqlite3.connect(f"file:{a.source}?mode=ro", uri=True)
-    want = a.model.strip().lower()
-    ids = [r[0] for r in src.execute(
-        "select id from engines where lower(served_model)=?", (want,))]
+
+    def norm(s):                       # 'Qwen/Qwen3.8-Flash-Next' ==
+        import re                      # 'qwen3.8-flash-next' == the same
+        t = re.sub(r"[^a-z0-9]", "", (s or "").lower())
+        while t.startswith("qwen"):    # org prefix AND 'Qwen3.8' fused name
+            t = t[4:]
+        return t                       # model under a quant/variant name
+    want = norm(a.model)
+    ids = [r[0] for r in src.execute("select id, served_model from engines")
+           if norm(r[1]) == want]
     if not ids:
         print(f"ERROR: no engine in {a.source} ever served '{a.model}'",
               file=sys.stderr)
