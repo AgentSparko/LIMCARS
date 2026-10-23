@@ -3,3 +3,4 @@ __pycache__/
 data/
 *.log
 .pytest_cache/
+.codemap/

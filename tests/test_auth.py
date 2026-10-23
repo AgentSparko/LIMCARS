@@ -42,7 +42,7 @@ def test_set_verify_change(tmp_path):
 def test_lockout_ladder(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
-    ip = "192.168.1.50"
+    ip = "203.0.113.10"
     # tries 1-2: free
     assert g.failure(ip) == 0.0
     assert g.failure(ip) == 0.0
@@ -71,7 +71,7 @@ def test_lockout_ladder(tmp_path):
 def test_success_resets_counter(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
-    ip = "192.168.1.60"
+    ip = "203.0.113.11"
     g.failure(ip); g.failure(ip)          # n=2
     assert g.verify("s3cret")
     g.success(ip)
