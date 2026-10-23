@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LIMCARS — Local Inference Monitor · Cost Analyzer · Recipe Server</title>
 <link rel="stylesheet" href="/css/style.css">
-<link rel="stylesheet" href="/css/dashboard.css?v=20261023t">
+<link rel="stylesheet" href="/css/dashboard.css?v=20261023u">
 </head>
 <body>
 <header class="top">
@@ -20,6 +20,9 @@
     <option value="0.5">0.5 s</option><option value="1" selected>1 s</option>
     <option value="2">2 s</option><option value="3">3 s</option><option value="5">5 s</option>
   </select>
+  <button class="pill" id="btn-theme" title="Day / night theme">🌙</button>
+  <button class="pill" id="btn-palette" title="Accent palette">🎨</button>
+  <div id="palette-pop" class="palette-pop" hidden></div>
   <button class="pill" id="btn-refresh" title="Re-pull the snapshot now">↻</button>
   <span class="pill"><span id="conn-dot" class="dot"></span><span id="conn-txt">…</span></span>
 </header>
@@ -133,6 +136,6 @@
   </main>
 </div>
 
-<script type="module" src="/js/dashboard.js?v=20261023t"></script>
+<script type="module" src="/js/dashboard.js?v=20261023u"></script>
 </body>
 </html>

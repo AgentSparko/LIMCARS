@@ -49,6 +49,8 @@ SETTINGS_DEFAULTS = {
     "requests_feed": True,      # recent completed requests table
     "refresh_s": 1.0,           # base UI refresh interval (0.5-30 s)
     "stats_scope": "all",       # all | active engine
+    "theme": "dark",            # dark | light (top-bar day/night toggle)
+    "palette": "orange",        # one of 24 accent palettes (charts follow)
 }
 
 

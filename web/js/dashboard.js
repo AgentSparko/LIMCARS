@@ -700,6 +700,7 @@ const SET_OPTS = {
 };
 function applySettings(s) {
   sideSettings = s || {};
+  applyTheme();
   const hide = (id, off, sel) => {
     const el = document.querySelector(id); if (!el) return;
     const tgt = sel ? el.closest(sel) : el; if (!tgt) return;
@@ -938,6 +939,73 @@ document.querySelectorAll('#sav-seg [data-days]').forEach(b =>
   }));
 
 // boot extras
+// ---------------- theme system (top bar) ----------------
+// 24 preset base colors; each drives --accent + its nuances (borders, chart
+// "now" dot, pill highlights) the same way house orange does by default.
+// Persisted server-side (settings.theme / settings.palette) so every tab on
+// the LAN shares one look. Day/night flips surface vars in style.css.
+const PALETTES = {
+  orange: '#ff8c1a', amber: '#f59e0b', gold: '#eab308', sand: '#d6b98c',
+  bronze: '#b08d57', tomato: '#f97316', coral: '#fb7185', rose: '#f43f5e',
+  red: '#ef4444', pink: '#ec4899', fuchsia: '#d946ef', purple: '#a855f7',
+  violet: '#8b5cf6', lavender: '#c4b5fd', indigo: '#6366f1', blue: '#3b82f6',
+  sky: '#0ea5e9', cyan: '#06b6d4', teal: '#14b8a6', mint: '#4ade80',
+  green: '#22c55e', emerald: '#10b981', lime: '#84cc16', slate: '#94a3b8',
+};
+function hexRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+function applyTheme() {
+  const mode = sideSettings.theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = mode;
+  const base = PALETTES[sideSettings.palette] || PALETTES.orange;
+  const rs = document.documentElement.style;
+  rs.setProperty('--accent', base);
+  rs.setProperty('--accent-weak', hexRgba(base, .12));
+  rs.setProperty('--accent-border', hexRgba(base, .45));
+  COLORS.now = base;                       // charts' "now" signal follows
+  COLORS.muted = mode === 'light' ? '#5b6a84' : '#7f8ca3';
+  COLORS.grid = mode === 'light' ? '#e2e7f0' : '#1c2432';
+  const tb = document.getElementById('btn-theme');
+  if (tb) tb.textContent = mode === 'light' ? '☀️' : '🌙';
+}
+function wireThemeUi() {
+  const tb = document.getElementById('btn-theme');
+  const pb = document.getElementById('btn-palette');
+  const pop = document.getElementById('palette-pop');
+  if (!tb || !pb || !pop) return;
+  tb.addEventListener('click', () => {
+    const next = (sideSettings.theme === 'light') ? 'dark' : 'light';
+    sideSettings.theme = next; applyTheme();
+    postSettings({ theme: next });
+  });
+  const openPop = () => {
+    pop.innerHTML = Object.entries(PALETTES).map(([name, hex]) =>
+      `<button data-pal="${name}" title="${name}" style="background:${hex}"` +
+      `${sideSettings.palette === name ? ' class="sel"' : ''}></button>`).join('');
+    const r = pb.getBoundingClientRect();
+    pop.style.top = (r.bottom + 6) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 210)) + 'px';
+    pop.hidden = false;
+  };
+  pb.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (pop.hidden) openPop(); else pop.hidden = true;
+  });
+  pop.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-pal]');
+    if (!b) return;
+    sideSettings.palette = b.dataset.pal; applyTheme();
+    postSettings({ palette: b.dataset.pal });
+    openPop();           // refresh the selection ring
+  });
+  document.addEventListener('click', (e) => {
+    if (!pop.hidden && !pop.contains(e.target) && e.target !== pb) pop.hidden = true;
+  });
+}
+wireThemeUi();
+
 // ---------------- lost potential bubble ----------------
 // One wide strip under the cost-savings row: what this model demonstrated
 // it can do in its best day/month/year vs what the recorded history
@@ -960,22 +1028,24 @@ async function renderLostPotential() {
   try { d = await (await fetch('/api/lost-potential')).json(); } catch (e) { return; }
   if (!d || !d.ok) { if (grp) grp.style.display = 'none'; host.innerHTML = ''; return; }
   if (grp) grp.style.display = '';
-  const pct = d.pct_day == null ? '—' : d.pct_day + '%';
+  const pct = d.pct_usage == null ? '—' : d.pct_usage + '%';
   let msg = '⚠️ Attention! Lost potential detected. ' + escH(d.model) +
-    ' is capable of ' + fmtTokShort(d.peak_day_tokens) + ' tokens a day and ' +
-    'historically you use barely ' + pct + ' of that — ' +
-    fmtTokShort(d.avg_month_tokens) + ' tokens/month or ' +
-    fmtTokShort(d.avg_year_tokens) + '/year over the ' + d.recorded_days +
-    ' recorded days (' + d.span_days + '-day period).';
-  const extra = [];
-  if (d.peak_day_cost != null) extra.push('best day ' + fmtUsd0(d.peak_day_cost));
-  if (d.peak_month_cost != null) extra.push('best month ' + fmtUsd0(d.peak_month_cost));
-  if (d.peak_year_cost != null) extra.push('best year ' + fmtUsd0(d.peak_year_cost));
-  if (extra.length) msg += ' Savings registered: ' + extra.join(', ') + '.';
-  const title = 'peak month ' + fmtTokShort(d.peak_month_tokens) + ' tokens (' +
-    (d.pct_month == null ? '—' : d.pct_month + '% used') + ') · peak year ' +
-    fmtTokShort(d.peak_year_tokens) + ' (' +
-    (d.pct_year == null ? '—' : d.pct_year + '% used') + ')';
+    ' was recorded doing ' + fmtTokShort(d.peak_hour_tokens) + ' tokens an hour ' +
+    'and historically you use barely ' + pct + ' of that for the ' +
+    d.period_days + '-day recorded period — it\u2019s projected to do ' +
+    fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
+    fmtTokShort(d.proj_year_tokens) + '/year. Over the ' + d.recorded_days +
+    ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.';
+  if (d.best_hour_cost != null) {
+    msg += ' Savings registered: best hour ' + fmtUsd0(d.best_hour_cost) +
+      ', projected best day ' + fmtUsd0(d.proj_day_cost) +
+      ', best month ' + fmtUsd0(d.proj_month_cost) +
+      ', best year ' + fmtUsd0(d.proj_year_cost) +
+      ' — so put this baby to work!';
+  }
+  const title = 'avg recorded hour ' + fmtTokShort(d.avg_hour_tokens) +
+    ' tokens · total ' + fmtTokShort(d.total_tokens) + ' over ' +
+    d.recorded_days + ' days';
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
     '"><div class="label">Lost potential</div><div class="value pot-text">' +
     msg + '</div></div>';

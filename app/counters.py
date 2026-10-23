@@ -171,86 +171,74 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
 
 
 def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
-    """The 'lost potential' bubble: the best day / calendar-month / calendar-year
-    this engine ever recorded (non-synthetic buckets only) against the averages
-    over the RECORDED span — tokens and $ — and what % of its own demonstrated
-    capability the history actually uses. The engine with the biggest peak day
-    owns the headline: it is the one leaving the most on the table.
-    Averages divide by calendar months/years the record SPANS (not the number
-    that saw traffic), so a box idle for six months carries them like a slow
-    six months, which is the whole point of the bubble."""
+    """The 'lost potential' bubble, anchored on the BEST RECORDED HOUR.
+
+    The capability claim is what the engine actually sustained in its best
+    60-minute window (tokens + hot-tier $), so a user who installed LIMCARS
+    two hours ago still sees meaningful numbers on day one. Utilisation is
+    the recorded average hour over the recorded span vs that best hour.
+    Projections multiply the two honest anchors:
+      * tokens  : recorded avg hour x 730/8760 h     ("where you're heading")
+      * money   : BEST hour x 24/730/8760 h          ("where you could be")
+    Sliding window is a two-pointer over minute indices — O(n) — and cost is
+    summed from per-minute hot bills (the pricing function is linear, so the
+    window sum equals hot_costs of the window totals)."""
     from . import pricing as pricing_mod
-
-    def month_index(utc_day: int) -> int:
-        tm = time.gmtime(utc_day * 86400)
-        return tm.tm_year * 12 + tm.tm_mon - 1
-
-    def year_of(utc_day: int) -> int:
-        return time.gmtime(utc_day * 86400).tm_year
 
     best = None
     for eng in engines:
         eid, model = eng["id"], eng.get("model")
-        rows = [(d, p, c, g) for d, p, c, g in store.daily_bucket_totals(eid, 0)]
-        rows = [(d, p, c, g) for d, p, c, g in rows if (p or 0) + (g or 0) > 0]
-        if len(rows) < 2:
-            continue          # one day is not a history
+        rows = [(ts, p or 0.0, c or 0.0, g or 0.0)
+                for ts, p, c, g in store.minute_rows(eid)
+                if (p or 0) + (g or 0) > 0]
+        if not rows:
+            continue
         price = pricing_mod.effective_price(model, pricing_cfg) or {}
         price = price if (price.get("output") or price.get("cache_write")
                           or price.get("cache_read") or price.get("input")) else {}
-        day = {}
-        for d, p_, c_, g_ in rows:
-            tok = (p_ or 0) + (g_ or 0)
-            # $ saved == hot-tier bill for that traffic (local engine paid
-            # $0; same basis as every other $ figure on the dash)
-            cost = (pricing_mod.hot_costs(p_, c_, g_, price)["hot"]
-                    if price else None)
-            day[d] = (tok, cost)
-        keys = sorted(day)
-        span_days = keys[-1] - keys[0] + 1
-        tot_tok = sum(t for t, _ in day.values())
-        has_cost = any(c is not None for _, c in day.values())
-        tot_cost = sum(c for _, c in day.values() if c) if has_cost else None
-
-        def agg(keyfn, n_span, pick):
-            buckets: dict[int, float] = {}
-            for d in keys:
-                k = keyfn(d)
-                buckets[k] = buckets.get(k, 0.0) + pick(day[d])
-            tot = sum(buckets.values())
-            peak = max(buckets.values()) if buckets else 0.0
-            avg = tot / max(1, n_span)
-            return peak, avg, (round(100.0 * avg / peak, 1) if peak > 0 else None)
-
-        months = month_index(keys[-1]) - month_index(keys[0]) + 1
-        years = year_of(keys[-1]) - year_of(keys[0]) + 1
-        tok_pick = lambda v: v[0]
-        cost_pick = lambda v: v[1] or 0.0
-        peak_d = max(t for t, _ in day.values())
-        avg_d = tot_tok / span_days
+        # minute-aligned: (minute_idx, tokens, hot_bill)
+        mins = []
+        for ts, p, c, g in rows:
+            cost = pricing_mod.hot_costs(p, c, g, price)["hot"] if price else 0.0
+            mins.append((ts // 60, p + g, cost))
+        mins.sort()
+        # sliding best 60-minute window (tokens and $ independently)
+        peak_tok_w = peak_cost_w = cur_tok = cur_cost = 0.0
+        start = 0
+        for end in range(len(mins)):
+            cur_tok += mins[end][1]
+            cur_cost += mins[end][2]
+            while mins[end][0] - mins[start][0] > 59:
+                cur_tok -= mins[start][1]
+                cur_cost -= mins[start][2]
+                start += 1
+            if cur_tok > peak_tok_w:
+                peak_tok_w = cur_tok
+            if cur_cost > peak_cost_w:
+                peak_cost_w = cur_cost
+        total_tok = sum(t for _, t, _ in mins)
+        span_hours = max(1.0, (mins[-1][0] - mins[0][0] + 1) / 60.0)
+        avg_hour = total_tok / span_hours
         cand = {
             "engine": eid, "model": model or eid,
-            "recorded_days": len(keys), "span_days": span_days,
-            "months_spanned": months, "years_spanned": years,
-            "peak_day_tokens": round(peak_d),
-            "avg_day_tokens": round(avg_d),
-            "pct_day": round(100.0 * avg_d / peak_d, 1) if peak_d else None,
+            "recorded_days": len({m // 1440 for m, _, _ in mins}),
+            "period_days": round(span_hours / 24.0, 1),
+            "peak_hour_tokens": round(peak_tok_w),
+            "avg_hour_tokens": round(avg_hour),
+            "pct_usage": round(100.0 * avg_hour / peak_tok_w, 1) if peak_tok_w else None,
+            "total_tokens": round(total_tok),
         }
-        cand["peak_month_tokens"], cand["avg_month_tokens"], cand["pct_month"] = \
-            agg(month_index, months, tok_pick)
-        cand["peak_year_tokens"], cand["avg_year_tokens"], cand["pct_year"] = \
-            agg(year_of, years, tok_pick)
-        if has_cost:
-            cand["peak_day_cost"] = round(max(c for _, c in day.values() if c is not None), 2)
-            (cand["peak_month_cost"], cand["avg_month_cost"], cand["pct_month_cost"],
-             cand["peak_year_cost"], cand["avg_year_cost"], cand["pct_year_cost"]) = (
-                agg(month_index, months, cost_pick) + agg(year_of, years, cost_pick))
+        if price:
+            cand["best_hour_cost"] = round(peak_cost_w, 2)
+            cand["proj_day_cost"] = round(peak_cost_w * 24, 2)
+            cand["proj_month_cost"] = round(peak_cost_w * 730, 2)
+            cand["proj_year_cost"] = round(peak_cost_w * 8760, 2)
         else:
-            cand.update({"peak_day_cost": None,
-                         "peak_month_cost": None, "avg_month_cost": None,
-                         "pct_month_cost": None, "peak_year_cost": None,
-                         "avg_year_cost": None, "pct_year_cost": None})
-        if best is None or cand["peak_day_tokens"] > best["peak_day_tokens"]:
+            cand["best_hour_cost"] = cand["proj_day_cost"] = None
+            cand["proj_month_cost"] = cand["proj_year_cost"] = None
+        cand["proj_month_tokens"] = round(avg_hour * 730)
+        cand["proj_year_tokens"] = round(avg_hour * 8760)
+        if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:
             best = cand
     if best is None:
         return {"ok": False}

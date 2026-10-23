@@ -135,6 +135,15 @@ class Store:
                 " WHERE engine=? AND ts>=? ORDER BY ts",
                 (engine, int(time.time() - seconds))).fetchall()
 
+    def minute_rows(self, engine: str) -> list[tuple]:
+        """(ts, prompt, cached, gen) for every non-synthetic minute bucket of
+        one engine, oldest first. Feeds the lost-potential best-hour scan."""
+        with self._lock:
+            return self._con.execute(
+                "SELECT ts, prompt, cached, gen FROM counter_buckets"
+                " WHERE engine=? AND COALESCE(synthetic,0)=0 ORDER BY ts",
+                (engine,)).fetchall()
+
     def daily_bucket_totals(self, engine: str, since_ts: int) -> list[tuple]:
         """(utc_day, prompt, cached, gen) calendar-day sums for the daily
         money-saved chart. SYNTHETIC buckets (seed/gap) are EXCLUDED: the
