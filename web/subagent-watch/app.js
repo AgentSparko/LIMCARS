@@ -14,7 +14,7 @@
    so they hit the hub's /subagent-watch/* API routes. */
 const API = '';
 
-// LIMCARS password gate: the parent dashboard embeds this page with
+// LIMCARS-NEXT password gate: the parent dashboard embeds this page with
 // ?pw=<password>; attach it to every data fetch (server accepts the header).
 const LC_PW = new URLSearchParams(location.search).get('pw') || '';
 if (LC_PW) {

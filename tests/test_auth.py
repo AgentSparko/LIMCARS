@@ -42,7 +42,7 @@ def test_set_verify_change(tmp_path):
 def test_lockout_ladder(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
-    ip = "203.0.113.50"
+    ip = "192.168.1.50"
     # tries 1-2: free
     assert g.failure(ip) == 0.0
     assert g.failure(ip) == 0.0
@@ -71,7 +71,7 @@ def test_lockout_ladder(tmp_path):
 def test_success_resets_counter(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
-    ip = "203.0.113.60"
+    ip = "192.168.1.60"
     g.failure(ip); g.failure(ip)          # n=2
     assert g.verify("s3cret")
     g.success(ip)
@@ -87,7 +87,7 @@ def test_lockout_persists_across_reload(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
     for _ in range(3):
-        g.failure("203.0.113.9")
+        g.failure("9.9.9.9")
     g2 = AuthGate(str(tmp_path / "auth.json"))
     g2._now = g._now                      # same fake clock as the "old" gate
-    assert g2.locked_for("203.0.113.9") > 55  # survived "restart"
+    assert g2.locked_for("9.9.9.9") > 55  # survived "restart"

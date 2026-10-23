@@ -1,4 +1,4 @@
-// LIMCARS Classic — full rebuild of the old hub/dash.html canvas dash
+// LIMCARS-NEXT Classic — full rebuild of the old hub/dash.html canvas dash
 // (the one Streamlit labelled "🎛️ Modern") on the new 2 Hz backend.
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.

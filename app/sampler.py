@@ -1,4 +1,4 @@
-"""Engine sampler — the heart of LIMCARS.
+"""Engine sampler — the heart of LIMCARS-NEXT.
 
 One thread per engine, ticking `live_hz` times a second, polling the
 engine's Prometheus /metrics and turning CUMULATIVE counters into honest
@@ -136,7 +136,7 @@ class EngineSampler(threading.Thread):
 
     def _fetch(self, path: str, timeout: float = 1.5) -> bytes:
         req = urllib.request.Request(self.url + path,
-                                     headers={"User-Agent": "limcars/1.0"})
+                                     headers={"User-Agent": "limcars-next/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
             return r.read()
 
@@ -193,7 +193,8 @@ class EngineSampler(threading.Thread):
                 row[key] = (cur - old) / dt
             self._win_delta(logical, cur, old, now, dt)
         for logical in ("drafts", "draft_tokens", "accepted_tokens",
-                        "prefix_hits", "prefix_queries"):
+                        "prefix_hits", "prefix_queries",
+                        "prefill_tokens", "prefill_seconds"):
             self._win_delta(logical, counters.get(logical), prev.get(logical), now, dt)
 
         # --- window averages ---
@@ -220,6 +221,22 @@ class EngineSampler(threading.Thread):
                 prefill_true = rate    # deltas are completion-charged); real
                                        # peak measured on this box is ~7.5k
         if prefill_true is None:
+            # Engine-native paths (ported from the TandemDash adapter family):
+            # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
+            # DURING prefill — a true live rate, no completion attribution.
+            rt = self._win_rate("prefill_tokens")
+            if rt is not None and 0 < rt <= 12000:
+                prefill_true = rt
+        if prefill_true is None:
+            # exl3/tensorfold alt: prefill_seconds is a cumulative compute-
+            # seconds COUNTER — Δprompt/Δprefill_seconds pairs perfectly
+            # (both completion-charged counters, no histogram involved).
+            psecs = self._win_sum("prefill_seconds")
+            if psecs is not None and psecs > 0 and pd is not None and pd > 0:
+                v = pd / psecs
+                if v <= 12000:
+                    prefill_true = v
+        if prefill_true is None:
             fr = self._win_rate("prompt_tokens")
             cr = self._win_rate("prefix_hits")
             row["prefill_tps_avg"] = (
@@ -235,7 +252,9 @@ class EngineSampler(threading.Thread):
         pq, pq_old = counters.get("prefix_queries"), prev.get("prefix_queries")
         gt, gt_old = counters.get("gen_tokens"), prev.get("gen_tokens")
         it, it_old = counters.get("iterations"), prev.get("iterations")
-        admitted = pq is not None and pq_old is not None and pq > pq_old
+        rt_c, rt_p = counters.get("prefill_tokens"), prev.get("prefill_tokens")
+        admitted = ((pq is not None and pq_old is not None and pq > pq_old)
+                    or (rt_c is not None and rt_p is not None and rt_c > rt_p))
         stepped = ((gt is not None and gt_old is not None and gt > gt_old)
                    or (it is not None and it_old is not None and it > it_old))
         running = (row.get("running") or 0) > 0

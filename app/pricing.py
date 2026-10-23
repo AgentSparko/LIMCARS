@@ -61,7 +61,7 @@ def resolve(model: str | None) -> dict | None:
         if entry:
             break
     if not entry:
-        # token-level contains match, e.g. 'qwen38' inside 'qwen38flashnext'
+        # token-level contains match, e.g. 'qwen38flash' inside 'qwen38flashnext'
         for slug, e in models.items():
             ks = _norm(slug)
             for k in keys:

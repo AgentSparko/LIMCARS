@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import config
 from .sse import Broker
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 _START_T = time.time()
 
 # Panel settings — same spirit/keys as old LIMCARS dash_settings.json:
@@ -109,7 +109,7 @@ def _sse_format(topic: str, sid: int, data: str) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"limcars/{VERSION}"
+    server_version = f"limcars-next/{VERSION}"
     app: Limcars  # set on the class by serve()
 
     # ---------------- plumbing ----------------
@@ -564,7 +564,7 @@ def serve(cfg: dict) -> None:
     Handler.app = app
     httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]), Handler)
     httpd.daemon_threads = True
-    print(f"[limcars] serving on http://{cfg['host']}:{cfg['port']} "
+    print(f"[limcars-next] serving on http://{cfg['host']}:{cfg['port']} "
           f"(engines: {[s.id for s in app.engines.all()]})")
     try:
         httpd.serve_forever()

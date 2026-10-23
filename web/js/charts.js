@@ -1,4 +1,4 @@
-// LIMCARS chart engine — hand-rolled SVG, zero dependencies.
+// LIMCARS-NEXT chart engine — hand-rolled SVG, zero dependencies.
 // Philosophy borrowed from TandemLLM's dashboard: lightweight vector
 // charts, hover to inspect, and the house rule ORANGE IS NOW — the newest
 // point is always the accent color; series colors stay quiet.
