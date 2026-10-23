@@ -41,8 +41,8 @@ the TandemLLM house rule: **orange is now**.
 ./scripts/start.sh                      # foreground, port 8951
 LIMCARS_PORT=8990 ./scripts/start.sh    # override port
 # systemd:
-sudo cp scripts/limcars-next.service /etc/systemd/system/
-sudo systemctl enable --now limcars-next
+sudo cp scripts/limcars-next@.service /etc/systemd/system/
+sudo systemctl enable --now limcars-next@$(whoami)
 ```
 
 ## Config

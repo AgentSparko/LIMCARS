@@ -1,0 +1,18 @@
+[Unit]
+Description=LIMCARS live inference observability (2 Hz sampler + SSE dash) — instance for user %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/projects/limcars-next
+ExecStart=/usr/bin/env bash /home/%i/projects/limcars-next/scripts/start.sh
+Restart=on-failure
+RestartSec=3
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
+# Usage: systemctl enable --now limcars-next@<youruser>.service
+# (adjust WorkingDirectory if the repo does not live under /home/<user>)
