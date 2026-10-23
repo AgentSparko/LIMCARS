@@ -76,7 +76,12 @@ const SIDE_TILES = [
   ['GPU clock', h => [h.gpu_clock_mhz != null ? num(h.gpu_clock_mhz) + ' MHz' : '–']],
   ['Unified RAM', h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–']],
   ['SSD free', h => [h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–']],
-  ['Net traffic', h => [h.net_r_mbs != null ? `↓${h.net_r_mbs.toFixed(2)} MB/s ↑${(h.net_w_mbs ?? 0).toFixed(2)} MB/s` : '–']],
+  // duo/wide: down and up shown side by side in a full-row tile (user ask:
+  // not stacked — one after another, double width)
+  ['Net traffic', h => h.net_r_mbs != null
+      ? [`↓ ${h.net_r_mbs.toFixed(2)} MB/s`, `↑ ${(h.net_w_mbs ?? 0).toFixed(2)} MB/s`]
+      : ['–', '–'],
+    { duo: true, wide: true }],
 ];
 
 const pct = v => v != null ? v.toFixed(1) + '%' : '–';
@@ -126,8 +131,8 @@ function buildCards() {
     hero.appendChild(el);
     cardRefs.push({ el, d, hero: true, v: el.querySelector('.v'), sub: el.querySelector('.sub'), sp: el.querySelector('.spark') });
   }
-  document.querySelector('#side-tiles').innerHTML = SIDE_TILES.map(([l]) =>
-    `<div class="st"><div class="l">${l}</div><div class="v">–</div></div>`).join('');
+  document.querySelector('#side-tiles').innerHTML = SIDE_TILES.map(([l, , opt]) =>
+    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"><div class="l">${l}</div><div class="v">–</div></div>`).join('');
   const p = state.pricing;
   document.querySelector('#pricing-note').textContent = p
     ? `· vs ${p.display_name || p.slug || 'API'} @ $${p.cache_write} w / $${p.cache_read} read / $${p.output} out per Mtok` +
@@ -385,7 +390,13 @@ function refresh() {
   // side tiles
   const h = hwLatest();
   document.querySelectorAll('#side-tiles .st').forEach((el, i) => {
-    el.querySelector('.v').textContent = SIDE_TILES[i][1](h)[0];
+    const vals = SIDE_TILES[i][1](h);
+    const vEl = el.querySelector('.v');
+    if (SIDE_TILES[i][2]?.duo) {
+      vEl.innerHTML = vals.map(s => `<span>${s}</span>`).join('');
+    } else {
+      vEl.textContent = vals[0];
+    }
   });
   // chart current values — hold last reading, dimmed, when stream blanks
   for (const card of state.charts) {
