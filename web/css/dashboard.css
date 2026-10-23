@@ -13,8 +13,13 @@
    tint, sentence text instead of a mono number */
 #bub-potential .bubble { grid-column: 1 / -1; border-color: rgba(224, 176, 64, .45); }
 #bub-potential .bubble .label {
-  font-size: 13.5px; font-weight: 700; color: #e0b040;
-  letter-spacing: .02em; white-space: normal; margin-bottom: 6px; }
+  font-size: 14px; font-weight: 700; color: #e0b040;
+  letter-spacing: .02em; white-space: normal; margin-bottom: 6px; line-height: 1.5; }
+#bub-potential .bubble .label .pot-loss {
+  color: #ffd75e; font-weight: 800; font-size: 17.5px;
+  text-shadow: 0 0 14px rgba(255, 215, 94, .35); }
+html[data-theme="light"] #bub-potential .bubble .label .pot-loss {
+  color: #d97706; text-shadow: none; }
 #bub-potential .bubble .value.pot-text {
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   font-size: 13.5px; font-weight: 500; line-height: 1.55;

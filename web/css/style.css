@@ -9,7 +9,7 @@
   --line: #1f2735;
   --text: #dce3ee;
   --muted: #7f8ca3;
-  --sub: #9aa7bd;   /* bubble microcopy: brighter than --muted, readable on panels */
+  --sub: #b7c3d8;   /* bubble microcopy: brighter than --muted, readable on panels */
   --accent: #ff8c1a;        /* "now" orange */
   --orange: var(--accent);  /* legacy hooks (traces btn, checkboxes) follow
                                the palette — they used to fall back to a
@@ -71,10 +71,10 @@ h2.section { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; 
   padding: 10px 12px 6px; min-width: 0; position: relative; overflow: hidden;
   container-type: inline-size;
 }
-.bubble .label { font-size: 12px; color: var(--sub, var(--muted)); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bubble .label { font-size: 12.5px; color: var(--sub, var(--muted)); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bubble .value { font: 700 clamp(15px, 12cqi, 24px)/1.2 var(--mono); margin-top: 2px; white-space: nowrap; overflow: hidden; }
 .bubble .value .unit { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 3px; }
-.bubble .sub { font-size: 12px; line-height: 1.35; color: var(--sub, var(--muted)); min-height: 15px; }
+.bubble .sub { font-size: 13px; line-height: 1.35; color: var(--sub, var(--muted)); min-height: 15px; }
 .bubble .sub b { color: var(--text); font-weight: 600; }
 .bubble svg.spark { display: block; width: 100%; height: 30px; margin-top: 2px; }
 .bubble.alert { border-color: #5b2333; }
@@ -86,7 +86,7 @@ h2.section { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; 
 .chart-card.wide { grid-column: 1 / -1; }
 .chart-card .head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .chart-card .head .title { font-size: 13px; font-weight: 600; }
-.chart-card .head .legend { display: flex; gap: 12px; margin-left: auto; font-size: 12px; color: var(--sub, var(--muted)); }
+.chart-card .head .legend { display: flex; gap: 12px; margin-left: auto; font-size: 12.5px; color: var(--sub, var(--muted)); }
 .chart-card .head .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
 .chart-card svg { display: block; width: 100%; }
 .chart-tip {
@@ -111,7 +111,7 @@ table.data td { padding: 6px 8px; border-bottom: 1px solid #161d29; font-family:
 html[data-theme="light"] {
   --bg: #f2f5fa; --panel: #ffffff; --panel-2: #e9edf5; --line: #d7dde9;
   --text: #1a2231; --muted: #5b6a84;
-  --sub: #46536b;
+  --sub: #3d4c66;
 }
 html[data-theme="light"] .btn:hover, html[data-theme="light"] .pill:hover { border-color: #9fb0c9; }
 html[data-theme="light"] .bubble { box-shadow: 0 1px 3px rgba(20, 30, 50, .09); }

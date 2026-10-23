@@ -32,7 +32,7 @@ const BUBS = {
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.kv_pct),
       sub: l => l.kv_pool_tokens
-        ? `${(l.kv_used_tokens ?? 0).toLocaleString()} / ${l.kv_pool_tokens.toLocaleString()} tok used · ${(l.kv_free_tokens ?? 0).toLocaleString()} free`
+        ? `${fmtK(l.kv_used_tokens ?? 0)} / ${fmtK(l.kv_pool_tokens)} tok used · ${fmtK(l.kv_free_tokens ?? 0)} free`
         : '% of token pool' },
     { label: 'Running reqs', series: 'running', color: () => COLORS.green,
       sparkFmt: v => String(Math.round(v)),
@@ -340,7 +340,7 @@ function refresh() {
         ? '$' + sv[ref.d.savings].toLocaleString('en-US', { maximumFractionDigits: sv[ref.d.savings] < 100 ? 2 : 0 })
         : '–';
       ref.sub.textContent = sv && sv.tokens
-        ? `${sv.basis} · ${(sv.tokens.prompt / 1000).toFixed(1)}k in + ${(sv.tokens.cached / 1000).toFixed(1)}k cached + ${(sv.tokens.gen / 1000).toFixed(1)}k gen · ${sv.refreshed_at ? new Date(sv.refreshed_at * 1000).toTimeString().slice(0, 8) : '–'}`
+        ? `${sv.basis} · ${fmtK(sv.tokens.prompt)} in + ${fmtK(sv.tokens.cached)} cached + ${fmtK(sv.tokens.gen)} gen`
         : 'collecting first minute…';
     }
     else { ref.v.textContent = ref.d.main(l); ref.sub.textContent = ref.d.sub ? ref.d.sub(l) : ''; }
@@ -762,8 +762,8 @@ async function renderInfo() {
   const t = document.querySelector('#info-tbl');
   if (!d.healthy) { t.innerHTML = `<tr><td class="muted">${escH(String(d.error || 'offline'))}</td></tr>`; return; }
   const rows = [['Model', d.model], ['Version', d.version],
-    ['Context window', d.ctx ? d.ctx.toLocaleString() + ' tok' : '–'],
-    ['KV pool', d.pool_tokens ? d.pool_tokens.toLocaleString() + ' tok' + (d.num_gpu_blocks ? ` · ${d.num_gpu_blocks.toLocaleString()} blocks × ${d.block_size}` : '') : '–'],
+    ['Context window', d.ctx ? fmtK(d.ctx) + ' tok' : '–'],
+    ['KV pool', d.pool_tokens ? fmtK(d.pool_tokens) + ' tok' + (d.num_gpu_blocks ? ` · ${d.num_gpu_blocks.toLocaleString()} blocks × ${d.block_size}` : '') : '–'],
     ['KV dtype', d.kv_dtype], ['Speculative', d.spec + ' · K=' + (d.draft_k ?? '–')],
     ['Accept rate', d.accept_rate != null ? d.accept_rate + '%' : '–'],
   ].map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${escH(String(v ?? '–'))}</td></tr>`).join('');
@@ -1178,10 +1178,14 @@ async function renderLostPotential() {
   // then CAPACITY projections (best hour scaled to month/year — the old
   // dash's "600M tokens a day" basis), then what was actually used.
   // title says the alert; body = one sentence per row (user layout request)
+  // title = warning + the money hook (user: eye-catching, bigger $ figure);
+  // the rest are plain sentences, one per row
   const sent = [];
-  if (d.loss_year_cost != null && d.loss_year_cost > 0)
-    sent.push('Your token usage rate makes you lose ' + fmtUsd0(d.loss_year_cost) +
-      ' USD a year!');
+  let titleHtml = '⚠️ Attention! Lost potential detected.';
+  if (d.loss_year_cost != null && d.loss_year_cost > 0) {
+    titleHtml += ' — Your token usage rate makes you leave on the table ' +
+      '<span class="pot-loss">' + fmtUsd0(d.loss_year_cost) + ' USD</span> a year!';
+  }
   sent.push(escH(d.model) + ' was recorded doing up to ' +
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
     'use barely ' + pct + ' of that for the ' + d.period_days +
@@ -1210,7 +1214,7 @@ async function renderLostPotential() {
     ' tokens · total ' + fmtTokShort(d.total_tokens) + ' over ' +
     d.recorded_days + ' days';
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
-    '"><div class="label">⚠️ Attention! Lost potential detected.</div><div class="value pot-text">' +
+    '"><div class="label">' + titleHtml + '</div><div class="value pot-text">' +
     msg + '</div></div>';
 }
 renderSavingsChart(); setInterval(renderSavingsChart, 60000);
