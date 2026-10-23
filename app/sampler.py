@@ -1,0 +1,600 @@
+"""Engine sampler — the heart of LIMCARS.
+
+One thread per engine, ticking `live_hz` times a second, polling the
+engine's Prometheus /metrics and turning CUMULATIVE counters into honest
+near-real-time rates by differencing:
+
+    decode_tps_now   Δgeneration_tokens_total / Δt        (1/2 s resolution)
+    prefill_tps_now  Δprompt_tokens_total   / Δt          (charged at request
+                                                          completion → spiky;
+                                                          the *window* number
+                                                          below is the truth)
+    prefill_tps_avg  Σ(Δprompt − Δprefix_hits) / ΣΔprefill_time over window_s
+                     (uncached tokens per second of ACTUAL prefill compute)
+    decode_tps_avg   ΣΔgen    / ΣΔt over window_s
+    cache_hit_pct    Δprefix_hits / Δprefix_queries over window_s
+    spec_accept_pct  Δaccepted / Δdraft over window_s
+    ttft_p50_ms …    linear-interpolated quantiles over the DELTA of histogram
+                     buckets since window_s ago (Prometheus method) — so the
+                     chart reflects only the last window, not process lifetime
+
+Why this beats the old dash: the old Streamlit rings advanced only while a
+browser held the page open and were trimmed to 180 s, so info bubbles
+"sampled every 3 minutes". Here the sampler thread runs unconditionally at
+`live_hz`; a chart opened cold gets the ring snapshot then live SSE ticks.
+
+Counter reset (engine restart) is detected by Δ < 0 → that tick reads None
+and baselines are rebuilt, never a negative rate or a fake spike.
+"""
+from __future__ import annotations
+
+from collections import deque
+import json
+import re
+import threading
+import time
+import urllib.request
+
+from . import dialects, prom
+from .rings import Ring
+from .sse import Broker
+
+
+class EngineSampler(threading.Thread):
+    daemon = True
+
+    def __init__(self, cfg: dict, eng: dict, broker: Broker, store=None):
+        super().__init__(name=f"sampler-{eng['id']}", daemon=True)
+        self.cfg, self.eng = cfg, eng
+        self.id = eng["id"]
+        self.url = eng["url"].rstrip("/")
+        self.broker = broker
+        self.store = store
+        self.hz = float(cfg.get("live_hz", 2.0))
+        self.window_s = float(cfg.get("window_s", 30.0))
+        self.ring = Ring(float(cfg.get("ring_seconds", 900)))
+        self.alive = False
+        self.last_scrape = 0.0
+        self.kind = eng.get("kind")
+        self.model = None
+        self._prev: dict | None = None          # counters at last tick
+        self._prev_t = 0.0
+        self._hist_prev: dict[str, tuple] = {}  # logical -> hist state at last tick
+        self._hist_base: dict[str, list] = {}   # logical -> [(t, state)...] window ago
+        self._hist_snap_t = 0.0
+        self._counter_win: dict[str, list] = {} # logical -> [(t, delta)] ring-ish list
+        self._pf_last_sum = None                 # last prefill_time hist sum (per-tick activity)
+        self._pf_last_move = 0.0                 # when prefill_time sum last advanced
+        self._gen_last_move = 0.0                # when gen_tokens last advanced
+        self._peak: deque[tuple[float, float]] = deque()
+        # 1-minute counter deltas over the last hour -> median rates for the
+        # savings bubbles (user rule: median of last hour, refresh 1/min —
+        # a live-ticking dollar figure is jitter theatre)
+        self._rate_min: deque[dict] = deque(maxlen=60)
+        self._first_seen: float = 0.0
+        self._min_acc: dict = {"dec": [], "spec": []}
+        self._rate_prev: dict | None = None
+        self._rate_prev_t = 0.0
+        self._savings_cache: dict | None = None
+        self._stop = threading.Event()
+        self.started = time.time()
+        self._persist_acc: list[tuple[float, dict]] = []
+        self.topic = f"engine:{self.id}"
+
+    # ---------------- public ----------------
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _median_hit(self, row: dict):
+        return self._hour_median("cache_hit_pct", row.get("cache_hit_pct"))
+
+    def _hour_median(self, key: str, fallback):
+        """Median of a per-tick series over the last hour (user rule: hour
+        median, not the twitchy 30 s window value)."""
+        vals = sorted(r.get(key) for _, r in self.ring.window(3600)
+                      if r.get(key) is not None)
+        if len(vals) < 5:
+            return fallback
+        n = len(vals)
+        return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+
+    def snapshot(self, seconds: float | None = None) -> dict:
+        rows = self.ring.all() if seconds is None else self.ring.window(seconds)
+        return {
+            "id": self.id, "url": self.url, "kind": self.kind, "model": self.model,
+            "alive": self.alive, "last_scrape": self.last_scrape,
+            "proc_start": getattr(self, "proc_start_t", None),
+            "hz": self.hz, "window_s": self.window_s,
+            "latest": self.ring.last(),
+            "series": {k: [[t, r.get(k)] for t, r in rows] for k in
+                       ("prefill_tps_now", "decode_tps_now", "prefill_tps_avg",
+                        "decode_tps_avg", "running", "waiting", "kv_pct",
+                        "kv_pool_tokens", "kv_used_tokens", "kv_free_tokens",
+                        "ttft_p50_ms", "itl_p50_ms", "queue_time_p50_ms", "e2e_p50_ms",
+                        "cache_hit_pct", "cache_hit_life_pct",
+                        "spec_accept_pct", "spec_accept_len", "draft_tok_per_step",
+                        "prompt_total", "gen_total", "gen_peak", "requests_total",
+                        "savings_day", "savings_month", "savings_year",
+                        "e2e_med_1h", "e2e_life_avg_ms")},
+        }
+
+    # ---------------- thread ----------------
+
+    def run(self) -> None:
+        interval = 1.0 / max(0.5, self.hz)
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            try:
+                self._tick()
+            except Exception as exc:  # noqa: BLE001 — sampler must never die
+                self._fail(exc)
+            # publish at most once per tick even on failure (last row stays alive)
+            sleep = interval - (time.monotonic() - t0)
+            if sleep > 0:
+                self._stop.wait(sleep)
+
+    def _fetch(self, path: str, timeout: float = 1.5) -> bytes:
+        req = urllib.request.Request(self.url + path,
+                                     headers={"User-Agent": "limcars/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
+            return r.read()
+
+    def _tick(self) -> None:
+        body = self._fetch("/metrics").decode("utf-8", "replace")
+        now = time.time()
+        # KV pool size (tokens) is static config — parse once: the bubble then
+        # can show used/free in TOKENS, not just percent
+        if getattr(self, "_kv_pool", None) is None:
+            m_nb = re.search(r'num_gpu_blocks="(\d+)"', body)
+            m_bs = re.search(r'block_size="(\d+)"', body)
+            if m_nb and m_bs:
+                self._kv_pool = int(m_nb.group(1)) * int(m_bs.group(1))
+        series = prom.parse(body)
+        if not self.kind:
+            self.kind = dialects.detect(body) or "vllm"
+            self.broker.publish("events", json.dumps(
+                {"t": now, "type": "engine_kind", "engine": self.id, "kind": self.kind}))
+        if not self.model:
+            try:
+                models = json.loads(self._fetch("/v1/models", timeout=3.0))
+                self.model = (models.get("data") or [{}])[0].get("id")
+            except Exception:  # noqa: BLE001 — cosmetic only
+                self.model = None
+        dial = dialects.DIALECTS.get(self.kind, dialects.VLLM)
+
+        gauges = dialects.read_gauges(series, dial)
+        counters = dialects.read_counters(series, dial)
+        hists = dialects.read_hists(series, dial)
+
+        dt = now - self._prev_t if self._prev is not None else 0.0
+        prev = self._prev or {}
+
+        row: dict[str, object] = {
+            "running": gauges.get("running"),
+            "waiting": gauges.get("waiting"),
+            "kv_pct": (gauges.get("kv_pct") or 0.0) * 100 if gauges.get("kv_pct") is not None else None,
+            "requests_total": counters.get("req_success"),
+        }
+
+        # --- instantaneous rates (counter difference over this tick) ---
+        # decode_tps_now is continuous and honest (tokens credited per step);
+        # prefill_tps_now is a completion-burst value — used only as bubble
+        # detail, never as the chart's main prefill line (see below).
+        for logical, key in (("prompt_tokens", "prefill_tps_now"),
+                             ("gen_tokens", "decode_tps_now")):
+            cur, old = counters.get(logical), prev.get(logical)
+            if cur is None or old is None or dt <= 0:
+                row[key] = None
+            elif cur < old:                      # counter reset → rebuild baseline
+                row[key] = None
+                self._reset_baseline(now, counters, hists)
+            else:
+                row[key] = (cur - old) / dt
+            self._win_delta(logical, cur, old, now, dt)
+        for logical in ("drafts", "draft_tokens", "accepted_tokens",
+                        "prefix_hits", "prefix_queries"):
+            self._win_delta(logical, counters.get(logical), prev.get(logical), now, dt)
+
+        # --- window averages ---
+        # Prefill truth: vLLM charges prompt_tokens at request COMPLETION, so a
+        # raw counter difference over one tick plots an impossible spike
+        # (e.g. 127k tokens in 0.5 s). The honest prefill speed is
+        #     Δprompt_tokens / Δprefill_time_sum   over the window —
+        # tokens actually spent per second the engine WAS prefilling.
+        prefill_true = None
+        pd = self._win_sum("prompt_tokens")
+        cd = self._win_sum("prefix_hits")
+        # prompt_tokens_total counts prefix-CACHED tokens too (~90 % here);
+        # prefill_time only counts COMPUTE time — dividing the two inflated
+        # prefill speed ~10x (50k tok/s vs the engine's real ~2.5k). The
+        # honest numerator is uncached prompt tokens only. STRICT: if the
+        # cached window is missing (metrics gap / counter-reset rebuild) the
+        # subtraction would silently inflate — report None instead, the
+        # bubble holds last value rather than lying.
+        uncached = None if (pd is None or cd is None) else max(0.0, pd - cd)
+        hd = self._hist_delta("prefill_time")
+        if hd and hd[1] > 0 and uncached is not None and uncached > 0:
+            rate = uncached / hd[1]
+            if rate <= 12000:          # implausible → counter skew (prompt
+                prefill_true = rate    # deltas are completion-charged); real
+                                       # peak measured on this box is ~7.5k
+        if prefill_true is None:
+            fr = self._win_rate("prompt_tokens")
+            cr = self._win_rate("prefix_hits")
+            row["prefill_tps_avg"] = (
+                max(0.0, fr - cr) if fr is not None and cr is not None else None)
+        else:
+            row["prefill_tps_avg"] = prefill_true
+        # prefill activity. No metric advances per-tick *during* a prefill
+        # (prefix queries charge once at admission; request_prefill_time and
+        # prompt_tokens fire at completion; iteration hist only logs decode
+        # steps). So: admission edge (queries moved) OR "engine holds
+        # running requests yet neither gen tokens nor iterations moved this
+        # tick" = prefill compute in flight. Sticky 1.5 s against 2 Hz flicker.
+        pq, pq_old = counters.get("prefix_queries"), prev.get("prefix_queries")
+        gt, gt_old = counters.get("gen_tokens"), prev.get("gen_tokens")
+        it, it_old = counters.get("iterations"), prev.get("iterations")
+        admitted = pq is not None and pq_old is not None and pq > pq_old
+        stepped = ((gt is not None and gt_old is not None and gt > gt_old)
+                   or (it is not None and it_old is not None and it > it_old))
+        running = (row.get("running") or 0) > 0
+        if admitted or (running and not stepped):
+            self._pf_last_move = now
+        row["prefill_active"] = (now - self._pf_last_move) < 1.5
+        if (row.get("decode_tps_now") or 0) > 0:
+            self._gen_last_move = now
+        row["decode_active"] = (now - self._gen_last_move) < 1.5
+        row["decode_tps_avg"] = self._win_rate("gen_tokens")
+        row["cache_hit_pct"] = self._win_ratio("prefix_hits", "prefix_queries", scale=100.0)
+        row["spec_accept_pct"] = self._win_ratio("accepted_tokens", "draft_tokens", scale=100.0)
+
+        # --- histogram window quantiles ---
+        self._hist_snapshot(now, hists)
+        for logical in ("ttft", "itl", "prefill_time", "decode_time", "queue_time", "e2e"):
+            p50 = self._hist_quantile(logical, 0.50)
+            avg = self._hist_avg(logical)
+            row[f"{logical}_p50_ms"] = p50 * 1000 if p50 is not None else None
+            row[f"{logical}_avg_ms"] = avg * 1000 if avg is not None else None
+        # e2e smoothing (old LIMCARS gauge basis): cumulative histogram
+        # mean = sum/count over the engine's WHOLE life — inherently slow
+        # moving like the old dash; plus an hour-median of the p50 samples.
+        st = hists.get("e2e")
+        row["e2e_life_avg_ms"] = (st[1] / st[2] * 1000) if st and st[2] else None
+        row["e2e_med_1h"] = self._hour_median("e2e_p50_ms", row.get("e2e_p50_ms"))
+
+        # --- request completion events (count jump) ---
+        cur_rs = counters.get("req_success")
+        if cur_rs is not None and prev.get("req_success") is not None and cur_rs > prev["req_success"]:
+            self.broker.publish("requests", json.dumps({
+                "t": now, "engine": self.id,
+                "completed": int(cur_rs - prev["req_success"]),
+                "running": row["running"], "waiting": row["waiting"]}))
+
+        # --- Classic-dash extras: lifetime totals, spec internals, peak ---
+        row["prompt_total"] = counters.get("prompt_tokens")
+        row["gen_total"] = counters.get("gen_tokens")
+        q = counters.get("prefix_queries")
+        h = counters.get("prefix_hits")
+        if q and h is not None and q > 0:
+            row["cache_hit_life_pct"] = 100.0 * h / q
+        d_drafts = self._win_sum("drafts")
+        d_dtok = self._win_sum("draft_tokens")
+        d_acc = self._win_sum("accepted_tokens")
+        if d_drafts and d_drafts > 0:
+            row["draft_tok_per_step"] = (d_dtok or 0) / d_drafts
+            row["spec_accept_len"] = 1.0 + (d_acc or 0) / d_drafts
+        # peak decode over the last hour (Classic "Gen speed peak")
+        dnow = row.get("decode_tps_now")
+        self._peak.append((now, dnow if dnow and dnow > 0 else 0.0))
+        cutoff = now - 3600
+        while self._peak and self._peak[0][0] < cutoff:
+            self._peak.popleft()
+        row["gen_peak"] = max((v for _, v in self._peak), default=None) or None
+
+        # --- savings: old-LIMCARS basis, recomputed once a minute ---
+        self._min_acc["dec"].append(dnow if dnow and dnow > 0 else 0.0)
+        if row.get("spec_accept_len") is not None:
+            self._min_acc["spec"].append(row["spec_accept_len"])
+        self._rate_minute(now, counters)
+        if (self._savings_cache is None
+                or now - self._savings_cache.get("refreshed_at", 0) >= 60.0):
+            self._savings_cache = self._compute_savings(now, counters)
+        row["savings"] = self._savings_cache
+        if self._savings_cache:      # numeric copies -> ring/SSE series so the
+            row["savings_day"] = self._savings_cache.get("day")        # savings
+            row["savings_month"] = self._savings_cache.get("month")    # bubbles get
+            row["savings_year"] = self._savings_cache.get("year")      # sparklines
+        pool = getattr(self, "_kv_pool", None)
+        row["kv_pool_tokens"] = pool
+        if pool and row.get("kv_pct") is not None:
+            used = round(pool * row["kv_pct"] / 100.0)
+            row["kv_used_tokens"] = used
+            row["kv_free_tokens"] = pool - used
+        ps = counters.get("proc_start")
+        if ps:
+            self.proc_start_t = ps
+        row["cache_hit_med_1h"] = self._median_hit(row)
+
+        self._prev = counters
+        self._prev_t = now
+        self.alive = True
+        self.last_scrape = now
+        if not self._first_seen:
+            self._first_seen = now
+
+        self.ring.append(row, now)
+        self.broker.publish(self.topic, json.dumps({"t": now, **row}))
+
+        # persist one row per second (downsample, keeps sqlite small)
+        if not self._persist_acc or now - self._persist_acc[-1][0] >= 1.0:
+            self._persist_acc.append((now, row))
+            if self.store and len(self._persist_acc) >= 4:
+                rows, self._persist_acc = self._persist_acc, []
+                self.store.save_engine_samples(self.id, rows)
+
+    # --- savings bubbles: hourly median rates, 1/min refresh ---
+
+    def _rate_minute(self, now: float, counters: dict) -> None:
+        """Close a 1-minute bucket of counter deltas every 60 s. Buckets are
+        persisted (366 d) — they power BOTH the savings rate and the
+        windowed Token counters report (1h/1d/7d/1mo/1y/all)."""
+        cur_p, cur_g = counters.get("prompt_tokens"), counters.get("gen_tokens")
+        cur_c = counters.get("cached_tokens") or 0.0
+        cur_r = counters.get("req_success") or 0.0
+        cur_i = counters.get("iterations") or 0.0
+        if cur_p is None or cur_g is None:
+            return
+        base = {"prompt_tokens": cur_p, "gen_tokens": cur_g, "cached_tokens": cur_c,
+                "req_success": cur_r, "iterations": cur_i}
+        if self._rate_prev is None:
+            # Restore last-seen absolutes from SQLite: the engine kept
+            # serving while limcars was down/restarting — a fresh baseline
+            # would permanently swallow that traffic (observed 9x undercount
+            # of prompt tokens vs engine truth across a day of restarts).
+            saved = self.store.get_counter_raw(self.id) if self.store else None
+            if (saved and now - saved[0] < 86400
+                    and all(float(saved[1].get(k, 0)) <= v + 1e-6
+                            for k, v in base.items())):
+                self._rate_prev = {k: float(saved[1].get(k, v)) for k, v in base.items()}
+                self._rate_prev_t = saved[0]
+            else:
+                # First-ever tracking run: credit the engine's lifetime totals
+                # in a seed bucket parked just OUTSIDE the 1 h window — old-dash
+                # all-time semantics are engine-lifetime, not tracker uptime —
+                # without inflating current-hour rates or the savings rate basis.
+                if self.store and self.store.counter_totals(self.id, None).get("empty"):
+                    self.store.save_counter_bucket(self.id, int(now - 3660), {
+                        "prompt": cur_p, "cached": cur_c, "gen": cur_g,
+                        "reqs": cur_r, "iters": cur_i, "dec_min": None,
+                        "dec_peak": None, "spec_sum": None, "spec_n": 0})
+                self._rate_prev = base
+                self._rate_prev_t = now
+            return
+        if now - self._rate_prev_t < 60.0:
+            return
+        dt = now - self._rate_prev_t
+        dp = cur_p - self._rate_prev["prompt_tokens"]
+        dg = cur_g - self._rate_prev["gen_tokens"]
+        dc = cur_c - self._rate_prev.get("cached_tokens", cur_c)
+        dr = cur_r - self._rate_prev.get("req_success", cur_r)
+        di = cur_i - self._rate_prev.get("iterations", cur_i)
+        if dp < 0 or dg < 0 or dc < 0:              # engine restart → rebuild base
+            self._rate_prev = base
+            self._rate_prev_t = now
+            self._rate_min.clear()
+            self._min_acc = {"dec": [], "spec": []}
+            return
+        if self.store:      # keep durable baseline for restart-gap absorption
+            self.store.save_counter_raw(self.id, now, base)
+        dec, spec = self._min_acc["dec"], self._min_acc["spec"]
+        self._min_acc = {"dec": [], "spec": []}
+        # raw deltas per minute; cached_tokens counts prompt tokens served
+        # from prefix cache (billed at the cheaper cache-READ rate, old basis)
+        self._rate_min.append({"t": now, "prompt_raw": dp, "cached_raw": max(0, dc),
+                               "gen_raw": dg})
+        cutoff = now - 3600
+        while self._rate_min and self._rate_min[0]["t"] < cutoff:
+            self._rate_min.popleft()
+        if self.store:
+            self.store.save_counter_bucket(self.id, int(self._rate_prev_t // 60) * 60, {
+                "prompt": max(0, dp), "cached": max(0, dc), "gen": max(0, dg),
+                "reqs": max(0, dr), "iters": max(0, di),
+                "dec_min": min([v for v in dec if v > 0], default=None),
+                "dec_peak": max(dec, default=None),
+                "spec_sum": sum(spec), "spec_n": len(spec)})
+        self._rate_prev = base
+        self._rate_prev_t = now
+
+    @staticmethod
+    def _median(vals: list[float]) -> float | None:
+        if not vals:
+            return None
+        vals = sorted(vals)
+        n = len(vals)
+        mid = n // 2
+        return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
+
+    def _compute_savings(self, now: float, counters: dict) -> dict | None:
+        """Cost of the same tokens via cloud API. IDENTICAL code path to the
+        Token counters report (pricing.effective_price + pricing.hot_costs +
+        store.last_active_hour) so the bubbles and the report can never
+        disagree. $/day-mo-yr = perHour x 24 / 730 / 8760. Refresh 1/min."""
+        from . import pricing as pricing_mod
+        price = pricing_mod.effective_price(self.model, self.cfg.get("pricing"))
+        if not price or not (price.get("output") or price.get("cache_write")
+                             or price.get("input")):
+            return None
+        ah = self.store.last_active_hour(self.id) if self.store else {"empty": True}
+        if not ah.get("empty") and (ah["prompt"] + ah["cached"] + ah["gen"]) > 0:
+            sum_p, sum_c, sum_g = ah["prompt"], ah["cached"], ah["gen"]
+            per_hour = pricing_mod.hot_costs(sum_p, sum_c, sum_g, price)["hot"]
+            basis = f"last active hour · {ah.get('buckets', 0)} min-buckets"
+            samples = ah.get("buckets", 0)
+        else:
+            # fallback: lifetime counters / engine uptime. Baseline MUST be
+            # the engine's own start (process_start_time_seconds) — using the
+            # sampler's fresh _first_seen would divide days of tokens by
+            # minutes and print a fantasy $/year.
+            sum_p = counters.get("prompt_tokens") or 0.0
+            sum_c = counters.get("cached_tokens") or 0.0
+            sum_g = counters.get("gen_tokens") or 0.0
+            if sum_p + sum_c + sum_g <= 0:
+                return None
+            base = counters.get("proc_start")
+            if not base or base <= 0 or base >= now:
+                base = self._first_seen
+            if not base or now - base < 300:      # nothing tracked long yet
+                return None
+            hrs = max(0.05, (now - base) / 3600.0)
+            per_hour = pricing_mod.hot_costs(sum_p, sum_c, sum_g, price)["hot"] / hrs
+            basis = f"lifetime ÷ {hrs:.1f} h (no active hour yet)"
+            samples = 0
+        return {"per_hour": round(per_hour, 4),
+                "day": round(per_hour * 24, 2),
+                "month": round(per_hour * 730, 2),
+                "year": round(per_hour * 8760, 2),
+                "tokens": {"prompt": int(sum_p), "cached": int(sum_c), "gen": int(sum_g)},
+                "basis": basis,
+                "price": {k: price.get(k) for k in
+                          ("input", "cache_write", "cache_read", "cache_read_hot", "output")}
+                | {"name": price.get("display_name"), "slug": price.get("slug"),
+                   "source": price.get("source"), "provider": price.get("provider")},
+                "samples": samples, "refreshed_at": now}
+
+    def _fail(self, exc: Exception) -> None:
+        now = time.time()
+        was_alive = self.alive
+        self.alive = False
+        if was_alive:
+            self.broker.publish("events", json.dumps(
+                {"t": now, "type": "engine_down", "engine": self.id, "error": str(exc)[:200]}))
+        self._prev, self._prev_t = None, 0.0
+        self._reset_baseline(now, {}, {})
+
+    def _reset_baseline(self, now: float, counters: dict, hists: dict) -> None:
+        self._prev = dict(counters) if counters else None
+        self._prev_t = now
+        self._hist_prev = {}
+        self._hist_base = {}
+        self._counter_win = {}
+        self._pf_last_sum = None
+        self._pf_last_move = 0.0
+        self._gen_last_move = 0.0
+
+    # --- windowed counter deltas ---
+
+    def _win_delta(self, logical: str, cur, old, now: float, dt: float) -> None:
+        if cur is None or old is None or dt <= 0 or cur < old:
+            return
+        win = self._counter_win.setdefault(logical, [])
+        win.append((now, cur - old, dt))
+        cutoff = now - self.window_s * 1.25
+        while win and win[0][0] < cutoff:
+            win.pop(0)
+
+    def _win_rate(self, logical: str) -> float | None:
+        tot_dt = self._win_span(logical)
+        s = self._win_sum(logical)
+        if s is None or not tot_dt:
+            return None
+        return s / tot_dt
+
+    def _win_sum(self, logical: str) -> float | None:
+        win = self._counter_win.get(logical)
+        if not win:
+            return None
+        now = time.time()
+        vals = [d for t, d, _ in win if t >= now - self.window_s]
+        return sum(vals) if vals else None
+
+    def _win_span(self, logical: str) -> float | None:
+        win = self._counter_win.get(logical)
+        if not win:
+            return None
+        now = time.time()
+        tot = sum(dt for t, _, dt in win if t >= now - self.window_s)
+        return tot or None
+
+    def _win_ratio(self, num_logical: str, den_logical: str, scale: float = 1.0) -> float | None:
+        num, den = self._counter_win.get(num_logical), self._counter_win.get(den_logical)
+        if not den:
+            return None
+        now = time.time()
+        n = sum(d for t, d, _ in (num or []) if t >= now - self.window_s)
+        dd = sum(d for t, d, _ in den if t >= now - self.window_s)
+        if dd <= 0:
+            return None
+        return max(0.0, min(100.0, scale * n / dd))
+
+    # --- histogram windowing ---
+
+    def _hist_snapshot(self, now: float, hists: dict) -> None:
+        """Every ~0.5 s record the current cumulative hist state; the window
+        baseline is the state from window_s ago (bucket deltas are exact)."""
+        if now - self._hist_snap_t < 0.5:
+            return
+        self._hist_snap_t = now
+        for logical, state in hists.items():
+            if state is None:
+                continue
+            base = self._hist_base.setdefault(logical, [])
+            base.append((now, state))
+            cutoff = now - self.window_s * 1.25
+            while base and base[0][0] < cutoff:
+                base.pop(0)
+            self._hist_prev[logical] = state
+
+    def _hist_delta(self, logical: str):
+        cur = self._hist_prev.get(logical)
+        base = self._hist_base.get(logical)
+        if not cur or not base:
+            return None
+        old_state = base[0][1]
+        (cur_b, cur_s, cur_c) = cur
+        (old_b, old_s, old_c) = old_state
+        if not cur_b or len(cur_b) != len(old_b):
+            return None
+        try:
+            d_buckets = [(ub, max(0.0, c - oc)) for (ub, c), (_, oc) in zip(cur_b, old_b)]
+            d_sum, d_count = cur_s - old_s, cur_c - old_c
+        except TypeError:
+            return None
+        if d_count <= 0:
+            return None
+        return d_buckets, d_sum, d_count
+
+    def _hist_quantile(self, logical: str, q: float) -> float | None:
+        d = self._hist_delta(logical)
+        return prom.quantile(d[0], q) if d else None
+
+    def _hist_avg(self, logical: str) -> float | None:
+        d = self._hist_delta(logical)
+        return d[1] / d[2] if d else None
+
+
+class EngineManager:
+    """Owns the per-engine sampler threads; supports hot reconfigure."""
+
+    def __init__(self, cfg: dict, broker: Broker, store=None):
+        self.cfg, self.broker, self.store = cfg, broker, store
+        self.samplers: dict[str, EngineSampler] = {}
+        self._lock = threading.Lock()
+        for eng in cfg.get("engines", []):
+            self._start(eng)
+
+    def _start(self, eng: dict) -> None:
+        s = EngineSampler(self.cfg, eng, self.broker, self.store)
+        self.samplers[eng["id"]] = s
+        s.start()
+
+    def get(self, engine_id: str) -> EngineSampler | None:
+        with self._lock:
+            return self.samplers.get(engine_id)
+
+    def all(self) -> list[EngineSampler]:
+        with self._lock:
+            return list(self.samplers.values())
+
+    def snapshots(self, seconds: float | None = None) -> dict:
+        return {s.id: s.snapshot(seconds) for s in self.all()}

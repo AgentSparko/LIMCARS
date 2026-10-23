@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes Traces · LIMCARS</title>
+<link rel="stylesheet" href="style.css?v=8">
+<script>
+/* Theme: ?theme=light|dark arrives from the dash embed (follows the
+   benchtheme cookie); otherwise localStorage; otherwise dark. Runs
+   before first paint so there is no flash. */
+(function () {
+  try {
+    var q = new URLSearchParams(location.search).get('theme');
+    var t = (q === 'light' || q === 'dark') ? q :
+            (localStorage.getItem('sw-theme') || 'dark');
+    if (t === 'light') document.documentElement.classList.add('lt');
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+<header id="topbar">
+  <button id="backBtn" aria-label="Back to batch list" hidden>&larr;</button>
+  <div class="brand"><span class="logo">▚</span> HERMES&nbsp;TRACES</div>
+  <a id="homeLink" href="/" title="Back to LIMCARS dashboard"
+     style="color:#9fb0c8;text-decoration:none;font-size:12px;padding:4px 10px;border:1px solid #2a3b58;border-radius:6px;white-space:nowrap"
+     onclick="if(top!==self){top.postMessage('sw-close','*');return false}">← Dashboard</a>
+  <input id="searchBox" type="search" placeholder="search loaded transcripts…" autocomplete="off" spellcheck="false">
+  <label class="switch"><input type="checkbox" id="runningOnly"><span class="sl"></span>running</label>
+  <button id="themeBtn" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
+  <button id="closeBtn" title="Close (embedded view only)" aria-label="Close" hidden>&times;</button>
+  <button id="refreshBtn" title="Reload batches & logs">&#x21bb;</button>
+</header>
+
+<div id="layout">
+  <aside id="batchPanel">
+    <div id="batchHead">
+      <span id="batchStats" class="stats"></span>
+      <span id="liveCount" class="stats live" hidden></span>
+    </div>
+    <div id="batchList"></div>
+  </aside>
+
+  <main id="mainPanel">
+    <div id="placeholder" class="placeholder">
+      <div class="ph-kicker">hermes · delegate_task</div>
+      <h2>Live transcripts of every subagent</h2>
+      <p>Every batch on the left is one <code>delegate_task</code> fan-out — each task is one
+         subagent whose <b>thinking, tool calls and results</b> stream here in real time.
+         Pick a batch, then a task.</p>
+      <div class="ph-hint" id="phHint"></div>
+    </div>
+
+    <div id="taskView" hidden>
+      <div id="taskHead">
+        <div class="th-row1">
+          <span id="taskTitle" class="th-title"></span>
+          <span id="taskStatus" class="pill"></span>
+          <button id="followBtn" class="follow-btn" title="Keep the latest content in view (auto-follow + auto-scroll)">◉ keep latest in view</button>
+          <button id="exportBtn" class="follow-btn" title="Download the open transcript as a .txt file">⭳ export</button>
+          <span id="taskElapsed" class="th-elapsed"></span>
+        </div>
+        <div id="taskGoal" class="th-goal"></div>
+        <div id="taskMeta" class="th-meta"></div>
+      </div>
+
+      <div id="searchHits" hidden></div>
+
+      <div id="timeline"></div>
+
+      <div id="summaryBox" hidden>
+        <div class="sum-head">Final summary</div>
+        <pre id="summaryPre"></pre>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="app.js?v=8"></script>
+</body>
+</html>

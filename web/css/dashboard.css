@@ -1,0 +1,72 @@
+/* Classic layout — sidebar + main, dense card grid */
+.dash-layout { display: grid; grid-template-columns: 300px 1fr; gap: 14px; max-width: 1720px; margin: 0 auto; padding: 14px 18px 48px; }
+@media (max-width: 1000px) { .dash-layout { grid-template-columns: 1fr; } }
+.side { display: flex; flex-direction: column; gap: 10px; }
+.side-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.side-tiles .st { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px 6px; }
+.side-tiles .st .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.side-tiles .st .v { font: 700 19px/1.3 var(--mono); }
+.side-chart .head { margin-bottom: 2px; }
+.pill.tiny { font-size: 9.5px; padding: 3px 7px; }
+.pill.tiny.on { color: var(--accent); border-color: #6b4a1f; }
+.cur { font: 600 12px var(--mono); color: var(--muted); margin-left: 4px; }
+.probe-box { margin-top: 12px; }
+.probe-out { font: 13px/1.55 var(--mono); margin-top: 8px; word-break: break-word; }
+.probe-out b { color: var(--text); font-weight: 700; }
+.main { min-width: 0; }
+.cards.hero { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 1400px) { .cards.hero { grid-template-columns: repeat(3, 1fr); } }
+.bub-group { margin-top: 6px; }
+.bub-group h2.section { margin: 16px 0 8px; }
+#charts-grid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1300px) { #charts-grid { grid-template-columns: 1fr; } }
+
+/* sidebar panel settings (old dash_settings parity) */
+.side-h{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted,#7d8ba3);margin:14px 0 6px;font-weight:700}
+.side-lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted,#7d8ba3);margin:8px 0 4px}
+.side-ck{display:flex;align-items:center;gap:7px;font-size:12px;padding:2.5px 0;cursor:pointer;color:#c6d2e3}
+.side-ck input{accent-color:var(--orange,#ff8c3a)}
+.side-tiles{grid-template-columns:1fr 1fr}
+
+/* tokens-per-session bars */
+.st-row{display:flex;align-items:center;gap:8px;padding:2.5px 0;font-size:11.5px}
+.st-lbl{flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c6d2e3}
+.st-bar{flex:1;display:flex;height:9px;background:#131d30;border-radius:2px;overflow:hidden}
+.st-bar i{display:block;height:100%}
+.st-val{flex:0 0 auto;color:#9fb0c8;font-size:11px}
+
+/* traces toggle state */
+.traces-btn.on{background:var(--orange,#ff8c3a);color:#0b111c;border-color:var(--orange,#ff8c3a);font-weight:700}
+
+/* hold-last dimming: value stays visible but muted when stream went quiet */
+.bubble.stale .v, .bubble.stale .sub{opacity:.45}
+.bubble.stale .spark{opacity:.35}
+.cur.stale{opacity:.45}
+
+/* ---- recipe server ---- */
+.rec-overlay { position: fixed; inset: 0; background: rgba(4,10,20,.72);
+  display: flex; align-items: center; justify-content: center; z-index: 120; }
+.rec-modal { width: min(780px, 94vw); max-height: 86vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 16px 18px; box-shadow: 0 18px 60px rgba(0,0,0,.55); }
+.rec-h { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+.rec-modal .inp { width: 100%; background: #0b1322; border: 1px solid var(--line);
+  color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.rec-modal textarea.inp { font-size: 12px; line-height: 1.5; resize: vertical; }
+.rec-emoji { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.rec-e { background: #0b1322; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 17px; padding: 3px 7px; cursor: pointer; line-height: 1.3; }
+.rec-e:hover { border-color: var(--accent); }
+.rec-msg { margin-top: 6px; min-height: 16px; }
+.rec-row { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 10px; margin-top: 8px; }
+.rec-top { display: flex; align-items: center; gap: 7px; }
+.rec-name { font-weight: 600; font-size: 13px; }
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5568; flex: none; }
+.rec-dot.on { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,.55); }
+.rec-sub { margin: 2px 0 6px 15px; }
+.rec-btns { display: flex; gap: 6px; }
+.btn.tiny { padding: 3px 14px; font-size: 12px; width: auto; }
+.rec-mrow { display: flex; align-items: center; gap: 8px; padding: 7px 4px;
+  border-bottom: 1px solid var(--line); }
+.rec-mname { font-weight: 600; }
