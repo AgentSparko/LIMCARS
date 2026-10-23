@@ -1,0 +1,236 @@
+{
+ ".config": [
+  "app/__main__.py"
+ ],
+ ".server": [
+  "app/__main__.py"
+ ],
+ "__future__": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/config.py",
+  "app/counters.py",
+  "app/dialects.py",
+  "app/engine_info.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/prom.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/session_tokens.py",
+  "app/sse.py",
+  "app/store.py",
+  "app/swatch.py"
+ ],
+ "hashlib": [
+  "app/auth.py"
+ ],
+ "hmac": [
+  "app/auth.py"
+ ],
+ "json": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/config.py",
+  "app/engine_info.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/recipes.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/store.py",
+  "app/swatch.py"
+ ],
+ "os": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/config.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/recipes.py",
+  "app/session_tokens.py",
+  "app/swatch.py"
+ ],
+ "secrets": [
+  "app/auth.py"
+ ],
+ "threading": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/sse.py",
+  "app/store.py"
+ ],
+ "time": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/counters.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/probe.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/session_tokens.py",
+  "app/sse.py",
+  "app/store.py",
+  "app/swatch.py",
+  "tests/test_core.py",
+  "tests/test_sampler.py"
+ ],
+ "collections": [
+  "app/clients.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/sse.py"
+ ],
+ "pathlib": [
+  "app/clients.py",
+  "app/config.py",
+  "app/pricing.py",
+  "app/server.py",
+  "app/session_tokens.py",
+  "app/swatch.py"
+ ],
+ "sqlite3": [
+  "app/clients.py",
+  "app/session_tokens.py",
+  "app/store.py",
+  "app/swatch.py"
+ ],
+ ".": [
+  "app/counters.py",
+  "app/dialects.py",
+  "app/sampler.py",
+  "app/server.py"
+ ],
+ "bisect": [
+  "app/counters.py"
+ ],
+ "glob": [
+  "app/engine_info.py"
+ ],
+ "re": [
+  "app/engine_info.py",
+  "app/live_engines.py",
+  "app/pricing.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/session_tokens.py",
+  "app/swatch.py"
+ ],
+ "urllib.request": [
+  "app/engine_info.py",
+  "app/live_engines.py",
+  "app/probe.py",
+  "app/sampler.py"
+ ],
+ ".rings": [
+  "app/hw.py",
+  "app/sampler.py"
+ ],
+ "psutil": [
+  "app/hw.py"
+ ],
+ "shutil": [
+  "app/hw.py"
+ ],
+ "subprocess": [
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/recipes.py",
+  "app/services.py"
+ ],
+ "signal": [
+  "app/live_engines.py",
+  "app/recipes.py"
+ ],
+ "uuid": [
+  "app/recipes.py"
+ ],
+ ".sse": [
+  "app/sampler.py",
+  "app/server.py"
+ ],
+ ".auth": [
+  "app/server.py"
+ ],
+ ".clients": [
+  "app/server.py"
+ ],
+ ".hw": [
+  "app/server.py"
+ ],
+ ".live_engines": [
+  "app/server.py"
+ ],
+ ".recipes": [
+  "app/server.py"
+ ],
+ ".sampler": [
+  "app/server.py"
+ ],
+ ".services": [
+  "app/server.py"
+ ],
+ ".store": [
+  "app/server.py"
+ ],
+ "http.server": [
+  "app/server.py"
+ ],
+ "mimetypes": [
+  "app/server.py"
+ ],
+ "posixpath": [
+  "app/server.py"
+ ],
+ "urllib.parse": [
+  "app/server.py"
+ ],
+ "shlex": [
+  "app/services.py"
+ ],
+ "itertools": [
+  "app/sse.py"
+ ],
+ "queue": [
+  "app/sse.py",
+  "tests/test_core.py"
+ ],
+ "app.auth": [
+  "tests/test_auth.py"
+ ],
+ "app": [
+  "tests/test_core.py",
+  "tests/test_dialects.py"
+ ],
+ "app.sse": [
+  "tests/test_core.py",
+  "tests/test_sampler.py"
+ ],
+ "pytest": [
+  "tests/test_dialects.py"
+ ],
+ "app.sampler": [
+  "tests/test_sampler.py"
+ ],
+ "./charts.js?v=20261023h": [
+  "web/js/dashboard.js"
+ ]
+}
