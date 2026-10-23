@@ -12,6 +12,9 @@
 /* lost potential: one full-row strip under the savings bubbles, amber-alert
    tint, sentence text instead of a mono number */
 #bub-potential .bubble { grid-column: 1 / -1; border-color: rgba(224, 176, 64, .45); }
+#bub-potential .bubble .label {
+  font-size: 13.5px; font-weight: 700; color: #e0b040;
+  letter-spacing: .02em; white-space: normal; margin-bottom: 6px; }
 #bub-potential .bubble .value.pot-text {
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   font-size: 13.5px; font-weight: 500; line-height: 1.55;

@@ -586,7 +586,7 @@ async function connect() {
 
 const CNT_TABS = [['1h','1 hour'],['1d','1 day'],['7d','7 days'],['1mo','1 month'],['1y','1 year'],['all','All time']];
 let cntLabel = 'all';
-const fmtK = v => v == null ? '–' : v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'k' : String(Math.round(v));
+const fmtK = v => v == null ? '–' : v >= 1e9 ? (v/1e9).toFixed(2)+'B' : v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'k' : String(Math.round(v));
 const usd = v => v == null || !isFinite(v) ? '–' : '$' + (v < 1 ? v.toFixed(4) : v < 100 ? v.toFixed(2) : v.toLocaleString('en-US',{maximumFractionDigits:2}));
 
 async function renderCounters() {
@@ -1051,20 +1051,25 @@ function applyTheme() {
   // chosen color. 'default'/unset keeps the exact house navy.
   const bgKey = uiPrefs.bg;
   if (bgKey && bgKey !== 'default' && PALETTES[bgKey]) {
-    const [h, s] = hexToHsl(PALETTES[bgKey]);
-    const ss = Math.min(s, .65);
-    const tint = (sat, l) => hslToHex(h, sat, l);
+    const n = parseInt(PALETTES[bgKey].slice(1), 16);
+    const cr = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    // mix the swatch itself into the house surfaces: grey swatch -> grey
+    // page, green swatch -> green page. Weight = how present the color is.
+    const mix = (base, w) => '#' + base.map((c0, i) =>
+      Math.round(c0 * (1 - w) + cr[i] * w).toString(16).padStart(2, '0')).join('');
     if (mode === 'light') {
-      rs.setProperty('--bg', tint(ss * .52, .940));
-      rs.setProperty('--panel', tint(ss * .34, .985));
-      rs.setProperty('--panel-2', tint(ss * .44, .962));
-      const line = tint(ss * .40, .868);
+      rs.setProperty('--bg', mix([242, 245, 250], .18));
+      rs.setProperty('--panel', mix([255, 255, 255], .10));
+      rs.setProperty('--panel-2', mix([233, 237, 245], .15));
+      const line = mix([215, 221, 233], .38);
       rs.setProperty('--line', line); COLORS.grid = line;
     } else {
-      rs.setProperty('--bg', tint(ss * .60, .062));
-      rs.setProperty('--panel', tint(ss * .52, .108));
-      rs.setProperty('--panel-2', tint(ss * .56, .085));
-      const line = tint(ss * .46, .178);
+      // weights ordered so panels stay LIGHTER than the page (card
+      // separation) while still reading as the chosen color
+      rs.setProperty('--bg', mix([11, 14, 19], .20));
+      rs.setProperty('--panel', mix([18, 23, 34], .30));
+      rs.setProperty('--panel-2', mix([15, 20, 29], .25));
+      const line = mix([31, 39, 53], .45);
       rs.setProperty('--line', line); COLORS.grid = line;
     }
   } else {
@@ -1172,17 +1177,20 @@ async function renderLostPotential() {
   // 8760 minus the year at recorded pace), then demonstrated peak rate,
   // then CAPACITY projections (best hour scaled to month/year — the old
   // dash's "600M tokens a day" basis), then what was actually used.
-  let msg = '⚠️ Attention! Lost potential detected. ';
+  // title says the alert; body = one sentence per row (user layout request)
+  const sent = [];
   if (d.loss_year_cost != null && d.loss_year_cost > 0)
-    msg += 'Your token usage rate makes you lose ' + fmtUsd0(d.loss_year_cost) +
-      ' USD a year! ';
-  msg += escH(d.model) + ' was recorded doing up to ' +
+    sent.push('Your token usage rate makes you lose ' + fmtUsd0(d.loss_year_cost) +
+      ' USD a year!');
+  sent.push(escH(d.model) + ' was recorded doing up to ' +
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
     'use barely ' + pct + ' of that for the ' + d.period_days +
-    '-day recorded period. This model is projected to do ' +
+    '-day recorded period.');
+  sent.push('This model is projected to do ' +
     fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
-    fmtTokShort(d.proj_year_tokens) + '/year. Over the ' + d.recorded_days +
-    ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.';
+    fmtTokShort(d.proj_year_tokens) + '/year.');
+  sent.push('Over the ' + d.recorded_days +
+    ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.');
   if (d.best_hour_cost != null) {
     // measured only for windows we actually watched; anything longer is a
     // pace-based projection, labeled as such (user rule: never claim a
@@ -1194,14 +1202,15 @@ async function renderLostPotential() {
     else if (d.proj_month_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_month_cost) + '/month');
     if (d.best_year_cost != null) parts.push('best year ' + fmtUsd0(d.best_year_cost) + ' (measured)');
     else if (d.proj_year_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_year_cost) + '/year');
-    msg += ' Historic savings registered: ' + parts.join(', ') +
-      ' — so put this baby to work!';
+    sent.push('Historic savings registered: ' + parts.join(', ') +
+      ' — so put this baby to work!');
   }
+  const msg = sent.join('<br>');
   const title = 'avg recorded hour ' + fmtTokShort(d.avg_hour_tokens) +
     ' tokens · total ' + fmtTokShort(d.total_tokens) + ' over ' +
     d.recorded_days + ' days';
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
-    '"><div class="label">Lost potential</div><div class="value pot-text">' +
+    '"><div class="label">⚠️ Attention! Lost potential detected.</div><div class="value pot-text">' +
     msg + '</div></div>';
 }
 renderSavingsChart(); setInterval(renderSavingsChart, 60000);

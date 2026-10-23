@@ -3,5 +3,3 @@ data/server.log
 __pycache__/
 .pytest_cache/
 data/auth.json
-
-.codemap/
