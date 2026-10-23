@@ -1,0 +1,16 @@
+[Unit]
+Description=LIMCARS-NEXT live inference observability (2 Hz sampler + SSE dash)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=a
+WorkingDirectory=/home/a/projects/limcars-next
+ExecStart=/usr/bin/env bash /home/a/projects/limcars-next/scripts/start.sh
+Restart=on-failure
+RestartSec=3
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
