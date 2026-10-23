@@ -62,6 +62,10 @@ is built around three rules:
 - Per-model prompt/cached/generation ledger in 1-minute buckets, 366-day
   retention; cache-hit %, "tokens saved by cache", projected $/day and
   $/year from the last active hour.
+- Daily money-saved chart (week / month / 3-month / year switch): one color
+  per model, hover for per-model cost + write/read/decode token split,
+  all-model totals; built from real persisted usage only (synthetic seed
+  buckets excluded).
 - Market pricing resolution (`data/pricing.json`, OpenRouter-style) with a
   manual override editor.
 
@@ -121,6 +125,7 @@ prompt bills ~10× less prefill compute than raw counters suggest.
 | `/api/history?engine=&seconds=` | GET | SQLite downsampled history |
 | `/api/events` | GET | SSE stream: `engine:*`, `hw`, `requests`, `events` |
 | `/api/counters` | GET | token ledger windows (1h/1d/7d/1mo/1y/all) |
+| `/api/savings-history?days=7\|30\|92\|365` | GET | per-UTC-day per-model $ + tokens (daily chart) |
 | `/api/engine-info` | GET | engine fingerprint + KV cache config |
 | `/api/session-tokens` · `/api/clients` | GET | per-session / per-client token charts |
 | `/api/settings` | GET/POST | shared panel settings |
@@ -138,8 +143,10 @@ prompt bills ~10× less prefill compute than raw counters suggest.
   recipe add/edit/delete and Hermes Trace **data**; static shells, the
   dashboard, Start/Stop, probe and settings stay open for convenience.
 - Escalating per-IP lockout: 3 wrong → 60 s, 6 → 5 min, 9 → 30 min,
-  12 → 2 h; a success resets the ladder. Password stored salted-SHA-256,
-  compared in constant time (`data/auth.json`).
+  12 → 2 h; a success resets the ladder. Lockout check + verify + ladder
+  bump happen in one atomic step (no check-then-act race). Password stored
+  as salted **scrypt** (`s2:` format; legacy SHA-256 entries keep verifying
+  until reset), compared in constant time (`data/auth.json`).
 - Accepted via `X-Limcars-Pw` header or `?pw=` query (iframe / new-tab flow).
 - Localhost is the admin domain (exempt from the gate). Bind
   `LIMCARS_HOST=127.0.0.1` to keep it single-user.
