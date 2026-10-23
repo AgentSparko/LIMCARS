@@ -74,9 +74,15 @@ sessions exist on the box)
 | Engine | Status |
 |---|---|
 | vLLM (v1) | full — counters, histograms, KV cache config, spec-decode internals |
-| SGLang / llama.cpp / TandemLLM-family | basic dialects; contributions welcome |
+| SGLang | full — incl. `realtime_tokens_total{mode=prefill}` true live prefill rate |
+| exl3 | full — counters + `prefill/generate_seconds` exact pairing |
+| TensorFold | full — dual-name families, spec-decode (mtp/spec_decode), histograms |
+| llama.cpp | basic — running/deferred, prompt/predicted tokens |
+| TandemLLM-family | basic — inflight gauge + token/request counters |
 
-Missing metrics degrade to `–`, never to fake zeros.
+Engine kind is auto-detected per scrape from the `/metrics` exposition — no
+configuration needed to switch or mix engines. Missing metrics degrade to `–`,
+never to fake zeros.
 
 ## Requirements
 

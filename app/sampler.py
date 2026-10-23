@@ -221,7 +221,7 @@ class EngineSampler(threading.Thread):
                 prefill_true = rate    # deltas are completion-charged); real
                                        # peak measured on this box is ~7.5k
         if prefill_true is None:
-            # Engine-native paths (ported from the TandemDash adapter family):
+            # Engine-native paths (ported from the dashboard adapter reference):
             # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
             # DURING prefill — a true live rate, no completion attribution.
             rt = self._win_rate("prefill_tokens")

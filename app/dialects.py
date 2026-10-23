@@ -26,7 +26,7 @@ Map value forms (per logical):
     ["metric_name", "alt_name"]                 first non-null wins
     ["metric_name", {"mode": "prefill*"}]       label match; trailing * = prefix
 
-Metric-name sources ported from TandemDash-Fork proxy/adapters/ (vllm, sglang,
+Metric-name sources ported from probe-verified dashboard adapters proxy/adapters/ (vllm, sglang,
 exl3, tensorfold), whose family names were verified against each upstream's
 metrics_collector. A missing signal reads None ("–") in the UI, never a wrong
 number.
