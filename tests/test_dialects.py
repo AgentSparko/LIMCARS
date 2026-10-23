@@ -1,5 +1,5 @@
 """Dialect tests: each engine family's /metrics body must be detected AND
-mapped to the right logical signals. Metric names ported from probe-verified dashboard adapters
+mapped to the right logical signals. Metric names ported from TandemDash-Fork
 adapters; bodies here are trimmed to the fields the sampler consumes."""
 import pytest
 

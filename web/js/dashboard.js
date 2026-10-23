@@ -691,6 +691,7 @@ document.addEventListener('keydown', e => {
 const SET_OPTS = {
   bubbles_main: 'Bubbles · main strip',
   bubbles_savings: 'Bubbles · cost-savings',
+  bubbles_potential: 'Bubbles · lost potential',
   charts_infer: 'Charts · infer (KV/PP/gen)',
   chart_per_client: 'Chart · per-client context',
   chart_per_model: 'Table · stats by model',
@@ -706,6 +707,7 @@ function applySettings(s) {
   };
   hide('#bub-main', sideSettings.bubbles_main === false, '.bub-group');
   hide('#bub-savings', sideSettings.bubbles_savings === false, '.bub-group');
+  hide('#bub-potential', sideSettings.bubbles_potential === false, '.bub-group');
   hide('#charts-grid', sideSettings.charts_infer === false);
   hide('#mtbl', sideSettings.chart_per_model === false, '.chart-card');
   hide('#sav-card', sideSettings.chart_savings_daily === false);
@@ -936,7 +938,52 @@ document.querySelectorAll('#sav-seg [data-days]').forEach(b =>
   }));
 
 // boot extras
+// ---------------- lost potential bubble ----------------
+// One wide strip under the cost-savings row: what this model demonstrated
+// it can do in its best day/month/year vs what the recorded history
+// actually used. Numbers come from /api/lost-potential (60 s server cache).
+const fmtTokShort = n => {
+  if (n == null || !isFinite(n)) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+};
+const fmtUsd0 = n => n == null || !isFinite(n) ? null
+  : '$' + Math.round(n).toLocaleString('en-US');
+async function renderLostPotential() {
+  const host = document.getElementById('bub-potential');
+  if (!host) return;
+  const grp = host.closest('.bub-group');
+  if (sideSettings.bubbles_potential === false) { if (grp) grp.style.display = 'none'; return; }
+  let d = null;
+  try { d = await (await fetch('/api/lost-potential')).json(); } catch (e) { return; }
+  if (!d || !d.ok) { if (grp) grp.style.display = 'none'; host.innerHTML = ''; return; }
+  if (grp) grp.style.display = '';
+  const pct = d.pct_day == null ? '—' : d.pct_day + '%';
+  let msg = '⚠️ Attention! Lost potential detected. ' + escH(d.model) +
+    ' is capable of ' + fmtTokShort(d.peak_day_tokens) + ' tokens a day and ' +
+    'historically you use barely ' + pct + ' of that — ' +
+    fmtTokShort(d.avg_month_tokens) + ' tokens/month or ' +
+    fmtTokShort(d.avg_year_tokens) + '/year over the ' + d.recorded_days +
+    ' recorded days (' + d.span_days + '-day period).';
+  const extra = [];
+  if (d.peak_day_cost != null) extra.push('best day ' + fmtUsd0(d.peak_day_cost));
+  if (d.peak_month_cost != null) extra.push('best month ' + fmtUsd0(d.peak_month_cost));
+  if (d.peak_year_cost != null) extra.push('best year ' + fmtUsd0(d.peak_year_cost));
+  if (extra.length) msg += ' Savings registered: ' + extra.join(', ') + '.';
+  const title = 'peak month ' + fmtTokShort(d.peak_month_tokens) + ' tokens (' +
+    (d.pct_month == null ? '—' : d.pct_month + '% used') + ') · peak year ' +
+    fmtTokShort(d.peak_year_tokens) + ' (' +
+    (d.pct_year == null ? '—' : d.pct_year + '% used') + ')';
+  host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
+    '"><div class="label">Lost potential</div><div class="value pot-text">' +
+    msg + '</div></div>';
+}
 renderSavingsChart(); setInterval(renderSavingsChart, 60000);
+renderLostPotential(); setInterval(renderLostPotential, 60000);
+// debug handle (module scope is otherwise unreachable from the console)
+window.__pot = {render: renderLostPotential, ss: () => sideSettings};
 renderCounters(); setInterval(renderCounters, 30000);
 renderInfo(); setInterval(renderInfo, 60000);
 setInterval(renderSessionTokens, 15000);

@@ -40,6 +40,7 @@ SETTINGS_DEFAULTS = {
     "bubbles_latency": True,
     "bubbles_spec": True,
     "bubbles_savings": True,    # cost-savings bubbles
+    "bubbles_potential": True,  # 'lost potential' wide bubble under savings
     "charts_infer": True,       # KV / prefill / decode chart row
     "charts_prom": True,        # TTFT / e2e / hit% chart row
     "chart_per_client": True,    # per-client context chart
@@ -94,6 +95,7 @@ class Limcars:
         from .live_engines import LiveEngines
         self.live_engines = LiveEngines()
         self._savhist_cache: dict[int, tuple] = {}   # days -> (ts, payload)
+        self._lostpot_cache: dict[str, tuple] = {}   # 'all' -> (ts, payload)
         from .clients import ClientSampler
         self.clients = ClientSampler(self.broker)
         self.clients.start()
@@ -113,7 +115,7 @@ def _sse_format(topic: str, sid: int, data: str) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"limcars/{VERSION}"
+    server_version = f"limcars-next/{VERSION}"
     app: Limcars  # set on the class by serve()
 
     # ---------------- plumbing ----------------
@@ -410,6 +412,21 @@ class Handler(BaseHTTPRequestHandler):
                 app.store, engines, app.cfg.get("pricing"), days)}
             cache[days] = (now, payload)
             return self._json(payload)
+        if path == "/api/lost-potential":
+            # 'lost potential' bubble: peak day/month/year vs recorded averages
+            from . import counters as counters_mod
+            cache = getattr(app, "_lostpot_cache", None)
+            if cache is None:
+                cache = app._lostpot_cache = {}
+            hit = cache.get("all")
+            now = time.time()
+            if hit and now - hit[0] < 60.0:
+                return self._json(hit[1])
+            engines = [{"id": s.id, "model": s.model} for s in app.engines.all()]
+            payload = counters_mod.lost_potential(
+                app.store, engines, app.cfg.get("pricing"))
+            cache["all"] = (now, payload)
+            return self._json(payload)
         m = re.fullmatch(r"/api/counters/?", path)
         if m:
             from . import counters as counters_mod
@@ -630,7 +647,7 @@ def serve(cfg: dict) -> None:
     Handler.app = app
     httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]), Handler)
     httpd.daemon_threads = True
-    print(f"[limcars] serving on http://{cfg['host']}:{cfg['port']} "
+    print(f"[limcars-next] serving on http://{cfg['host']}:{cfg['port']} "
           f"(engines: {[s.id for s in app.engines.all()]})")
     try:
         httpd.serve_forever()

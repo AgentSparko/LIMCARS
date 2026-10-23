@@ -168,3 +168,90 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
     return {"days": [{"day": d, "engines": e} for d, e in sorted(out_days.items())],
             "models": models, "days_n": days,
             "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok}}
+
+
+def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
+    """The 'lost potential' bubble: the best day / calendar-month / calendar-year
+    this engine ever recorded (non-synthetic buckets only) against the averages
+    over the RECORDED span — tokens and $ — and what % of its own demonstrated
+    capability the history actually uses. The engine with the biggest peak day
+    owns the headline: it is the one leaving the most on the table.
+    Averages divide by calendar months/years the record SPANS (not the number
+    that saw traffic), so a box idle for six months carries them like a slow
+    six months, which is the whole point of the bubble."""
+    from . import pricing as pricing_mod
+
+    def month_index(utc_day: int) -> int:
+        tm = time.gmtime(utc_day * 86400)
+        return tm.tm_year * 12 + tm.tm_mon - 1
+
+    def year_of(utc_day: int) -> int:
+        return time.gmtime(utc_day * 86400).tm_year
+
+    best = None
+    for eng in engines:
+        eid, model = eng["id"], eng.get("model")
+        rows = [(d, p, c, g) for d, p, c, g in store.daily_bucket_totals(eid, 0)]
+        rows = [(d, p, c, g) for d, p, c, g in rows if (p or 0) + (g or 0) > 0]
+        if len(rows) < 2:
+            continue          # one day is not a history
+        price = pricing_mod.effective_price(model, pricing_cfg) or {}
+        price = price if (price.get("output") or price.get("cache_write")
+                          or price.get("cache_read") or price.get("input")) else {}
+        day = {}
+        for d, p_, c_, g_ in rows:
+            tok = (p_ or 0) + (g_ or 0)
+            # $ saved == hot-tier bill for that traffic (local engine paid
+            # $0; same basis as every other $ figure on the dash)
+            cost = (pricing_mod.hot_costs(p_, c_, g_, price)["hot"]
+                    if price else None)
+            day[d] = (tok, cost)
+        keys = sorted(day)
+        span_days = keys[-1] - keys[0] + 1
+        tot_tok = sum(t for t, _ in day.values())
+        has_cost = any(c is not None for _, c in day.values())
+        tot_cost = sum(c for _, c in day.values() if c) if has_cost else None
+
+        def agg(keyfn, n_span, pick):
+            buckets: dict[int, float] = {}
+            for d in keys:
+                k = keyfn(d)
+                buckets[k] = buckets.get(k, 0.0) + pick(day[d])
+            tot = sum(buckets.values())
+            peak = max(buckets.values()) if buckets else 0.0
+            avg = tot / max(1, n_span)
+            return peak, avg, (round(100.0 * avg / peak, 1) if peak > 0 else None)
+
+        months = month_index(keys[-1]) - month_index(keys[0]) + 1
+        years = year_of(keys[-1]) - year_of(keys[0]) + 1
+        tok_pick = lambda v: v[0]
+        cost_pick = lambda v: v[1] or 0.0
+        peak_d = max(t for t, _ in day.values())
+        avg_d = tot_tok / span_days
+        cand = {
+            "engine": eid, "model": model or eid,
+            "recorded_days": len(keys), "span_days": span_days,
+            "months_spanned": months, "years_spanned": years,
+            "peak_day_tokens": round(peak_d),
+            "avg_day_tokens": round(avg_d),
+            "pct_day": round(100.0 * avg_d / peak_d, 1) if peak_d else None,
+        }
+        cand["peak_month_tokens"], cand["avg_month_tokens"], cand["pct_month"] = \
+            agg(month_index, months, tok_pick)
+        cand["peak_year_tokens"], cand["avg_year_tokens"], cand["pct_year"] = \
+            agg(year_of, years, tok_pick)
+        if has_cost:
+            cand["peak_day_cost"] = round(max(c for _, c in day.values() if c is not None), 2)
+            (cand["peak_month_cost"], cand["avg_month_cost"], cand["pct_month_cost"],
+             cand["peak_year_cost"], cand["avg_year_cost"], cand["pct_year_cost"]) = (
+                agg(month_index, months, cost_pick) + agg(year_of, years, cost_pick))
+        else:
+            cand.update({"peak_day_cost": None,
+                         "peak_month_cost": None, "avg_month_cost": None,
+                         "pct_month_cost": None, "peak_year_cost": None,
+                         "avg_year_cost": None, "pct_year_cost": None})
+        if best is None or cand["peak_day_tokens"] > best["peak_day_tokens"]:
+            best = cand
+    if best is None:
+        return {"ok": False}
+    return {"ok": True, **best}

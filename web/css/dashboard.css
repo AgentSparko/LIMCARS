@@ -9,6 +9,13 @@
 /* Net traffic: full-row tile, ↓ and ↑ side by side (user aesthetic ask) */
 .side-tiles .st.wide { grid-column: span 2; }
 .side-tiles .st.duo .v { display: flex; gap: 24px; white-space: nowrap; }
+/* lost potential: one full-row strip under the savings bubbles, amber-alert
+   tint, sentence text instead of a mono number */
+#bub-potential .bubble { grid-column: 1 / -1; border-color: rgba(224, 176, 64, .45); }
+#bub-potential .bubble .value.pot-text {
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  font-size: 13.5px; font-weight: 500; line-height: 1.55;
+  white-space: normal; overflow: visible; }
 .side-chart .head { margin-bottom: 2px; }
 .pill.tiny { font-size: 9.5px; padding: 3px 7px; }
 .pill.tiny.on { color: var(--accent); border-color: #6b4a1f; }

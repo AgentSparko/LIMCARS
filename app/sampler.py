@@ -136,7 +136,7 @@ class EngineSampler(threading.Thread):
 
     def _fetch(self, path: str, timeout: float = 1.5) -> bytes:
         req = urllib.request.Request(self.url + path,
-                                     headers={"User-Agent": "limcars/1.0"})
+                                     headers={"User-Agent": "limcars-next/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
             return r.read()
 
@@ -221,7 +221,7 @@ class EngineSampler(threading.Thread):
                 prefill_true = rate    # deltas are completion-charged); real
                                        # peak measured on this box is ~7.5k
         if prefill_true is None:
-            # Engine-native paths (ported from the probe-verified adapter family):
+            # Engine-native paths (ported from the TandemDash adapter family):
             # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
             # DURING prefill — a true live rate, no completion attribution.
             rt = self._win_rate("prefill_tokens")
