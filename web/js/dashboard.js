@@ -458,6 +458,7 @@ async function seed(reseedWindow = true) {
   }
   state.hw = snap.hw || {};
   for (const [k, rows] of Object.entries(snap.hw?.series || {})) state.store.seed(`hw.${k}`, rows);
+  state.lastHwSeed = Date.now();
   state.pricing = snap.pricing;
   if (reseedWindow) {
     buildCards();
@@ -468,12 +469,44 @@ async function seed(reseedWindow = true) {
   }
 }
 
+// Self-heal: hw series always exist server-side (ring history), so re-seeding
+// costs one cheap GET and NEVER restarts a chart from 0 — it backfills the
+// window the SSE stream missed (whitelist gaps, server restarts, zombie
+// sockets where reader.read() hangs forever without erroring).
+async function hwResync() {
+  try {
+    const snap = await (await fetch('/api/snapshot?seconds=210')).json();
+    if (snap && snap.hw && snap.hw.series)
+      for (const [k, rows] of Object.entries(snap.hw.series)) state.store.seed(`hw.${k}`, rows);
+    state.lastHwSeed = Date.now();
+  } catch { /* server briefly down — the 30 s watchdog retries */ }
+}
+setInterval(() => {
+  if (document.hidden) return;
+  const now = Date.now();
+  if (state.lastStreamMsg && now - state.lastStreamMsg > 90000) {
+    // zombie SSE stream (no events at all for 90 s though hw ticks every
+    // second): abort the fetch so the normal reconnect path fires
+    try { state.sseAbort && state.sseAbort.abort(); } catch { /* noop */ }
+    hwResync();
+  } else if (now - (state.lastHwSeed || 0) > 150000) {
+    hwResync();   // silent stall of just the hw topic: refill from rings
+  }
+}, 30000);
+
 const lastId = {};
 async function connect() {
   const topics = ['hw', 'requests', 'events', ...Object.keys(state.engines).map(id => `engine:${id}`)].join(',');
+  // self-heal on (re)connect: hw series come back from the SERVER rings, so a
+  // reconnect after a server restart or a dropped socket never starts charts
+  // from 0
+  hwResync();
+  const ac = new AbortController();
+  state.sseAbort = ac;
+  state.lastStreamMsg = Date.now();
   try {
     const res = await fetch(`/api/events?topics=${encodeURIComponent(topics)}`,
-                            { headers: { Accept: 'text/event-stream' } });
+                            { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
     document.querySelector('#conn-dot').className = 'dot up';
     document.querySelector('#conn-txt').textContent = 'live 2 Hz';
     const reader = res.body.getReader(); const dec = new TextDecoder();
@@ -481,6 +514,7 @@ async function connect() {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      state.lastStreamMsg = Date.now();
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf('\n\n')) >= 0) {
@@ -496,8 +530,12 @@ async function connect() {
         let o; try { o = JSON.parse(data); } catch { continue; }
         if (ev === 'hw') {
           state.hw.latest = o;
-          for (const k of ['cpu_pct','cpu_temp_c','gpu_util','gpu_temp_c','gpu_power_w','gpu_clock_mhz'])
-            state.store.push(`hw.${k}`, o.t, o[k]);
+          // push EVERY numeric hw key — the old 6-key whitelist omitted
+          // mem_used_gb, so the RAM chart only ever had its page-load seed
+          // and went blank once the 3-min window slid past it (user-caught:
+          // 'again the RAM chart does not SHOW the chart')
+          for (const [k, v] of Object.entries(o))
+            if (k !== 't' && typeof v === 'number') state.store.push(`hw.${k}`, o.t, v);
         } else if (ev.startsWith('engine:')) {
           const id_ = ev.slice(7);
           const e = state.engines[id_]; if (!e) continue;

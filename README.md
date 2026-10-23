@@ -12,7 +12,15 @@ launcher, and live Hermes agent-trace browsing.
 python3 -m app          # → http://localhost:8951
 ```
 
-![dashboard](docs/screenshot.png) <!-- optional; add later -->
+![LIMCARS — live bubbles, hardware sidebar and projected savings](docs/screenshots/1.jpg)
+
+| Live charts: decode/prefill speed, KV pool, spec accept, per-session & per-client context |
+|---|
+| ![charts](docs/screenshots/2.jpg) |
+
+| Stats by model & request completions | Token counters ledger & money saved |
+|---|---|
+| ![stats](docs/screenshots/3.jpg) | ![counters](docs/screenshots/4.jpg) |
 
 ## Why
 
