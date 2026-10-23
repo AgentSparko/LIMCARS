@@ -147,6 +147,8 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     a, b = m.groups()
     if a == "":
         n = int(b)
+        if n <= 0:                     # audit: bytes=-0 produced (size, size-1)
+            return None                # — an invalid range into the file reader
         return (max(0, size - n), size - 1) if size else (0, 0)
     start = int(a)
     end = min(int(b) if b else size - 1, size - 1)

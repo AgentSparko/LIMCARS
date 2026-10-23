@@ -15,6 +15,8 @@ SSE framing: `id:` per event so a dropped tab resumes with Last-Event-ID.
 from __future__ import annotations
 
 import json
+import hmac
+import logging
 import mimetypes
 import posixpath
 import re
@@ -109,7 +111,7 @@ def _sse_format(topic: str, sid: int, data: str) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"limcars-next/{VERSION}"
+    server_version = f"limcars/{VERSION}"
     app: Limcars  # set on the class by serve()
 
     # ---------------- plumbing ----------------
@@ -133,8 +135,9 @@ class Handler(BaseHTTPRequestHandler):
         tok = self.app.cfg.get("auth_token")
         if not tok:
             return True
-        return self.headers.get("X-Limcars-Token") == tok or \
-            self.headers.get("Authorization", "").removeprefix("Bearer ") == tok
+        given = self.headers.get("X-Limcars-Token") or \
+            self.headers.get("Authorization", "").removeprefix("Bearer ")
+        return hmac.compare_digest(given or "", tok)
 
     def _client_ip(self) -> str:
         return self.client_address[0] if self.client_address else "?"
@@ -149,19 +152,17 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_local() or not self.app.auth.enabled:
             return True
         ip = self._client_ip()
-        rem = self.app.auth.locked_for(ip)
+        pw = (self.headers.get("X-Limcars-Pw")
+              or self.headers.get("Authorization", "").removeprefix("Bearer "))
+        # single atomic gate (lockout check + verify + ladder in one lock hold)
+        ok, rem = self.app.auth.attempt(ip, pw)
+        if ok:
+            return True
         if rem > 0:
             self._json({"ok": False, "error": "locked",
                         "retry_after": round(rem, 1)}, code=423)
-            return False
-        pw = (self.headers.get("X-Limcars-Pw")
-              or self.headers.get("Authorization", "").removeprefix("Bearer "))
-        if self.app.auth.verify(pw):
-            self.app.auth.success(ip)
-            return True
-        lock = self.app.auth.failure(ip)
-        self._json({"ok": False, "error": "wrong password",
-                    "locked_for": lock}, code=401)
+        else:
+            self._json({"ok": False, "error": "wrong password"}, code=401)
         return False
 
     def _require_read_traces(self, qs: dict) -> bool:
@@ -172,20 +173,17 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_local() or not self.app.auth.enabled:
             return True
         ip = self._client_ip()
-        rem = self.app.auth.locked_for(ip)
-        if rem > 0:
-            self._json({"ok": False, "error": "locked",
-                        "retry_after": round(rem, 1)}, code=423)
-            return False
         pw = (self.headers.get("X-Limcars-Pw")
               or (qs.get("pw") or [""])[0]
               or self.headers.get("Authorization", "").removeprefix("Bearer "))
-        if self.app.auth.verify(pw):
-            self.app.auth.success(ip)
+        ok, rem = self.app.auth.attempt(ip, pw)
+        if ok:
             return True
-        lock = self.app.auth.failure(ip)
-        self._json({"ok": False, "error": "wrong password",
-                    "locked_for": lock}, code=401)
+        if rem > 0:
+            self._json({"ok": False, "error": "locked",
+                        "retry_after": round(rem, 1)}, code=423)
+        else:
+            self._json({"ok": False, "error": "wrong password"}, code=401)
         return False
 
     # ---------------- dispatch ----------------
@@ -211,13 +209,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path)
         except BrokenPipeError:
             pass
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            # audit: never echo exception text to remote clients (internals
+            # leak); the full traceback goes to the server log only
+            logging.getLogger("limcars").exception("GET %s failed", self.path)
             try:
-                self._err(500, f"{type(exc).__name__}: {exc}")
+                self._err(500, "internal error")
             except Exception:  # noqa: BLE001
                 pass
 
     def do_POST(self) -> None:  # noqa: N802
+        # audit: an unhandled exception in a POST branch used to escape to
+        # BaseHTTPRequestHandler (dropped connection, no response) — every
+        # client now gets a clean 500 and the traceback goes to the log
+        try:
+            self._dispatch_post()
+        except BrokenPipeError:
+            pass
+        except Exception:  # noqa: BLE001
+            logging.getLogger("limcars").exception("POST %s failed", self.path)
+            try:
+                self._err(500, "internal error")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _dispatch_post(self) -> None:
         u = urllib.parse.urlparse(self.path)
         if not u.path.startswith("/api/"):
             return self._err(404, "not found")
@@ -233,16 +249,14 @@ class Handler(BaseHTTPRequestHandler):
             gate = self.app.auth
             if gate.enabled and not self._is_local():
                 # changing an existing password over the network proves
-                # knowledge of it first (lockout ladder applies to guesses)
-                ip = self._client_ip()
-                rem = gate.locked_for(ip)
+                # knowledge of it first (atomic lockout ladder via attempt())
+                ok, rem = gate.attempt(self._client_ip(), cur or "")
                 if rem > 0:
                     return self._json({"ok": False, "error": "locked",
                                        "retry_after": round(rem, 1)}, code=423)
-                if not gate.verify(cur or ""):
-                    lock = gate.failure(ip)
-                    return self._json({"ok": False, "error": "wrong password",
-                                       "locked_for": lock}, code=401)
+                if not ok:
+                    return self._json({"ok": False, "error": "wrong password"},
+                                      code=401)
             return self._json({"ok": gate.set_password(new or None, cur)})
         # Password gate: recipe CONTENT only (add/edit/delete). Start/Stop,
         # engine stop, services, settings, pricing stay open for convenience
@@ -301,6 +315,10 @@ class Handler(BaseHTTPRequestHandler):
         """Read+parse a JSON POST body; sends 400 and returns None on failure."""
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            # audit: unbounded body read = one-POST OOM of the whole monitor
+            if n < 0 or n > 1_000_000:
+                self._err(413, "body too large")
+                return None
             body = json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             self._err(400, "bad json")
@@ -424,12 +442,28 @@ class Handler(BaseHTTPRequestHandler):
                 body[k] = min(30.0, max(0.5, float(body[k])))
         if "stats_scope" in body and body["stats_scope"] not in ("all", "active"):
             return self._err(400, "stats_scope: all|active")
+        # audit: settings must stay JSON scalars — nested values would crash
+        # the store's sort keys / sparklines with 500s for every reader
+        for k, v in body.items():
+            if v is not None and not isinstance(v, (str, int, float, bool)):
+                return self._err(400, f"{k}: scalar value expected")
         self.app.settings_update(body)
         self._json({"ok": True, "settings": self.app.settings_all()})
 
     def _sse(self, qs: dict) -> None:
         topics_wanted = (qs.get("topics") or [""])[0].split(",")
         wanted = {t for t in topics_wanted if t}
+        # audit: never create broker topics from client input — only names that
+        # already exist (engine:*/hw/requests/events), bounded per connection
+        import re as _re
+        known = set(self.app.broker._topics.keys())
+        bad = [t for t in wanted
+               if not _re.fullmatch(r"[A-Za-z0-9:_-]{1,64}", t)
+               or (t not in known and not t.startswith("engine:"))]
+        if len(wanted) > 32 or bad:
+            return self._err(400, "bad topics")
+        wanted = {t for t in wanted if t in known} or (
+            known or {"engine", "hw", "requests", "events"})
         last = self.headers.get("Last-Event-ID")  # "topic:seq"
         since: dict[str, int] = {}
         if last:
@@ -438,25 +472,31 @@ class Handler(BaseHTTPRequestHandler):
                 since[t_] = int(s_)
             except ValueError:
                 pass
+        app = self.app
+        subs = []
+        try:
+            for name in wanted:
+                topic = app.broker.topic(name)
+                q, backlog = topic.subscribe(since.get(name))
+                subs.append((name, topic, q, backlog))
+        except RuntimeError as exc:            # MAX_SUBS reached
+            for item in subs:
+                item[1].unsubscribe(item[2])
+            return self._err(503, str(exc))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
-        subs = []
-        app = self.app
-        for name in (wanted or list(app.broker._topics.keys()) or ["engine", "hw", "requests", "events"]):
-            topic = app.broker.topic(name)
-            q, backlog = topic.subscribe(since.get(name))
+        for name, topic, q, backlog in subs:
             for sid, data in backlog:
                 self.wfile.write(_sse_format(name, sid, data))
-            subs.append((name, topic, q))
         self.wfile.flush()
         idle = 0.0
         try:
             while True:
                 got = False
-                for name, topic, q in subs:
+                for name, topic, q, _bl in subs:
                     try:
                         while True:
                             sid, data = q.get_nowait()
@@ -475,7 +515,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                         idle = 0.0
         finally:
-            for _, topic, q in subs:
+            for _, topic, q, _bl in subs:
                 topic.unsubscribe(q)
 
     # ---------------- static ----------------
@@ -555,6 +595,7 @@ class Handler(BaseHTTPRequestHandler):
         # no-store: dashboards get iterated constantly; a tab resurrected
         # from bfcache running yesterday's JS caused stale prompt() flows
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(data)
 
@@ -564,7 +605,7 @@ def serve(cfg: dict) -> None:
     Handler.app = app
     httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]), Handler)
     httpd.daemon_threads = True
-    print(f"[limcars-next] serving on http://{cfg['host']}:{cfg['port']} "
+    print(f"[limcars] serving on http://{cfg['host']}:{cfg['port']} "
           f"(engines: {[s.id for s in app.engines.all()]})")
     try:
         httpd.serve_forever()

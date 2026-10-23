@@ -17,6 +17,9 @@ const API = '';
 // LIMCARS-NEXT password gate: the parent dashboard embeds this page with
 // ?pw=<password>; attach it to every data fetch (server accepts the header).
 const LC_PW = new URLSearchParams(location.search).get('pw') || '';
+// audit hygiene: once the pw is captured into LC_PW, drop it from the address
+// bar so history/back-button/shared URLs don't keep the cleartext password
+if (LC_PW) { try { history.replaceState(null, '', location.pathname); } catch (e) {} }
 if (LC_PW) {
   const _lcFetch = window.fetch.bind(window);
   let lcBad = false;
@@ -111,19 +114,26 @@ const state = {
    top-bar search works across ALL transcripts, not just the open one */
 const searchIndex = {};
 let searchIndexStale = true;
+let searchGen = 0;   // generation guard: a rebuild aborts the previous loop
 async function buildSearchIndex() {
   if (!state.batches.length) return;
-  let i = 0;
-  for (const b of state.batches) {
+  const gen = ++searchGen;
+  let i = 0, budget = 30e6;                       // audit bound: max ~30 MB
+  for (const b of state.batches.slice(0, 80)) {   // and only newest 80 batches
+    if (gen !== searchGen || budget <= 0) return; // stale build or budget spent
     for (let idx = 0; idx < b.tasks; idx++) {
       const k = probeKey(b.id, idx);
       i++;
-      try { searchIndex[k] = await fetchText(API + 'transcript/' + b.id + '/task-' + idx + '.log'); }
+      try {
+        const t = await fetchText(API + 'transcript/' + b.id + '/task-' + idx + '.log');
+        searchIndex[k] = t; budget -= t.length;
+      }
       catch (e) {}
+      if (gen !== searchGen || budget <= 0) return;
       if (i % 4 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI responsive
     }
   }
-  searchIndexStale = false;
+  if (gen === searchGen) searchIndexStale = false;
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && searchIndexStale && state.batches.length) buildSearchIndex();

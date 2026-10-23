@@ -36,7 +36,7 @@ def probe(url: str, model: str | None, max_tokens: int = 220,
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions",
                                  data=body,
                                  headers={"Content-Type": "application/json",
-                                          "User-Agent": "limcars-next-probe/1.0"})
+                                          "User-Agent": "limcars-probe/1.0"})
     t0 = time.perf_counter()
     t_first = t_last = None
     usage = {}

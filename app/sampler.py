@@ -136,7 +136,7 @@ class EngineSampler(threading.Thread):
 
     def _fetch(self, path: str, timeout: float = 1.5) -> bytes:
         req = urllib.request.Request(self.url + path,
-                                     headers={"User-Agent": "limcars-next/1.0"})
+                                     headers={"User-Agent": "limcars/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
             return r.read()
 
@@ -221,7 +221,7 @@ class EngineSampler(threading.Thread):
                 prefill_true = rate    # deltas are completion-charged); real
                                        # peak measured on this box is ~7.5k
         if prefill_true is None:
-            # Engine-native paths (ported from the dashboard adapter reference):
+            # Engine-native paths (ported from the probe-verified adapter family):
             # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
             # DURING prefill — a true live rate, no completion attribution.
             rt = self._win_rate("prefill_tokens")
@@ -301,8 +301,12 @@ class EngineSampler(threading.Thread):
         d_dtok = self._win_sum("draft_tokens")
         d_acc = self._win_sum("accepted_tokens")
         if d_drafts and d_drafts > 0:
-            row["draft_tok_per_step"] = (d_dtok or 0) / d_drafts
-            row["spec_accept_len"] = 1.0 + (d_acc or 0) / d_drafts
+            # audit: `or 0` fabricated numbers when a counter was missing
+            # (spec 1.0 = "zero accepted"); house rule is '–', never fake 0
+            if d_dtok is not None:
+                row["draft_tok_per_step"] = d_dtok / d_drafts
+            if d_acc is not None:
+                row["spec_accept_len"] = 1.0 + d_acc / d_drafts
         # peak decode over the last hour (Classic "Gen speed peak")
         dnow = row.get("decode_tps_now")
         self._peak.append((now, dnow if dnow and dnow > 0 else 0.0))
@@ -386,7 +390,8 @@ class EngineSampler(threading.Thread):
                     self.store.save_counter_bucket(self.id, int(now - 3660), {
                         "prompt": cur_p, "cached": cur_c, "gen": cur_g,
                         "reqs": cur_r, "iters": cur_i, "dec_min": None,
-                        "dec_peak": None, "spec_sum": None, "spec_n": 0})
+                        "dec_peak": None, "spec_sum": None, "spec_n": 0,
+                        "synthetic": 1})
                 self._rate_prev = base
                 self._rate_prev_t = now
             return
@@ -398,6 +403,19 @@ class EngineSampler(threading.Thread):
         dc = cur_c - self._rate_prev.get("cached_tokens", cur_c)
         dr = cur_r - self._rate_prev.get("req_success", cur_r)
         di = cur_i - self._rate_prev.get("iterations", cur_i)
+        # audit: engine restart (pid gone, sampler kept alive via alive-sticky)
+        # left the old PID's counters as base → one giant phantom delta +
+        # first_min mislabeled. proc_start jump = reset, same as counter reset.
+        _ps = counters.get("proc_start")
+        if _ps and getattr(self, "_ps_seen", None) and abs(_ps - self._ps_seen) > 2:
+            self._ps_seen = _ps
+            self._rate_prev = base
+            self._rate_prev_t = now
+            self._rate_min.clear()
+            self._min_acc = {"dec": [], "spec": []}
+            return
+        if _ps:
+            self._ps_seen = _ps
         if dp < 0 or dg < 0 or dc < 0:              # engine restart → rebuild base
             self._rate_prev = base
             self._rate_prev_t = now
@@ -421,7 +439,11 @@ class EngineSampler(threading.Thread):
                 "reqs": max(0, dr), "iters": max(0, di),
                 "dec_min": min([v for v in dec if v > 0], default=None),
                 "dec_peak": max(dec, default=None),
-                "spec_sum": sum(spec), "spec_n": len(spec)})
+                "spec_sum": sum(spec), "spec_n": len(spec),
+                # gap-spanning bucket (sampler was down/quiet > 2 min): real
+                # tokens but NOT a valid "one busy minute" for rate/savings
+                # anchors — excluded from last_active_hour (audit M2)
+                "synthetic": 1 if (now - self._rate_prev_t) > 120 else 0})
         self._rate_prev = base
         self._rate_prev_t = now
 

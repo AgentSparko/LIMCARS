@@ -131,14 +131,23 @@ class HwSampler(threading.Thread):
             "disk_total_gb": round(du.total / 2**30, 2),
         }
         # throughput rates from cumulative io counters
-        if self._last_net is not None and dio is not None:
+        if (self._last_net is not None and dio is not None
+                and self._last_net[1] is not None and self._last_net[2] is not None):
             dt = now - self._last_net[0]
             if dt > 0:
                 (p_dio, p_nio) = (self._last_net[1], self._last_net[2])
-                row["disk_r_mbs"] = round((dio.read_bytes - p_dio.read_bytes) / dt / 2**20, 2)
-                row["disk_w_mbs"] = round((dio.write_bytes - p_dio.write_bytes) / dt / 2**20, 2)
-                row["net_r_mbs"] = round((nio.bytes_recv - p_nio.bytes_recv) / dt / 2**20, 2)
-                row["net_w_mbs"] = round((nio.bytes_sent - p_nio.bytes_sent) / dt / 2**20, 2)
+                # audit: NIC/disk re-init rewinds psutil counters to 0 →
+                # negative deltas → impossible negative MB/s on the chart.
+                # A counter reset reads as no-sample for this tick.
+                dr = dio.read_bytes - p_dio.read_bytes
+                dw = dio.write_bytes - p_dio.write_bytes
+                nr = nio.bytes_recv - p_nio.bytes_recv
+                nw = nio.bytes_sent - p_nio.bytes_sent
+                if min(dr, dw, nr, nw) >= 0:
+                    row["disk_r_mbs"] = round(dr / dt / 2**20, 2)
+                    row["disk_w_mbs"] = round(dw / dt / 2**20, 2)
+                    row["net_r_mbs"] = round(nr / dt / 2**20, 2)
+                    row["net_w_mbs"] = round(nw / dt / 2**20, 2)
         self._last_net = (now, dio, nio)
 
         row.update(_nvidia_query())

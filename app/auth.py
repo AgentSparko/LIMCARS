@@ -55,10 +55,24 @@ class AuthGate:
     def _digest(self, pw: str) -> str:
         return hashlib.sha256(((self.salt or "") + pw).encode("utf-8")).hexdigest()
 
+    def _digest_scrypt(self, pw: str) -> str:
+        # audit L: single-round sha256 is brute-forceable offline if
+        # data/auth.json leaks; new hashes use scrypt. "s2:" prefix marks the
+        # format so pre-existing sha256 entries keep verifying until reset
+        return "s2:" + hashlib.scrypt(
+            pw.encode("utf-8"), salt=(self.salt or "").encode("utf-8"),
+            n=2 ** 14, r=8, p=1, maxmem=64 * 1024 * 1024).hex()
+
+    def _matches(self, pw: str) -> bool:
+        want = self.hash or ""
+        got = (self._digest_scrypt(pw) if want.startswith("s2:")
+               else self._digest(pw))
+        return hmac.compare_digest(want, got)
+
     def verify(self, pw: str) -> bool:
         if not self.enabled or not pw:
             return False
-        return hmac.compare_digest(self.hash or "", self._digest(pw))
+        return self._matches(pw)
 
     def set_password(self, new: str | None, current: str | None = None) -> bool:
         """Set/change/disable. Changing an existing password requires `current`
@@ -69,7 +83,7 @@ class AuthGate:
                 return False
             if new:
                 self.salt = secrets.token_hex(16)
-                self.hash = self._digest(new)
+                self.hash = self._digest_scrypt(new)
             else:
                 self.salt = self.hash = None
             self.ips = {}
@@ -105,3 +119,34 @@ class AuthGate:
         with self._lock:
             if self.ips.pop(ip, None) is not None:
                 self._save()
+
+    def attempt(self, ip: str, pw: str) -> tuple[bool, float]:
+        """Lockout-check + verify + ladder update in ONE lock hold.
+
+        The server used to call locked_for() then verify() then failure() as
+        three separate lock acquisitions; with ThreadingHTTPServer's
+        thread-per-connection, parallel guesses read the same failure count
+        and cap the ladder at level 1 forever (audit H1). This is the only
+        auth path mutating endpoints may use. Returns (ok, locked_remaining).
+        """
+        with self._lock:
+            ent = self.ips.get(ip)
+            if ent:
+                rem = max(0.0, ent["until"] - self._now())
+                if rem > 0:
+                    return False, rem
+            if self.enabled and pw and self._matches(pw):
+                if self.ips.pop(ip, None) is not None:
+                    self._save()
+                return True, 0.0
+            ent = self.ips.setdefault(ip, {"n": 0, "until": 0.0})
+            ent["n"] += 1
+            lock = 0.0
+            for mn, secs in TIERS:
+                if ent["n"] >= mn and (ent["n"] - mn) % 3 == 0:
+                    lock = secs
+                    break
+            if lock:
+                ent["until"] = self._now() + lock
+            self._save()
+            return False, lock

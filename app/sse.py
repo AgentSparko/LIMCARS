@@ -41,12 +41,22 @@ class Topic:
                     q.get_nowait()
                 except queue.Empty:
                     pass
-                q.put_nowait((sid, data))
+                try:
+                    q.put_nowait((sid, data))
+                except queue.Full:
+                    # a concurrent publisher won the slot between drain and
+                    # put — drop THIS event rather than raise into the caller
+                    # (an escaping queue.Full used to kill sampler ticks)
+                    pass
         return sid
+
+    MAX_SUBS = 64   # audit: hostile LAN client must not pin unbounded threads
 
     def subscribe(self, since: int | None = None) -> tuple[queue.Queue, list[tuple[int, str]]]:
         q: queue.Queue = queue.Queue(maxsize=2000)
         with self._lock:
+            if len(self._subs) >= self.MAX_SUBS:
+                raise RuntimeError("too many SSE subscribers")
             backlog = [(sid, d) for sid, d in self._ring if since is not None and sid > since]
             self._subs.append(q)
         return q, backlog

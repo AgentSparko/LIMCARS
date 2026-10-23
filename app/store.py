@@ -37,6 +37,15 @@ class Store:
             CREATE TABLE IF NOT EXISTS counter_raw(
               engine TEXT PRIMARY KEY, t REAL, raw TEXT);
         """)
+        # audit M1/M2: seed & gap-backfill buckets are flagged synthetic so
+        # the active-hour anchor never treats an engine-lifetime dump as
+        # "one busy minute" (fresh installs printed $616k/yr savings).
+        # Old rows default 0 — harmless: they predate the seed logic.
+        try:
+            self._con.execute(
+                "ALTER TABLE counter_buckets ADD COLUMN synthetic INTEGER DEFAULT 0")
+        except Exception:  # duplicate column on existing DBs
+            pass
         self._con.commit()
 
     def save_engine_samples(self, engine: str, rows: list[tuple[float, dict]]) -> None:
@@ -71,10 +80,11 @@ class Store:
         with self._lock:
             self._con.execute(
                 "INSERT OR REPLACE INTO counter_buckets"
-                "(engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,spec_sum,spec_n)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "(engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,"
+                "spec_sum,spec_n,synthetic) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (engine, ts, b["prompt"], b["cached"], b["gen"], b["reqs"],
-                 b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"], b["spec_n"]))
+                 b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"],
+                 b["spec_n"], 1 if b.get("synthetic") else 0))
             self._con.commit()
         # 366-day retention, old-LIMCARS parity
         with self._lock:
@@ -126,23 +136,29 @@ class Store:
                 (engine, int(time.time() - seconds))).fetchall()
 
     def last_active_hour(self, engine: str) -> dict:
-        """Totals of the most recent 60-min span that actually has buckets
-        (anchor = newest bucket, window = anchor-3600..anchor). Canonical rate
-        basis for ALL cost projections (old-dash rule)."""
+        """Totals of the most recent 60-min span that actually has REAL
+        buckets (anchor = newest non-synthetic bucket, window =
+        anchor-3600..anchor). Canonical rate basis for ALL cost projections
+        (old-dash rule). Synthetic seed/gap buckets are excluded from both
+        the anchor and the totals (audit M1: fresh install seeded the whole
+        engine lifetime into one bucket -> $/year fantasy figures)."""
         with self._lock:
             r = self._con.execute(
-                "SELECT MAX(ts) FROM counter_buckets WHERE engine=?",
-                (engine,)).fetchone()
-        if not r or r[0] is None:
+                "SELECT MAX(ts) FROM counter_buckets WHERE engine=?"
+                " AND COALESCE(synthetic,0)=0", (engine,)).fetchone()
+            if not r or r[0] is None:
+                return {"empty": True}
+            anchor = r[0]
+            r2 = self._con.execute(
+                "SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
+                " COALESCE(SUM(gen),0), COUNT(*) FROM counter_buckets"
+                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0",
+                (engine, anchor - 3600)).fetchone()
+        prompt, cached, gen, n = r2
+        if not n or (prompt + cached + gen) <= 0:
             return {"empty": True}
-        out = self.counter_totals(engine, r[0] - 3600)
-        if not out.get("empty"):
-            with self._lock:
-                n = self._con.execute(
-                    "SELECT COUNT(*) FROM counter_buckets WHERE engine=? AND ts>=?",
-                    (engine, r[0] - 3600)).fetchone()[0]
-            out["buckets"] = n
-        return out
+        return {"empty": False, "prompt": prompt, "cached": cached, "gen": gen,
+                "buckets": n}
 
     def history(self, table: str, engine: str | None, seconds: float) -> list[dict]:
         cutoff = time.time() - seconds

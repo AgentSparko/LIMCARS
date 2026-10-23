@@ -34,6 +34,10 @@ def parse(text: str) -> dict[str, list[Line]]:
             val = float(val_s)
         except ValueError:
             continue
+        if val != val or val in (float("inf"), float("-inf")):
+            # audit: NaN/Inf in an engine metric would poison json.dumps
+            # (allow_nan=False) and 500 the whole snapshot route
+            continue
         # split name / labels
         lb = head.find("{")
         if lb < 0:
@@ -107,18 +111,24 @@ def histogram(series: dict[str, list[Line]], base: str) -> tuple[list[tuple[floa
 
     Buckets are converted to cumulative counts keyed by upper bound (+Inf last).
     """
-    buckets: list[tuple[float, float]] = []
+    # audit: multi-series labels (multi-process vLLM, per-model exl3) —
+    # take the first line only and the buckets are silently wrong. Aggregate:
+    # sum buckets per le across label sets, sum _sum/_count across all lines.
+    by_le: dict[float, float] = {}
     for _, labels, val in series.get(base + "_bucket", ()):
         le = labels.get("le")
         if le is None:
             continue
-        ub = float("inf") if le == "+Inf" else float(le)
-        buckets.append((ub, val))
-    ssum = first(series, base + "_sum")
-    scount = first(series, base + "_count")
+        try:
+            ub = float("inf") if le == "+Inf" else float(le)
+        except ValueError:
+            continue
+        by_le[ub] = by_le.get(ub, 0.0) + val
+    buckets = sorted(by_le.items(), key=lambda p: p[0])
+    ssum = total(series, base + "_sum")
+    scount = total(series, base + "_count")
     if not buckets and ssum is None and scount is None:
         return None
-    buckets.sort(key=lambda p: p[0])
     return buckets, ssum or 0.0, scount or 0.0
 
 

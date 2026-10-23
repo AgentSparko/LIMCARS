@@ -168,7 +168,9 @@ class LiveEngines:
     def scan(self, force: bool = False) -> list[dict]:
         with self._lock:
             now = time.time()
-            if not force and now - self._cache[0] < _SCAN_TTL:
+            # audit: force-refresh spam = one full proc scan per request
+            # (CPU DoS vector). Even explicit refreshes coalesce to 2 s.
+            if now - self._cache[0] < (_SCAN_TTL if not force else 2.0):
                 return self._cache[1]
 
             holders = _gpu_holders()

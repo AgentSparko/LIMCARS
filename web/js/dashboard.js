@@ -416,9 +416,9 @@ function renderModelTable(force) {
     const open = state.expanded === meta.id;
     const detail = open ? `<tr><td colspan="10"><div class="mono small" style="line-height:1.8;color:var(--muted)">` +
       Object.entries(l).filter(([k]) => k !== 'savings').map(([k, v]) =>
-        `${k} = <b style="color:var(--text)">${typeof v === 'number' ? fmt(v, 2) : v}</b>`).join(' · ') +
+        `${k} = <b style="color:var(--text)">${typeof v === 'number' ? fmt(v, 2) : escH(String(v))}</b>`).join(' · ') +
       ` · savings = <b style="color:var(--text)">${l.savings ? '$' + (l.savings.day || 0).toFixed(2) + '/day' : '–'}</b></div></td></tr>` : '';
-    return `<tr data-model="${meta.id}" style="cursor:pointer"><td>${meta.model || meta.id}</td><td>${meta.kind || '–'}</td>
+    return `<tr data-model="${escH(meta.id)}" style="cursor:pointer"><td>${escH(meta.model || meta.id)}</td><td>${escH(meta.kind || '–')}</td>
       <td>${fmt(l.running, 0)}</td><td>${fmt(l.waiting, 0)}</td>
       <td>${l.kv_pct != null ? l.kv_pct.toFixed(0) + '%' : '–'}</td>
       <td>${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'}</td>
@@ -554,6 +554,10 @@ async function connect() {
   } catch { /* fall through */ }
   document.querySelector('#conn-dot').className = 'dot down';
   document.querySelector('#conn-txt').textContent = 'reconnecting…';
+  // self-heal: re-pull snapshot rings so engine latest/bubbles never sit
+  // stale after an outage (audit finding: lastId was dead state — reconnect
+  // replayed nothing, so lost events stayed lost until a manual refresh)
+  seed(false).catch(() => {});
   setTimeout(connect, 2000);
 }
 
@@ -614,8 +618,13 @@ const tracesFrame = document.querySelector('#traces-frame');
 const btnTraces = document.querySelector('#btn-traces');
 async function openTraces() {
   // password gate: forward the recipe password to the iframe so the vendored
-  // UI can authenticate its transcript fetches (?pw= accepted server-side)
-  if (!tracesFrame.src.includes('subagent-watch')) {
+  // UI can authenticate its transcript fetches (?pw= accepted server-side).
+  // Rebuilt whenever state.pw changes (audit finding: a one-shot latch froze
+  // an unauthenticated or stale-pw URL into both frame and new-tab pill)
+  const pwNow = state.pw || '';
+  if (tracesFrame.dataset.built === '1' && tracesFrame.dataset.pwUsed === pwNow) {
+    // already authenticated with the current pw — just show it
+  } else {
     let src = '/subagent-watch/';
     try {
       const st = await (await fetch('/api/auth/status')).json();
@@ -635,6 +644,8 @@ async function openTraces() {
     // 'goes to a page that is not populated with any traces')
     const nt = document.querySelector('#traces-newtab');
     if (nt) nt.href = src;
+    tracesFrame.dataset.built = '1';
+    tracesFrame.dataset.pwUsed = state.pw || '';
   }
   dashPane.style.display = 'none';
   tracesPane.style.display = 'block';
@@ -723,13 +734,13 @@ function renderScope() {
 async function renderInfo() {
   const d = await (await fetch('/api/engine-info')).json();
   const t = document.querySelector('#info-tbl');
-  if (!d.healthy) { t.innerHTML = `<tr><td class="muted">${d.error || 'offline'}</td></tr>`; return; }
+  if (!d.healthy) { t.innerHTML = `<tr><td class="muted">${escH(String(d.error || 'offline'))}</td></tr>`; return; }
   const rows = [['Model', d.model], ['Version', d.version],
     ['Context window', d.ctx ? d.ctx.toLocaleString() + ' tok' : '–'],
     ['KV pool', d.pool_tokens ? d.pool_tokens.toLocaleString() + ' tok' + (d.num_gpu_blocks ? ` · ${d.num_gpu_blocks.toLocaleString()} blocks × ${d.block_size}` : '') : '–'],
     ['KV dtype', d.kv_dtype], ['Speculative', d.spec + ' · K=' + (d.draft_k ?? '–')],
     ['Accept rate', d.accept_rate != null ? d.accept_rate + '%' : '–'],
-  ].map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${v ?? '–'}</td></tr>`).join('');
+  ].map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${escH(String(v ?? '–'))}</td></tr>`).join('');
   const cfg = Object.entries(d.config || {}).map(([k, v]) =>
     `<tr><td class="muted">${escH(k)}</td><td class="mono">${escH(String(v))}</td></tr>`).join('');
   const launch = d.launch
@@ -825,8 +836,8 @@ document.querySelector('#btn-probe').addEventListener('click', async () => {
     const r = await (await fetch('/api/probe', { method: 'POST' })).json();
     out.innerHTML = r.ok
       ? `⚡ probe: <b>TTFT ${Math.round(r.ttft_ms)} ms</b> · PP <b>${r.pp_tps != null ? Math.round(r.pp_tps).toLocaleString('en-US') : '–'} tok/s</b> · TG <b>${r.tg_tps != null ? Math.round(r.tg_tps) : '–'} tok/s</b><br><span class="muted">prompt ${r.prompt_tokens} tok · completion ${r.completion_tokens} tok · ${new Date(r.at * 1000).toTimeString().slice(0, 8)}</span>`
-      : `⚡ probe failed: ${r.error}`;
-  } catch (e) { out.innerHTML = `⚡ probe error: ${e}`; }
+      : `⚡ probe failed: ${escH(String(r.error))}`;
+  } catch (e) { out.innerHTML = `⚡ probe error: ${escH(String(e))}`; }
 });
 
 // ---------------- boot ----------------
