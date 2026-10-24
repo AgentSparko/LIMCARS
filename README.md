@@ -23,6 +23,8 @@ python3 -m app          # → http://localhost:8951
 
 ![LIMCARS — live bubbles, projected savings and the lost-potential alert](docs/screenshots/1.jpg)
 
+![LIMCARS dashboard views](docs/screenshots/collage.jpg)
+
 ## ✨ What you get
 
 ### 📊 Live dashboard
