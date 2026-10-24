@@ -1201,18 +1201,24 @@ async function renderLostPotential() {
     // "best month" the dashboard has not seen a month of)
     const parts = ['best hour ' + fmtUsd0(d.best_hour_cost)];
     if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost));
-    else if (d.proj_day_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_day_cost) + '/day');
+    else if (d.proj_day_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_day_cost) + '/day');
     if (d.best_month_cost != null) parts.push('best month ' + fmtUsd0(d.best_month_cost) + ' (measured)');
-    else if (d.proj_month_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_month_cost) + '/month');
+    else if (d.proj_month_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_month_cost) + '/month');
     if (d.best_year_cost != null) parts.push('best year ' + fmtUsd0(d.best_year_cost) + ' (measured)');
-    else if (d.proj_year_cost != null) parts.push('projected ~' + fmtUsd0(d.proj_year_cost) + '/year');
+    else if (d.proj_year_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_year_cost) + '/year');
     sent.push('Historic savings registered: ' + parts.join(', ') +
       ' — so put this baby to work!');
   }
   const msg = sent.join('<br>');
+  const pr = state.pricing;
   const title = 'avg recorded hour ' + fmtTokShort(d.avg_hour_tokens) +
     ' tokens · total ' + fmtTokShort(d.total_tokens) + ' over ' +
-    d.recorded_days + ' days';
+    d.recorded_days + ' days' +
+    (pr && pr.fetched_at ? ' \u00b7 all $ figures priced live at ' +
+      (pr.provider || pr.display_name || 'API') + ' rates (' +
+      String(pr.fetched_at).slice(0, 10) + '); change pricing.json and ' +
+      'every $ updates' : '') +
+    ' \u00b7 estimated/seed rows are excluded';
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
     '"><div class="label">' + titleHtml + '</div><div class="value pot-text">' +
     msg + '</div></div>';
