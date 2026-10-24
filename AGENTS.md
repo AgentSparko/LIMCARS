@@ -36,6 +36,10 @@ CREATE TABLE counter_buckets(          -- one row per minute bucket
   PRIMARY KEY(engine, ts));
 ```
 
+(The `synthetic` column is added by a migration in `app/store.py` on
+databases created before it existed — pre-creating the table without it is
+fine, LIMCARS will ALTER it in.)
+
 `engine` must equal an engine id from `data/config.json` (the id LIMCARS
 scrapes), not the old dashboard's name.
 
@@ -71,9 +75,14 @@ scrapes), not the old dashboard's name.
    and the daily chart by design.
 6. **Retention:** rows older than 366 days are pruned on write — do not
    fight it, filter your import instead.
-7. **Stop the server before bulk-importing** (single-writer SQLite), or go
-   through the running app only if it exposes a write API. The bundled
-   importer stops nothing and expects YOU to stop `python3 -m app` first.
+7. **Importing alongside the live sampler is safe with the bundled
+   importer** — it writes under `BEGIN IMMEDIATE` with
+   `ON CONFLICT(engine,ts) DO NOTHING`, so it can never clobber a minute
+   the 2 Hz sampler already recorded (INSERT OR REPLACE would). If you write
+   your own importer, use the same pattern or stop `python3 -m app` first.
+   The bundled importer also validates `--engine` against
+   `data/config.json` and refuses unknown ids, and `--dry-run` never
+   creates/modifies the target database.
 8. **Read-only on the source.** Open the old database `mode=ro`. Never
    modify someone's legacy install.
 9. **Validate after import:** restart the server, then
@@ -89,8 +98,10 @@ scrapes), not the old dashboard's name.
 `scripts/import_legacy_history.py` is the bundled example that migrates an
 event-table style history (`dash_events`-like schema) into
 `counter_buckets`. Use it as the template: read-only source, model-alias
-engine matching (rule 2a), minute aggregation, existing-minute skip,
-`--dry-run` first, printed receipt (events → buckets → days). For other
+engine matching incl. variant-suffix stripping (rule 2a), minute
+aggregation, existing-minute skip, `--dry-run` first, and a full receipt
+that prints EVERY source engine with MATCH/no-match — never accept an
+import whose receipt silently dropped an era the user remembers using. For other
 source dashboards, adapt the field mapping, keep every rule above, and keep
 the dry-run/verify loop. If the source keeps its own daily rollup table,
 DO NOT import it — daily totals cannot feed the hourly best-window math;
@@ -113,5 +124,16 @@ the dashboard's lost-potential bubble depends on (measured vs projected).
   `node --input-type=module --check < web/js/dashboard.js`.
 - UI verification must use computed styles (`getComputedStyle`) and real
   input events — the `.hidden` attribute lies when CSS sets `display`.
+- Honesty invariants any agent edit must preserve: `counter_buckets.ts` is
+  minute-aligned; `synthetic=1` rows never feed a rate anchor or a $ figure
+  (`counter_totals(..., real_only=True)`); every displayed percentile
+  carries its sample count and p50 is only shown at n>=20 (engine histogram
+  buckets are coarse — a 2-request window p50 is bucket-edge fiction, the
+  sum/count mean is the truth); measured best-day/month/year only for
+  periods actually watched, pace figures say "at this rate".
 - `tests/` must stay green: `/usr/bin/python3 -m pytest tests/ -q`.
+- Run it at boot (no user login): install `scripts/limcars-next@.service`
+  (templated, `User=%i`, repo-relative launcher) as a SYSTEM unit and
+  `systemctl enable --now limcars-next@<user>.service`. Only one process may
+  hold port 8951 — stop any hand-started `python3 -m app` first.
 - Do not commit `data/` — it holds the user's history and credentials.
