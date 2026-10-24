@@ -276,10 +276,16 @@ class EngineSampler(threading.Thread):
         # --- histogram window quantiles ---
         self._hist_snapshot(now, hists)
         for logical in ("ttft", "itl", "prefill_time", "decode_time", "queue_time", "e2e"):
-            p50 = self._hist_quantile(logical, 0.50)
-            avg = self._hist_avg(logical)
+            d = self._hist_delta(logical)
+            p50 = prom.quantile(d[0], 0.50) if d else None
+            avg = (d[1] / d[2]) if d else None
             row[f"{logical}_p50_ms"] = p50 * 1000 if p50 is not None else None
             row[f"{logical}_avg_ms"] = avg * 1000 if avg is not None else None
+            # audit: vLLM's coarse histogram buckets (…2.5/5/10/20/40 s) make a
+            # p50 from 1-2 window requests pure bucket-edge fiction; expose the
+            # sample count so the UI can prefer the true sum/count mean when n
+            # is too small for a percentile to mean anything.
+            row[f"{logical}_n"] = d[2] if d else 0
         # e2e smoothing (old LIMCARS gauge basis): cumulative histogram
         # mean = sum/count over the engine's WHOLE life — inherently slow
         # moving like the old dash; plus an hour-median of the p50 samples.

@@ -37,9 +37,9 @@ const BUBS = {
     { label: 'Running reqs', series: 'running', color: () => COLORS.green,
       sparkFmt: v => String(Math.round(v)),
       main: l => num(l.running), sub: l => `${num(l.waiting)} waiting` },
-    { label: 'TTFT (p50)', series: 'ttft_p50_ms', color: () => COLORS.violet, hist: true,
+    { label: 'TTFT', series: 'ttft_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => Math.round(v) + ' ms',
-      main: l => ms(l.ttft_p50_ms), sub: () => 'time to first token · 30 s window' },
+      main: l => histMs(l, 'ttft'), sub: l => 'time to first token · ' + histBasis(l, 'ttft') },
     { label: 'e2e latency (p50)', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
       main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : l.e2e_p50_ms),
@@ -89,6 +89,15 @@ const pct = v => _fin(v) ? v.toFixed(1) + '%' : '–';
 const ms = v => _fin(v) ? Math.round(v) + ' ms' : '–';
 const sec = v => _fin(v) ? (v / 1000).toFixed(2) + ' s' : '–';
 const tps = v => _fin(v) ? Math.round(v).toLocaleString('en-US') + ' tok/s' : '–';
+// Histogram bubbles: p50 only from a population; with few samples the coarse
+// engine buckets produce round-edge fiction, so show the true window mean.
+const histMs = (l, k) => { const n = l[k + '_n'] || 0;
+  return ms(n >= 20 ? l[k + '_p50_ms']
+                    : (l[k + '_avg_ms'] != null ? l[k + '_avg_ms'] : l[k + '_p50_ms'])); };
+const histBasis = (l, k) => { const n = l[k + '_n'] || 0;
+  return n >= 20 ? `p50 · 30 s window · n=${n}`
+       : n ? `true mean · 30 s · n=${n} (too few reqs for p50)`
+       : 'idle 30 s · holding last'; };
 
 function savingsFor(l, secs) {
   const p = state.pricing;
@@ -446,7 +455,8 @@ function renderModelTable(force) {
       <td>${fmt(l.running, 0)}</td><td>${fmt(l.waiting, 0)}</td>
       <td>${l.kv_pct != null ? l.kv_pct.toFixed(0) + '%' : '–'}</td>
       <td>${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'}</td>
-      <td>${l.ttft_p50_ms != null ? Math.round(l.ttft_p50_ms) : '–'}</td>
+      <td>${(() => { const v = (l.ttft_n >= 20 || l.ttft_avg_ms == null) ? l.ttft_p50_ms : l.ttft_avg_ms;
+                     return v != null ? Math.round(v) + (l.ttft_n < 20 ? ' *' : '') : '–'; })()}</td>
       <td>${l.e2e_p50_ms != null ? (l.e2e_p50_ms / 1000).toFixed(2) : '–'}</td>
       <td>${(state.store.at(`${meta.id}.decode_tps_now`) || []).length}</td>
       <td>${meta.last_scrape ? new Date(meta.last_scrape * 1000).toTimeString().slice(0, 8) : '–'}</td></tr>` + detail;
