@@ -231,8 +231,8 @@ function buildCharts() {
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
 }
 
-const escH = s => String(s || '').replace(/[<>"'\]/g, c =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\': '&#92;' }[c]));
+const escH = s => String(s || '').replace(/[<>"'\\]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\\': '&#92;' }[c]));
 
 // Client-context category colors are THEME-REACTIVE: stored as base hues,
 // rotated with the accent palette (applyTheme) so NO chart is left behind;
