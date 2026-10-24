@@ -36,8 +36,14 @@ def load() -> dict:
     except OSError:
         return {}
     if _cache is None or mt != _cache_mtime:
-        _cache = json.loads(FILE.read_text())
-        _cache_mtime = mt
+        # audit: a half-written/invalid pricing.json used to raise through
+        # every $ endpoint AND the sampler's blanket except (fake engine_down
+        # + baseline wipe). Keep serving the last good copy instead.
+        try:
+            _cache = json.loads(FILE.read_text())
+            _cache_mtime = mt
+        except (OSError, ValueError):
+            return _cache if _cache is not None else {}
     return _cache
 
 
@@ -107,11 +113,13 @@ def effective_price(model: str | None, override: dict | None = None) -> dict | N
 def hot_costs(prompt: float, cached: float, gen: float, price: dict) -> dict:
     """Canonical cloud-API cost trio (old LIMCARS basis):
     uncached@cache-WRITE + cached@cache-READ(_HOT) + gen@OUTPUT."""
-    p_in = float(price.get("input") or 0)
-    p_w = float(price.get("cache_write") or p_in or 0)
-    p_r = float(price.get("cache_read") or 0)
-    p_rhot = float(price.get("cache_read_hot") or p_r)
-    p_out = float(price.get("output") or 0)
+    _g = lambda k: (lambda v: 0.0 if v is None else float(v))(price.get(k))
+    p_in, p_out = _g("input"), _g("output")
+    p_r = _g("cache_read")
+    cw = price.get("cache_write")
+    p_w = float(cw) if cw is not None else (p_in or 0.0)   # 0 is a real price
+    crh = price.get("cache_read_hot")
+    p_rhot = float(crh) if crh is not None else p_r
     uncached = max(0.0, prompt - cached)
     return {
         "hot": uncached / 1e6 * p_w + cached / 1e6 * p_rhot + gen / 1e6 * p_out,

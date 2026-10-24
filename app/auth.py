@@ -42,7 +42,9 @@ class AuthGate:
     def _save(self) -> None:
         tmp = self.path + ".tmp"
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
+        # audit: 0664 left the scrypt hash + lockout state world-readable.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump({"salt": self.salt, "hash": self.hash, "ips": self.ips}, f, indent=1)
         os.replace(tmp, self.path)
 

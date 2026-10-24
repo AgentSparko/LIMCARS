@@ -55,21 +55,48 @@ def main() -> int:
         return 2
     src = sqlite3.connect(f"file:{a.source}?mode=ro", uri=True)
 
+    import re
+    # AGENTS.md rule 2a: quant/hardware variant suffixes must not hide an era
+    VARIANTS = ("hybrid48", "nvidia", "flashinfer", "exl3", "sage",
+                "fp8", "fp4", "fp16", "bf16", "awq", "gptq", "int8", "int4")
+
     def norm(s):                       # 'Qwen/Qwen3.8-Flash-Next' ==
-        import re                      # 'qwen3.8-flash-next' == the same
         t = re.sub(r"[^a-z0-9]", "", (s or "").lower())
         while t.startswith("qwen"):    # org prefix AND 'Qwen3.8' fused name
             t = t[4:]
+        changed = True
+        while changed:                 # strip trailing variant tags
+            changed = False
+            for v in VARIANTS:
+                if t.endswith(v) and len(t) > len(v):
+                    t = t[:-len(v)]
+                    changed = True
         return t                       # model under a quant/variant name
     want = norm(a.model)
-    ids = [r[0] for r in src.execute("select id, served_model from engines")
-           if norm(r[1]) == want]
+    alleng = src.execute("select id, served_model from engines").fetchall()
+    ids = [i for i, m in alleng if norm(m) == want]
+    # audit: silent era-drop was the importer's worst failure — print every
+    # source engine with its verdict so a missed variant is visible, not quiet
+    for i, m in alleng:
+        print(f"  engine {i:>3}  {str(m)!r:<55} {'MATCH' if i in ids else '-'}")
     if not ids:
         print(f"ERROR: no engine in {a.source} ever served '{a.model}'",
               file=sys.stderr)
         return 2
     ph = ",".join("?" * len(ids))
     print(f"legacy engines serving '{a.model}': {ids}")
+
+    # AGENTS.md: the target engine id must be one config.json actually serves,
+    # else a typo writes an invisible parallel history
+    cfg_p = os.path.join(os.path.dirname(os.path.abspath(a.target)), "config.json")
+    if os.path.exists(cfg_p):
+        import json
+        valid = [e.get("id") for e in json.load(open(cfg_p)).get("engines", [])]
+        if valid and a.engine not in valid:
+            print(f"ERROR: --engine '{a.engine}' is not served by this dashboard "
+                  f"(config.json ids: {valid}). Fix --engine or add the engine.",
+                  file=sys.stderr)
+            return 2
 
     # aggregate dash_events -> minute buckets (mirror store counter semantics:
     # prompt = total input incl. cached; prefill rows carry the input, decode
@@ -93,11 +120,15 @@ def main() -> int:
             b["iters"] += 1
     print(f"source events: {n}  ->  minute buckets: {len(buckets)}")
 
-    tgt = Store(a.target)
-    con = sqlite3.connect(a.target)
-    existing = {r[0] for r in con.execute(
-        "select ts from counter_buckets where engine=?", (a.engine,))}
-    con.close()
+    # audit: --dry-run used to CREATE the target db (Store init runs schema);
+    # read-only probe instead, and only the write path upgrades to Store()
+    try:
+        con = sqlite3.connect(f"file:{a.target}?mode=ro", uri=True, timeout=30)
+        existing = {r[0] for r in con.execute(
+            "select ts from counter_buckets where engine=?", (a.engine,))}
+        con.close()
+    except sqlite3.OperationalError:      # fresh/empty target: nothing exists
+        existing = set()
     todo = {ts: b for ts, b in buckets.items() if ts not in existing
             and b["prompt"] + b["gen"] > 0}
     print(f"minutes already recorded live: {len(buckets) - len(todo)}"
@@ -105,10 +136,30 @@ def main() -> int:
     if a.dry_run:
         print("dry-run: nothing written")
         return 0
-    for ts, b in sorted(todo.items()):
-        tgt.save_counter_bucket(a.engine, ts, b)
+    # audit: save_counter_bucket is INSERT OR REPLACE — with the live 2 Hz
+    # sampler running, the 'skip existing minutes' snapshot was TOCTOU-racy
+    # and could silently REPLACE a real live minute with legacy aggregates.
+    tgt = Store(a.target)                 # ensures schema exists
+    con = sqlite3.connect(a.target, timeout=30)
+    try:
+        con.execute("BEGIN IMMEDIATE")    # refuse to interleave with a writer
+        wrote = 0
+        for ts, b in sorted(todo.items()):
+            cur = con.execute(
+                "INSERT INTO counter_buckets(engine,ts,prompt,cached,gen,reqs,"
+                "iters,dec_min,dec_peak,spec_sum,spec_n,synthetic)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,0)"
+                " ON CONFLICT(engine,ts) DO NOTHING",  # never clobber a live row
+                (a.engine, ts, b["prompt"], b["cached"], b["gen"], b["reqs"],
+                 b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"],
+                 b["spec_n"]))
+            wrote += cur.rowcount
+        con.commit()
+    finally:
+        con.close()
     days = len({ts // 86400 for ts in todo})
-    print(f"imported {len(todo)} buckets across {days} days into '{a.engine}'")
+    print(f"imported {wrote} buckets across {days} days into '{a.engine}'"
+          f" ({len(todo) - wrote} skipped: already recorded live)")
     return 0
 
 

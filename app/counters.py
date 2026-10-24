@@ -24,9 +24,11 @@ def report(store, engine: str, window: str, model: str | None,
     secs = WINDOWS[window]
     now = time.time()
     since = int(now - secs) if secs else None
-    w = store.counter_totals(engine, since)
-    life = store.counter_totals(engine, None)
-    h1 = store.counter_totals(engine, int(now - 3600))
+    # audit: rate anchors + panel totals use measured minutes only (the
+    # synthetic seed/gap buckets are estimates, and the seed at now-3660 used
+    # to fake a 366-day "tracked" span and a seed-derived fantasy per_hour).
+    w = store.counter_totals(engine, since, real_only=True)
+    life = store.counter_totals(engine, None, real_only=True)
     if w.get("empty"):
         return {"empty": True, "window": window}
     price = pricing_mod.effective_price(model, override) or {}
@@ -190,7 +192,7 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
         eid, model = eng["id"], eng.get("model")
         rows = [(ts, p or 0.0, c or 0.0, g or 0.0)
                 for ts, p, c, g in store.minute_rows(eid)
-                if (p or 0) + (g or 0) > 0]
+                if (p or 0) + (g or 0) + (c or 0) > 0]
         if not rows:
             continue
         price = pricing_mod.effective_price(model, pricing_cfg) or {}

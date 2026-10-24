@@ -34,6 +34,7 @@ class Store:
               reqs REAL, iters REAL, dec_min REAL, dec_peak REAL,
               spec_sum REAL, spec_n INTEGER,
               PRIMARY KEY(engine, ts));
+            CREATE INDEX IF NOT EXISTS ix_cb_ts ON counter_buckets(ts);
             CREATE TABLE IF NOT EXISTS counter_raw(
               engine TEXT PRIMARY KEY, t REAL, raw TEXT);
         """)
@@ -68,6 +69,9 @@ class Store:
         with self._lock:
             self._con.execute("INSERT INTO events(t, kind, data) VALUES (?,?,?)",
                               (time.time(), kind, json.dumps(data)))
+            # audit: events was the one table with no retention (flap forever)
+            self._con.execute("DELETE FROM events WHERE t < ?",
+                              (time.time() - 30 * 86400,))
             self._con.commit()
 
     def _prune(self, table: str, col: str) -> None:
@@ -111,12 +115,18 @@ class Store:
                 "SELECT t, raw FROM counter_raw WHERE engine=?", (engine,)).fetchone()
         return (r[0], json.loads(r[1])) if r else None
 
-    def counter_totals(self, engine: str, since_ts: int | None) -> dict:
+    def counter_totals(self, engine: str, since_ts: int | None,
+                       real_only: bool = False) -> dict:
+        """real_only=True excludes synthetic=1 seed/gap buckets — REQUIRED for
+        any rate anchor (audit: the lifetime÷tracked fallback once turned a
+        seed row into a fantasy $/yr). Panel totals keep them: the seed is
+        honest engine-lifetime history, not measured traffic."""
         q = ("SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
              " COALESCE(SUM(gen),0), COALESCE(SUM(reqs),0), COALESCE(SUM(iters),0),"
              " MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0),"
              " COALESCE(SUM(spec_n),0), MIN(ts), MAX(ts) FROM counter_buckets"
-             " WHERE engine=?" + (" AND ts>=?" if since_ts is not None else ""))
+             " WHERE engine=?" + (" AND ts>=?" if since_ts is not None else "")
+             + (" AND COALESCE(synthetic,0)=0" if real_only else ""))
         params = [engine] + ([since_ts] if since_ts is not None else [])
         with self._lock:
             r = self._con.execute(q, params).fetchone()
@@ -134,7 +144,8 @@ class Store:
         with self._lock:
             return self._con.execute(
                 "SELECT ts,prompt,cached,gen FROM counter_buckets"
-                " WHERE engine=? AND ts>=? ORDER BY ts",
+                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
+                " ORDER BY ts",
                 (engine, int(time.time() - seconds))).fetchall()
 
     def minute_rows(self, engine: str) -> list[tuple]:

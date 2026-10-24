@@ -53,6 +53,11 @@ SETTINGS_DEFAULTS = {
 }
 
 
+# probe result cache: key -> (monotonic_time, result, ttl_seconds)
+_PROBE_LOCK = threading.Lock()
+_PROBE_CACHE: dict[str, tuple[float, dict, float]] = {}
+
+
 class _Settings:
     def __init__(self, path: str):
         self.path = Path(path).expanduser()
@@ -116,6 +121,9 @@ def _sse_format(topic: str, sid: int, data: str) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # audit: thread-per-connection with no socket timeout let slow-loris
+    # sockets pin threads forever. 30 s per read; SSE disables it (write-only).
+    timeout = 30
     server_version = f"limcars-next/{VERSION}"
     app: Limcars  # set on the class by serve()
 
@@ -147,6 +155,16 @@ class Handler(BaseHTTPRequestHandler):
     def _client_ip(self) -> str:
         return self.client_address[0] if self.client_address else "?"
 
+    def _pw_from_headers(self, default: str = "") -> str:
+        """Read the shared password from headers. A duplicated X-Limcars-Pw
+        header is never legitimate and is treated as absent (audit: harden
+        against request-smuggling style header splits)."""
+        hdrs = self.headers.get_all("X-Limcars-Pw") or []
+        if len(hdrs) > 1:
+            return default
+        return (hdrs[0] if hdrs else "") or self.headers.get(
+            "Authorization", "").removeprefix("Bearer ") or default
+
     def _is_local(self) -> bool:
         return self._client_ip() in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
@@ -157,8 +175,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_local() or not self.app.auth.enabled:
             return True
         ip = self._client_ip()
-        pw = (self.headers.get("X-Limcars-Pw")
-              or self.headers.get("Authorization", "").removeprefix("Bearer "))
+        pw = self._pw_from_headers()
         # single atomic gate (lockout check + verify + ladder in one lock hold)
         ok, rem = self.app.auth.attempt(ip, pw)
         if ok:
@@ -178,9 +195,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._is_local() or not self.app.auth.enabled:
             return True
         ip = self._client_ip()
-        pw = (self.headers.get("X-Limcars-Pw")
-              or (qs.get("pw") or [""])[0]
-              or self.headers.get("Authorization", "").removeprefix("Bearer "))
+        pw = self._pw_from_headers((qs.get("pw") or [""])[0])
         ok, rem = self.app.auth.attempt(ip, pw)
         if ok:
             return True
@@ -217,7 +232,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             # audit: never echo exception text to remote clients (internals
             # leak); the full traceback goes to the server log only
-            logging.getLogger("limcars").exception("GET %s failed", self.path)
+            logging.getLogger("limcars").exception("GET %s failed",
+                                                  self.path.split("?", 1)[0])
             try:
                 self._err(500, "internal error")
             except Exception:  # noqa: BLE001
@@ -227,12 +243,28 @@ class Handler(BaseHTTPRequestHandler):
         # audit: an unhandled exception in a POST branch used to escape to
         # BaseHTTPRequestHandler (dropped connection, no response) — every
         # client now gets a clean 500 and the traceback goes to the log
+        # audit: DNS-rebinding / cross-site forms would arrive with peer
+        # 127.0.0.1 and ride the localhost exemption straight past the recipe
+        # gate. A browser always sends Origin on cross-site POSTs — reject
+        # any whose host is not the host the client asked for. (CLI/agents
+        # send no Origin and are unaffected.)
+        org = self.headers.get("Origin")
+        if org:
+            try:
+                oh = urllib.parse.urlparse(org).hostname or ""
+            except ValueError:
+                oh = "?"
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+            if oh and host and oh not in ("localhost", "127.0.0.1", "::1") \
+                    and oh != host:
+                return self._err(403, "cross-origin write refused")
         try:
             self._dispatch_post()
         except BrokenPipeError:
             pass
         except Exception:  # noqa: BLE001
-            logging.getLogger("limcars").exception("POST %s failed", self.path)
+            logging.getLogger("limcars").exception("POST %s failed",
+                                                  self.path.split("?", 1)[0])
             try:
                 self._err(500, "internal error")
             except Exception:  # noqa: BLE001
@@ -301,10 +333,22 @@ class Handler(BaseHTTPRequestHandler):
             smp = next(iter(self.app.engines.all()), None)
             if not smp:
                 return self._err(400, "no engine configured")
+            # A probe is a real 1300-word generation on the engine. Cache the
+            # result (success 5 min / failure 30 s) so refresh loops and
+            # multiple tabs can't hammer the box (audit: no budget existed).
+            key = f"{smp.url}|{smp.model}"
+            now = time.time()
+            with _PROBE_LOCK:
+                hit = _PROBE_CACHE.get(key)
+                if hit and now - hit[0] < hit[2]:
+                    return self._json(hit[1])
             try:
-                return self._json(probe_mod.probe(smp.url, smp.model))
+                res = probe_mod.probe(smp.url, smp.model)
             except Exception as exc:  # noqa: BLE001
-                return self._json({"ok": False, "error": str(exc)[:300]})
+                res = {"ok": False, "error": str(exc)[:300]}
+            with _PROBE_LOCK:
+                _PROBE_CACHE[key] = (now, res, 300 if res.get("ok") else 30)
+            return self._json(res)
         m = re.fullmatch(r"/api/config/?", u.path)
         if m:
             return self._config_patch()
@@ -336,11 +380,31 @@ class Handler(BaseHTTPRequestHandler):
     def _config_patch(self) -> None:
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 1_000_000:  # audit: bypassed the _body_json cap
+                return self._err(400, "bad body size")
             body = json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return self._err(400, "bad json")
         if not isinstance(body, dict) or not (set(body) <= self._CONFIG_ALLOWED):
             return self._err(400, f"only {sorted(self._CONFIG_ALLOWED)} are editable")
+        # audit: keys were whitelisted, VALUES were not — pricing:"x" poisoned
+        # every $ endpoint and tripped the sampler's fake engine_down path;
+        # window_s:"x" persisted and crashed boot on the next restart.
+        if "pricing" in body and body["pricing"] is not None:
+            pv = body["pricing"]
+            if not isinstance(pv, dict) or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float))
+                    for v in pv.values()):
+                return self._err(400, "pricing must be a dict of numbers")
+        for k in ("window_s", "live_hz", "hw_hz"):
+            if k in body:
+                try:
+                    v = float(body[k])
+                except (TypeError, ValueError):
+                    return self._err(400, f"{k} must be a number")
+                lo, hi = (1.0, 86400.0) if k == "window_s" else (0.05, 20.0)
+                if not lo <= v <= hi:
+                    return self._err(400, f"{k} must be within {lo}..{hi}")
         app = self.app
         if "live_hz" in body:
             body["live_hz"] = min(4.0, max(1.0, float(body["live_hz"])))
@@ -370,7 +434,19 @@ class Handler(BaseHTTPRequestHandler):
                                "locked_for_you": round(app.auth.locked_for(self._client_ip()), 1)})
         if path == "/api/snapshot":
             secs = (qs.get("seconds") or [None])[0]
-            secs = float(secs) if secs else None
+            try:
+                secs = float(secs) if secs else None
+            except (TypeError, ValueError):
+                secs = None
+            if secs is not None:
+                # audit: seconds=1e18 scanned the whole samples table under
+                # the store lock (sampler stall + OOM per request)
+                import math as _m
+                if not _m.isfinite(secs) or secs <= 0:
+                    secs = None
+                else:
+                    secs = min(secs, float(self.app.cfg.get(
+                        "persist_seconds", 3600)) + 300)
             eng_snap = app.engines.snapshots(secs)
             _model = next(iter(eng_snap.values()), {}).get("model")
             from . import pricing as _pr
@@ -472,6 +548,8 @@ class Handler(BaseHTTPRequestHandler):
     def _settings_patch(self) -> None:
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 1_000_000:  # audit: bypassed the _body_json cap
+                return self._err(400, "bad body size")
             body = json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return self._err(400, "bad json")
@@ -494,6 +572,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "settings": self.app.settings_all()})
 
     def _sse(self, qs: dict) -> None:
+        self.timeout = None  # audit: the event stream only writes
         topics_wanted = (qs.get("topics") or [""])[0].split(",")
         wanted = {t for t in topics_wanted if t}
         # audit: never create broker topics from client input — only names that
@@ -627,7 +706,10 @@ class Handler(BaseHTTPRequestHandler):
         safe = posixpath.normpath(path).lstrip("/")
         if safe.startswith(".."):
             return self._err(403, "forbidden")
-        f = config.WEB / safe
+        f = (config.WEB / safe).resolve()
+        # audit: normpath alone still followed a symlink placed under web/
+        if not str(f).startswith(str(config.WEB.resolve()) + "/"):
+            return self._err(403, "forbidden")
         if not f.is_file():
             return self._err(404, "not found")
         ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"

@@ -17,13 +17,9 @@ def _norm_model(m: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (m or "").lower())
 
 
-def _dbs() -> list[Path]:
-    home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    out = []
-    if (home / "state.db").exists():
-        out.append(home / "state.db")
-    out += sorted((home / "profiles").glob("*/state.db"))
-    return out
+def _dbs() -> list[tuple[str, Path]]:
+    from .hermes_home import hermes_state_dbs
+    return hermes_state_dbs()
 
 
 def today_sessions(model: str | None) -> dict:
@@ -32,11 +28,7 @@ def today_sessions(model: str | None) -> dict:
     lt = time.localtime()
     midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
     rows, seen = [], set()
-    for db in _dbs():
-        profile = db.parent.name if db.parent.name != ".hermes" else "default"
-        if db.parent.name == Path(os.environ.get("HERMES_HOME",
-                                        Path.home() / ".hermes")).name:
-            profile = "default"
+    for profile, db in _dbs():
         try:
             c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
         except sqlite3.Error:

@@ -43,7 +43,7 @@ const BUBS = {
     { label: 'e2e latency (p50)', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
       main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : l.e2e_p50_ms),
-      sub: l => `median · last hour · now ${num(l.e2e_p50_ms)} ms · lifetime ${num(l.e2e_life_avg_ms)} ms` },
+      sub: l => `median · ${l.e2e_med_1h != null ? 'last hour' : 'live 30 s'} · now ${num(l.e2e_p50_ms)} ms · lifetime ${num(l.e2e_life_avg_ms)} ms` },
     { label: 'Spec acceptance', series: 'spec_accept_pct', color: () => COLORS.violet,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.spec_accept_pct),
@@ -84,10 +84,11 @@ const SIDE_TILES = [
     { duo: true, wide: true }],
 ];
 
-const pct = v => v != null ? v.toFixed(1) + '%' : '–';
-const ms = v => v != null ? Math.round(v) + ' ms' : '–';
-const sec = v => v != null ? (v / 1000).toFixed(2) + ' s' : '–';
-const tps = v => v != null ? Math.round(v).toLocaleString('en-US') + ' tok/s' : '–';
+const _fin = v => v != null && Number.isFinite(v);
+const pct = v => _fin(v) ? v.toFixed(1) + '%' : '–';
+const ms = v => _fin(v) ? Math.round(v) + ' ms' : '–';
+const sec = v => _fin(v) ? (v / 1000).toFixed(2) + ' s' : '–';
+const tps = v => _fin(v) ? Math.round(v).toLocaleString('en-US') + ' tok/s' : '–';
 
 function savingsFor(l, secs) {
   const p = state.pricing;
@@ -107,6 +108,8 @@ const hwLatest = () => state.hw.latest || {};
 const cardRefs = [];
 
 function buildCards() {
+  cardRefs.length = 0;  // audit: rebuilds without this leaked detached refs
+                        // and the 1 Hz refresh loop grew unbounded on outages
   for (const [id, defs] of Object.entries(BUBS)) {
     const host = document.querySelector('#' + id);
     host.innerHTML = '';
@@ -228,8 +231,8 @@ function buildCharts() {
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
 }
 
-const escH = s => String(s || '').replace(/[&<>"']/g, c =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const escH = s => String(s || '').replace(/[<>"'\]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\': '&#92;' }[c]));
 
 // Client-context category colors are THEME-REACTIVE: stored as base hues,
 // rotated with the accent palette (applyTheme) so NO chart is left behind;
@@ -438,7 +441,7 @@ function renderModelTable(force) {
     const detail = open ? `<tr><td colspan="10"><div class="mono small" style="line-height:1.8;color:var(--muted)">` +
       Object.entries(l).filter(([k]) => k !== 'savings').map(([k, v]) =>
         `${k} = <b style="color:var(--text)">${typeof v === 'number' ? fmt(v, 2) : escH(String(v))}</b>`).join(' · ') +
-      ` · savings = <b style="color:var(--text)">${l.savings ? '$' + (l.savings.day || 0).toFixed(2) + '/day' : '–'}</b></div></td></tr>` : '';
+      ` · savings = <b style="color:var(--text)">${l.savings ? '$' + (l.savings.day || 0).toFixed(2) + '/day ' + escH('(' + (l.savings.basis || 'at this rate') + ')') : '–'}</b></div></td></tr>` : '';
     return `<tr data-model="${escH(meta.id)}" style="cursor:pointer"><td>${escH(meta.model || meta.id)}</td><td>${escH(meta.kind || '–')}</td>
       <td>${fmt(l.running, 0)}</td><td>${fmt(l.waiting, 0)}</td>
       <td>${l.kv_pct != null ? l.kv_pct.toFixed(0) + '%' : '–'}</td>
@@ -461,8 +464,8 @@ function renderFeed() {
   const f = document.querySelector('#req-feed');
   f.innerHTML = state.reqFeed.map(r => {
     const hh = new Date(r.t * 1000).toTimeString().slice(0, 8);
-    return `<div class="row"><span class="t">${hh}</span><span>+${r.completed} completed</span>
-      <span class="muted">running ${r.running ?? '–'} · waiting ${r.waiting ?? '–'}</span></div>`;
+    return `<div class="row"><span class="t">${hh}</span><span>+${escH(String(r.completed ?? '–'))} completed</span>
+      <span class="muted">running ${escH(String(r.running ?? '–'))} · waiting ${escH(String(r.waiting ?? '–'))}</span></div>`;
   }).join('');
 }
 
@@ -528,6 +531,8 @@ async function connect() {
   try {
     const res = await fetch(`/api/events?topics=${encodeURIComponent(topics)}`,
                             { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
+    if (!res.ok || !res.body) throw new Error('sse http ' + res.status);
+    // audit: pill used to glow 'live 2 Hz' on response headers alone
     document.querySelector('#conn-dot').className = 'dot up';
     document.querySelector('#conn-txt').textContent = 'live 2 Hz';
     const reader = res.body.getReader(); const dec = new TextDecoder();
@@ -594,7 +599,9 @@ async function renderCounters() {
   tabs.innerHTML = CNT_TABS.map(([l, t]) =>
     `<button class="pill tiny${l===cntLabel?' on':''}" data-l="${l}">${t}</button>`).join('');
   tabs.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { cntLabel = b.dataset.l; renderCounters(); });
-  const d = await (await fetch('/api/counters?window=' + cntLabel)).json();
+  let d;
+  try { d = await (await fetch('/api/counters?window=' + cntLabel)).json(); }
+  catch (e) { return; }  // audit: uncaught rejection every 30 s during outages
   state._savSparks = d.sparks || state._savSparks || {};
   const tbl = document.querySelector('#cnt-tbl');
   if (d.empty) { tbl.innerHTML = '<tr><td class="muted">no counter data yet</td></tr>'; return; }
@@ -619,7 +626,7 @@ async function renderCounters() {
   rows.push([`<span class="muted">If cache reads used base rate (${pf(p.cache_read)})</span>`, usd(w.cost_base) + ` <span class="muted">/ ${usd(a.cost_base)} all</span>`]);
   rows.push([`<span class="muted">If context not cached at all (input ${pf(p.input)})</span>`, usd(w.cost_nocache) + ` <span class="muted">/ ${usd(a.cost_nocache)} all</span>`]);
   for (const [label, v] of (d.project || []))
-    rows.push([`<span class="muted">Projected · ${label} @ this rate</span>`, usd(v)]);
+    rows.push([`<span class="muted">Projected · ${escH(label)} @ this rate</span>`, usd(v)]);
   tbl.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td class="mono">${v}</td></tr>`).join('');
   document.querySelector('#cnt-range').textContent = d.tracking_since
     ? `· tracking since ${new Date(d.tracking_since*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})} (366 days kept)` : '';
@@ -684,6 +691,7 @@ btnTraces.addEventListener('click', () => {
 });
 document.querySelector('#btn-traces-back').addEventListener('click', backToDash);
 window.addEventListener('message', e => {
+  if (e.origin !== location.origin) return;  // audit: trusted any origin
   if (e.data === 'sw-close' && tracesPane.style.display === 'block') backToDash();
 });
 document.addEventListener('keydown', e => {
@@ -758,7 +766,9 @@ function renderScope() {
 // ---------------- server config ----------------
 
 async function renderInfo() {
-  const d = await (await fetch('/api/engine-info')).json();
+  let d;
+  try { d = await (await fetch('/api/engine-info')).json(); }
+  catch (e) { return; }  // audit: kept showing pre-outage config as current
   const t = document.querySelector('#info-tbl');
   if (!d.healthy) { t.innerHTML = `<tr><td class="muted">${escH(String(d.error || 'offline'))}</td></tr>`; return; }
   const rows = [['Model', d.model], ['Version', d.version],
@@ -969,7 +979,10 @@ const UI_COOKIE = 'limcars_ui';
 function readUiPrefs() {
   try {
     const m = document.cookie.match(new RegExp('(?:^|; )' + UI_COOKIE + '=([^;]+)'));
-    return m ? JSON.parse(decodeURIComponent(m[1])) : {};
+    const v = m ? JSON.parse(decodeURIComponent(m[1])) : {};
+    // audit: a valid-JSON non-object cookie (e.g. 'null') threw at module
+    // top level and blanked the whole dashboard until manual cookie clear
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
   } catch (e) { return {}; }
 }
 function writeUiPrefs(patch) {
@@ -1085,6 +1098,9 @@ function applyTheme() {
         `<span><i style="background:${typeof s.color === 'function' ? s.color() : s.color}"></i>${s.label}</span>`).join('');
     if (card._chart && card._chart.mark) card._chart.mark();
   }
+  // audit: daily money chart + session bars were interval-only, so a palette
+  // change left them on OLD colors for up to 60 s — repaint them now
+  try { renderSavingsChart(); renderSessionTokens(); } catch (e) { /* pre-boot */ }
 }
 function wireThemeUi() {
   const tb = document.getElementById('btn-theme');
@@ -1284,7 +1300,14 @@ document.querySelector('#btn-probe').addEventListener('click', async () => {
 // ---------------- boot ----------------
 
 (async () => {
-  await seed();
+  try {
+    await seed();
+  } catch (e) {
+    // audit: a server-restart race at tab-load aborted boot permanently
+    // ('loading…' forever — no SSE, no refresh loop). Reload and try again.
+    setTimeout(() => location.reload(), 3000);
+    return;
+  }
   fetchCacheLife();  // after seed so engine proc_start is known
   connect();
   (function loop() {

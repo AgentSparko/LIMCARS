@@ -7,7 +7,10 @@ You are an AI assistant helping the user install, operate, or extend LIMCARS
 
 A dependency-free Python (stdlib + psutil) dashboard for local LLM inference
 servers. Entry point: `python3 -m app` (NOT `python3 -m app.server`).
-Server: `http://127.0.0.1:8951`. Backend lives in `app/`, frontend in
+Server: `http://127.0.0.1:8951` locally — **it binds `0.0.0.0:8951` by
+default (config `host` override), so it is LAN-visible**: password gates
+cover recipe add/edit/delete and Hermes trace data only. Treat the network
+as hostile when migrating data. Backend lives in `app/`, frontend in
 `web/`, tests in `tests/` (`/usr/bin/python3 -m pytest tests/ -q`).
 
 ## Your most useful job: migrate the user's dashboard history

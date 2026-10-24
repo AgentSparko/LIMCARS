@@ -25,12 +25,8 @@ CC_HZ = 0.1          # 1 sample / 10 s — context grows slowly
 
 
 def _profile_dbs() -> list[Path]:
-    home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    out = []
-    if (home / "state.db").exists():
-        out.append(home / "state.db")
-    out += sorted((home / "profiles").glob("*/state.db"))
-    return out
+    from .hermes_home import hermes_state_dbs
+    return [db for _, db in hermes_state_dbs()]
 
 
 def samples_now() -> list[dict]:
@@ -51,7 +47,7 @@ def samples_now() -> list[dict]:
                    FROM messages m JOIN sessions s ON s.id = m.session_id
                    WHERE m.active = 1 AND m.compacted = 0
                      AND s.ended_at IS NULL
-                     AND s.last_activity_at * 1000 >= ? * 1000
+                     AND s.last_activity_at >= ?
                      AND m.session_id IN (
                          SELECT id FROM sessions
                          WHERE ended_at IS NULL

@@ -1,5 +1,5 @@
 """Daily money-saved chart backend: per-day per-model hot-tier cost from
-persisted minute-buckets, day-boundary grouping, synthetic-bucket inclusion,
+persisted minute-buckets, day-boundary grouping, synthetic-bucket exclusion,
 window clamping."""
 import time
 

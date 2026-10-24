@@ -52,7 +52,7 @@ class EngineSampler(threading.Thread):
         self.store = store
         self.hz = float(cfg.get("live_hz", 2.0))
         self.window_s = float(cfg.get("window_s", 30.0))
-        self.ring = Ring(float(cfg.get("ring_seconds", 900)))
+        self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
         self.alive = False
         self.last_scrape = 0.0
         self.kind = eng.get("kind")
@@ -155,12 +155,17 @@ class EngineSampler(threading.Thread):
             self.kind = dialects.detect(body) or "vllm"
             self.broker.publish("events", json.dumps(
                 {"t": now, "type": "engine_kind", "engine": self.id, "kind": self.kind}))
-        if not self.model:
+        if not self.model and now >= getattr(self, "_models_next", 0.0):
             try:
                 models = json.loads(self._fetch("/v1/models", timeout=3.0))
                 self.model = (models.get("data") or [{}])[0].get("id")
+                self._models_next = 0.0
             except Exception:  # noqa: BLE001 — cosmetic only
-                self.model = None
+                # audit: a wedged API layer turned this into a 2 Hz 3 s hang,
+                # collapsing the tick loop; back off exponentially instead.
+                fails = getattr(self, "_models_fails", 0) + 1
+                self._models_fails = fails
+                self._models_next = now + min(60.0, 2.0 ** fails)
         dial = dialects.DIALECTS.get(self.kind, dialects.VLLM)
 
         gauges = dialects.read_gauges(series, dial)
@@ -417,6 +422,7 @@ class EngineSampler(threading.Thread):
             self._rate_prev_t = now
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
+            self._kv_pool = None    # new block config → re-parse pool
             return
         if _ps:
             self._ps_seen = _ps
