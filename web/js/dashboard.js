@@ -1192,9 +1192,9 @@ async function renderLostPotential() {
     '-day recorded period.');
   sent.push('This model is projected to do ' +
     fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
-    fmtTokShort(d.proj_year_tokens) + '/year.');
-  sent.push('Over the ' + d.recorded_days +
-    ' recorded days you did just ' + fmtTokShort(d.total_tokens) + ' tokens.');
+    fmtTokShort(d.proj_year_tokens) + '/year.  \u2014  Over the ' +
+    d.recorded_days + ' recorded days you did just ' +
+    fmtTokShort(d.total_tokens) + ' tokens.');
   if (d.best_hour_cost != null) {
     // measured only for windows we actually watched; anything longer is a
     // pace-based projection, labeled as such (user rule: never claim a

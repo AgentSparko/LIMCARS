@@ -13,16 +13,21 @@
    tint, sentence text instead of a mono number */
 #bub-potential .bubble { grid-column: 1 / -1; border-color: rgba(224, 176, 64, .45); }
 #bub-potential .bubble .label {
-  font-size: 14px; font-weight: 700; color: #e0b040;
-  letter-spacing: .02em; white-space: normal; margin-bottom: 6px; line-height: 1.5; }
+  font-size: 17.5px; font-weight: 700; color: #e0b040;
+  letter-spacing: .02em; white-space: normal; margin-bottom: 6px; line-height: 1.5;
+  -webkit-text-stroke: .35px rgba(0, 0, 0, .55); }   /* black edge: readable on any tint */
 #bub-potential .bubble .label .pot-loss {
-  color: #ffd75e; font-weight: 800; font-size: 17.5px;
+  color: #ffd75e; font-weight: 800; font-size: 22px;
+  -webkit-text-stroke: .7px rgba(0, 0, 0, .9);
   text-shadow: 0 0 14px rgba(255, 215, 94, .35); }
+html[data-theme="light"] #bub-potential .bubble .label {
+  color: #a16207; -webkit-text-stroke: .35px rgba(0, 0, 0, .75); }
 html[data-theme="light"] #bub-potential .bubble .label .pot-loss {
-  color: #d97706; text-shadow: none; }
+  color: #d97706; -webkit-text-stroke: .8px rgba(0, 0, 0, .95);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .6); }
 #bub-potential .bubble .value.pot-text {
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-  font-size: 13.5px; font-weight: 500; line-height: 1.55;
+  font-size: 17px; font-weight: 500; line-height: 1.5;
   white-space: normal; overflow: visible; }
 .side-chart .head { margin-bottom: 2px; }
 .pill.tiny { font-size: 9.5px; padding: 3px 7px; }
