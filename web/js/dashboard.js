@@ -1188,8 +1188,8 @@ async function renderLostPotential() {
   }
   sent.push(escH(d.model) + ' was recorded doing up to ' +
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
-    'use barely ' + pct + ' of that for the ' + d.period_days +
-    '-day recorded period.');
+    'use barely ' + pct + ' of that across the ' + d.recorded_days +
+    ' recorded days.');
   sent.push('This model is projected to do ' +
     fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
     fmtTokShort(d.proj_year_tokens) + '/year.  \u2014  Over the ' +
