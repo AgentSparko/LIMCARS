@@ -349,17 +349,17 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             cand["duty_day_cost"] = round(peak_cost_w * duty_hours, 2)
             cand["duty_month_cost"] = round(peak_cost_w * 30.4 * duty_hours, 2)
             cand["duty_year_cost"] = round(peak_cost_w * 365 * duty_hours, 2)
-            cand["loss_month_cost"] = (
-                round(peak_cost_w * 730 - avg_day_cost * 30.4, 2)
-                if rec_days >= 31 else None)
-            cand["loss_year_cost"] = (
-                round(peak_cost_w * 8760 - avg_day_cost * 365, 2)
-                if rec_days >= 366 else None)
+            # The headline keeps the user-approved wording ("... a year!"), so
+            # the YEAR figure has to be a year of WORK, not a year of never
+            # stopping: the hourly gap priced over duty_hours a day for 365
+            # days. The 24/7 figure still exists, named 'ceiling', and the UI
+            # does not headline it. (This is what made the old number 11-37k:
+            # best hour x 8760 with no duty cycle at all.)
+            cand["loss_month_cost"] = round(gap_hour * duty_hours * 30.4, 2)
+            cand["loss_year_cost"] = round(gap_hour * duty_hours * 365, 2)
             # A "lost potential" alert with nothing to advertise is just noise:
             # if the best hour equals the average hour there is no gap to show.
-            if peak_cost_w <= 0 or max(cand["loss_period_cost"],
-                                       cand["loss_month_cost"] or 0.0,
-                                       cand["loss_year_cost"] or 0.0) <= 0:
+            if peak_cost_w <= 0 or cand["loss_year_cost"] <= 0:
                 reason = "nothing_to_claim"
                 continue
         else:

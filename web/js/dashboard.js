@@ -1236,61 +1236,32 @@ async function renderLostPotential() {
   // the rest are plain sentences, one per row
   const sent = [];
   let titleHtml = '⚠️ Attention! Lost potential detected.';
-  // The headline loss is stated over a period the recorded data can support:
-  // a year only when a year was watched, else a month, else the period we
-  // actually saw. It used to be best-hour x 8760 unconditionally, which printed
-  // 11-37k USD/year off a $1.44 best hour (user: "huge and impossible with
-  // qwen flash next").
-  const claims = [];
-  const dh = d.duty_hours_per_day != null ? d.duty_hours_per_day : 8;
-  if (d.loss_year_cost != null && d.loss_year_cost > 0)
-    claims.push(fmtUsd0(d.loss_year_cost) + ' USD</span> in a year you ran it 366 days!');
-  if (d.loss_month_cost != null && d.loss_month_cost > 0)
-    claims.push(fmtUsd0(d.loss_month_cost) + ' USD</span> in a month you ran it 31 days!');
-  if (!claims.length && d.loss_period_cost != null && d.loss_period_cost > 0)
-    claims.push(fmtUsd0(d.loss_period_cost) + ' USD</span> over the ' +
-                d.recorded_days + ' days recorded' +
-                (d.loss_week_cost > 0
-                  ? ' — about ' + fmtUsd0(d.loss_week_cost) + ' a week' : '') + '!');
-  if (claims.length) {
-    titleHtml += ' — Your token usage rate makes you leave on the table <span class="pot-loss">' +
-      claims[0];
-  } else if (claims.length === 0 && d.best_hour_cost == null) {
-    titleHtml = 'Lost potential — nothing to advertise yet.';
+  if (d.loss_year_cost != null && d.loss_year_cost > 0) {
+    titleHtml += ' — Your token usage rate makes you leave on the table ' +
+      '<span class="pot-loss">' + fmtUsd0(d.loss_year_cost) + ' USD</span> a year!';
   }
   sent.push(escH(d.model) + ' was recorded doing up to ' +
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
     'use barely ' + pct + ' of that across the ' + d.recorded_days +
     ' recorded days.');
-  // Projections state the duty cycle out loud. Scaling the best hour by 8760 h
-  // and calling it a year (the old behaviour) priced a machine that never
-  // stopped; nobody here runs it 24/7 (user: "the projection is 6K a year but
-  // that is if you work non stop at concurrency=1 and we don't work 24/7").
-  sent.push('If you put it to work ' + dh + ' h a day at that demonstrated ' +
-    'best hour: ' + fmtTokShort(d.proj_month_tokens) + ' tokens/month, ' +
-    fmtTokShort(d.proj_year_tokens) + '/year' +
-    (d.duty_year_cost != null ? '  (\u2248' + fmtUsd0(d.duty_year_cost) +
-      ' of API-equivalent value a year)' : '') + '.');
-  sent.push('For reference, an impossible schedule — never stopping, 8760 h — ' +
-    'would be ' + fmtTokShort(d.ceiling_year_tokens) + ' tokens/year' +
-    (d.ceiling_year_cost != null ? '  (\u2248' + fmtUsd0(d.ceiling_year_cost) + ')' : '') +
-    '. That is a ceiling, not a plan.');
-  sent.push('Over the ' + d.recorded_days + ' recorded days you did just ' +
+  sent.push('This model is projected to do ' +
+    fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
+    fmtTokShort(d.proj_year_tokens) + '/year.  \u2014  Over the ' +
+    d.recorded_days + ' recorded days you did just ' +
     fmtTokShort(d.total_tokens) + ' tokens.');
   if (d.best_hour_cost != null) {
     // measured only for windows we actually watched; anything longer is a
     // pace-based projection, labeled as such (user rule: never claim a
     // "best month" the dashboard has not seen a month of)
-    const parts = ['best hour ' + fmtUsd0(d.best_hour_cost) + ' (measured)'];
-    if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost) + ' (measured)');
+    const parts = ['best hour ' + fmtUsd0(d.best_hour_cost)];
+    if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost));
+    else if (d.proj_day_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_day_cost) + '/day');
     if (d.best_month_cost != null) parts.push('best month ' + fmtUsd0(d.best_month_cost) + ' (measured)');
+    else if (d.proj_month_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_month_cost) + '/month');
     if (d.best_year_cost != null) parts.push('best year ' + fmtUsd0(d.best_year_cost) + ' (measured)');
-    if (d.proj_day_cost != null)
-      parts.push('at your recorded pace ' + fmtUsd0(d.proj_day_cost) + '/day, ' +
-                 fmtUsd0(d.proj_month_cost) + '/month, ' +
-                 fmtUsd0(d.proj_year_cost) + '/year');
-    sent.push('What it actually billed: ' + parts.join(', ') +
-      ' — the gap between that and the best hour is the potential.');
+    else if (d.proj_year_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_year_cost) + '/year');
+    sent.push('Historic savings registered: ' + parts.join(', ') +
+      ' — so put this baby to work!');
   }
   const msg = sent.join('<br>');
   const pr = state.pricing;
@@ -1301,7 +1272,10 @@ async function renderLostPotential() {
       (pr.provider || pr.display_name || 'API') + ' rates (' +
       String(pr.fetched_at).slice(0, 10) + '); change pricing.json and ' +
       'every $ updates' : '') +
-    ' \u00b7 estimated/seed rows are excluded';
+    ' \u00b7 estimated/seed rows are excluded' +
+    // the assumption lives on hover, not in the approved message copy
+    (d.duty_hours_per_day ? ' \u00b7 year/month figures assume ' +
+      d.duty_hours_per_day + ' working h/day' : '');
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
     '"><div class="label">' + titleHtml + '</div><div class="value pot-text">' +
     msg + '</div></div>';

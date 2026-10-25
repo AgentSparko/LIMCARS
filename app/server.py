@@ -139,7 +139,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
+
+    def _write(self, body: bytes) -> None:
+        # HEAD must answer like GET but with no body. BaseHTTPRequestHandler
+        # ships no do_HEAD, so HEAD used to fall through and get the HTML page
+        # — which is how 'curl -I /js/dashboard.js' called a script text/html.
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
 
     def _err(self, code: int, msg: str) -> None:
         self._json({"ok": False, "error": msg}, code)
@@ -207,6 +214,14 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     # ---------------- dispatch ----------------
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        # monitoring, link checkers and curl -I all ask; answer like GET
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
 
     def do_GET(self) -> None:  # noqa: N802
         u = urllib.parse.urlparse(self.path)
@@ -576,6 +591,13 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "settings": self.app.settings_all()})
 
     def _sse(self, qs: dict) -> None:
+        if getattr(self, "_head_only", False):
+            # HEAD on the event stream must not block waiting for events
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         self.timeout = None  # audit: the event stream only writes
         topics_wanted = (qs.get("topics") or [""])[0].split(",")
         wanted = {t for t in topics_wanted if t}
@@ -706,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self._write(body)
 
     def _static(self, path: str) -> None:
         if path in ("/", ""):
@@ -732,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
-        self.wfile.write(data)
+        self._write(data)
 
 
 def serve(cfg: dict) -> None:

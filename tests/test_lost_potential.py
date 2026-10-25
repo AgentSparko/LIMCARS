@@ -57,10 +57,10 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["ceiling_year_tokens"] == round(180e6 * 24 * 365)
     assert r["pace_month_tokens"] == round(140e6 * 730)
     assert r["pace_year_tokens"] == round(140e6 * 8760)
-    # Money claims only cover periods that were actually watched: one day of
-    # history may not print a yearly loss (that is how a $1.44 best hour used
-    # to advertise 11-37k USD/year).
-    assert r["loss_year_cost"] is None and r["loss_month_cost"] is None
+    # Money figures use the stated working day, never a 24/7 extrapolation:
+    # the year figure is the hourly gap priced over 8 working h x 365 days.
+    assert r["loss_year_cost"] == round((180.0 - 140.0) * 8 * 365, 2)
+    assert r["loss_month_cost"] == round((180.0 - 140.0) * 8 * 30.4, 2)
     # gap over the recorded period = (best hour - avg hour) x hours watched
     assert abs(r["loss_period_cost"] - (180.0 - 140.0) * 1.5) < 1.0
     assert r["recorded_days"] == 1
@@ -223,10 +223,12 @@ def test_projections_carry_the_duty_cycle_assumption(tmp_path):
     # the ceiling does not move with the duty cycle — it IS the 24/7 number
     assert r8["ceiling_year_tokens"] == r24["ceiling_year_tokens"]
     assert r8["ceiling_year_cost"] == round(180.0 * 8760, 2)
-    # no year was watched, so no yearly loss claim, but the period loss is
-    # expressed per week so it can never be misread as an annual figure
-    assert r8["loss_year_cost"] is None
-    assert r8["loss_month_cost"] is None
+    # the approved headline says "a year", so the year figure must scale with
+    # the working day — and NOT with a 24/7 schedule
+    gap = 180.0 - 120.0                 # best hour minus average hour
+    assert r8["loss_year_cost"] == round(gap * 8 * 365, 2)
+    assert r24["loss_year_cost"] == round(gap * 24 * 365, 2)
+    assert r24["loss_year_cost"] == round(r8["loss_year_cost"] * 3, 2)
     assert r8["loss_week_cost"] > 0
     # a nonsense duty cycle is clamped into a sane range, not obeyed
     assert lost_potential(st, LIVE, PRICE, duty_hours=9999)["duty_hours_per_day"] == 24
