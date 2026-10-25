@@ -42,8 +42,8 @@ const BUBS = {
       main: l => histMs(l, 'ttft'), sub: l => 'time to first token · ' + histBasis(l, 'ttft') },
     { label: 'e2e latency', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
-      main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : histNum(l, 'e2e')),
-      sub: l => `median of 30 s means · last hour · ${histBasis(l, 'e2e')} · now ${ms(histNum(l, 'e2e'))} · lifetime ${ms(l.e2e_life_avg_ms)}` },
+      main: l => sec(e2eHourNum(l) != null ? e2eHourNum(l) : histNum(l, 'e2e')),
+      sub: l => `${e2eHourBasis(l)} · now ${sec(histNum(l, 'e2e'))} · lifetime ${sec(l.e2e_life_avg_ms)}` },
     { label: 'Spec acceptance', series: 'spec_accept_pct', color: () => COLORS.violet,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.spec_accept_pct),
@@ -101,6 +101,17 @@ const histBasis = (l, k) => { const n = l[k + '_n'] || 0;
   return n >= 20 ? `p50 · 30 s window · n=${n}`
        : n ? `true mean · 30 s · n=${n} (too few reqs for p50)`
        : 'idle 30 s · holding last'; };
+// e2e headline: ONE true p50 over the last hour, from exact cumulative-bucket
+// deltas (the old LIMCARS method), so the two dashes agree. Mediating 30 s
+// means instead read 27 s where the old dash read 17.93 s — at low request
+// rates a few long requests own a 30 s window and the median inherits the skew.
+const e2eHourNum = l => { const n = l.e2e_n_1h || 0;
+  return n >= 20 ? l.e2e_p50_1h_ms
+                 : (l.e2e_avg_1h_ms != null ? l.e2e_avg_1h_ms : l.e2e_p50_1h_ms); };
+const e2eHourBasis = l => { const n = l.e2e_n_1h || 0;
+  return n >= 20 ? `p50 · last hour · n=${n}`
+       : n ? `mean · last hour · n=${n} (too few reqs for p50)`
+       : 'last hour · idle'; };
 
 function savingsFor(l, secs) {
   const p = state.pricing;
@@ -546,6 +557,7 @@ async function connect() {
     const res = await fetch(`/api/events?topics=${encodeURIComponent(topics)}`,
                             { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
     if (!res.ok || !res.body) throw new Error('sse http ' + res.status);
+    state.sseBackoff = 1000;   // a stream opened: forget the backoff ladder
     // audit: pill used to glow 'live 2 Hz' on response headers alone
     document.querySelector('#conn-dot').className = 'dot up';
     document.querySelector('#conn-txt').textContent = 'live 2 Hz';
@@ -598,7 +610,11 @@ async function connect() {
   // stale after an outage (audit finding: lastId was dead state — reconnect
   // replayed nothing, so lost events stayed lost until a manual refresh)
   seed(false).catch(() => {});
-  setTimeout(connect, 2000);
+  // Exponential backoff, capped at 30 s (was a fixed 2 s retry: with no engine
+  // connected the stream was rejected every 2 s around the clock, which read as
+  // the page refreshing itself nonstop). Reset once a stream actually opens.
+  state.sseBackoff = Math.min((state.sseBackoff || 1000) * 2, 30000);
+  setTimeout(connect, state.sseBackoff);
 }
 
 // ---------------- token counters report (old LIMCARS parity) ----------------
@@ -1212,9 +1228,24 @@ async function renderLostPotential() {
   // the rest are plain sentences, one per row
   const sent = [];
   let titleHtml = '⚠️ Attention! Lost potential detected.';
-  if (d.loss_year_cost != null && d.loss_year_cost > 0) {
-    titleHtml += ' — Your token usage rate makes you leave on the table ' +
-      '<span class="pot-loss">' + fmtUsd0(d.loss_year_cost) + ' USD</span> a year!';
+  // The headline loss is stated over a period the recorded data can support:
+  // a year only when a year was watched, else a month, else the period we
+  // actually saw. It used to be best-hour x 8760 unconditionally, which printed
+  // 11-37k USD/year off a $1.44 best hour (user: "huge and impossible with
+  // qwen flash next").
+  const claims = [];
+  if (d.loss_year_cost != null && d.loss_year_cost > 0)
+    claims.push(fmtUsd0(d.loss_year_cost) + ' USD</span> a year!');
+  if (d.loss_month_cost != null && d.loss_month_cost > 0)
+    claims.push(fmtUsd0(d.loss_month_cost) + ' USD</span> a month!');
+  if (d.loss_period_cost != null && d.loss_period_cost > 0)
+    claims.push(fmtUsd0(d.loss_period_cost) + ' USD</span> over the ' +
+                d.recorded_days + ' days recorded!');
+  if (claims.length) {
+    titleHtml += ' — Your token usage rate makes you leave on the table <span class="pot-loss">' +
+      claims[0];
+  } else if (claims.length === 0 && d.best_hour_cost == null) {
+    titleHtml = 'Lost potential — nothing to advertise yet.';
   }
   sent.push(escH(d.model) + ' was recorded doing up to ' +
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +

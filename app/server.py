@@ -499,7 +499,8 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             if hit and now - hit[0] < 60.0:
                 return self._json(hit[1])
-            engines = [{"id": s.id, "model": s.model} for s in app.engines.all()]
+            engines = [{"id": s.id, "model": s.model, "alive": bool(s.alive)}
+                       for s in app.engines.all()]
             payload = counters_mod.lost_potential(
                 app.store, engines, app.cfg.get("pricing"))
             cache["all"] = (now, payload)
@@ -576,16 +577,22 @@ class Handler(BaseHTTPRequestHandler):
         topics_wanted = (qs.get("topics") or [""])[0].split(",")
         wanted = {t for t in topics_wanted if t}
         # audit: never create broker topics from client input — only names that
-        # already exist (engine:*/hw/requests/events), bounded per connection
+        # are legitimately part of this deployment. The old test compared against
+        # topics that had ALREADY been published to, so on a fresh start or with
+        # no engine connected 'requests' and 'events' did not exist yet, the
+        # browser's own topic list was rejected, and the page retried a 400 every
+        # 2 s forever (user: "the web ui keeps refreshing itself very often").
         import re as _re
         known = set(self.app.broker._topics.keys())
+        core = {"hw", "requests", "events"}
+        allowed = known | core | {f"engine:{s.id}" for s in self.app.engines.all()}
         bad = [t for t in wanted
-               if not _re.fullmatch(r"[A-Za-z0-9:_-]{1,64}", t)
-               or (t not in known and not t.startswith("engine:"))]
+               if not _re.fullmatch(r"[A-Za-z0-9:_-]{1,64}", t) or t not in allowed]
         if len(wanted) > 32 or bad:
             return self._err(400, "bad topics")
-        wanted = {t for t in wanted if t in known} or (
-            known or {"engine", "hw", "requests", "events"})
+        # Subscribe to what the broker already carries; a valid topic that has
+        # simply not published yet is created on subscribe rather than punished.
+        wanted = {t for t in wanted if t in known} or (wanted & allowed)
         last = self.headers.get("Last-Event-ID")  # "topic:seq"
         since: dict[str, int] = {}
         if last:

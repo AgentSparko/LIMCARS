@@ -187,8 +187,17 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
     window sum equals hot_costs of the window totals)."""
     from . import pricing as pricing_mod
 
+    # Gates (user report: the alert fired with no engine connected, and priced a
+    # 37k USD/year loss off a couple of minutes of data). An alert that says
+    # "you are leaving money on the table" must be backed by an engine that is
+    # actually serving and at least one honest hour of watched traffic.
+    serving = [e for e in engines if e.get("alive", True)]
+    if not serving:
+        return {"ok": False, "reason": "no_engine"}
+
     best = None
-    for eng in engines:
+    reason = "no_data"
+    for eng in serving:
         eid, model = eng["id"], eng.get("model")
         rows = [(ts, p or 0.0, c or 0.0, g or 0.0)
                 for ts, p, c, g in store.minute_rows(eid)
@@ -204,20 +213,41 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
             cost = pricing_mod.hot_costs(p, c, g, price)["hot"] if price else 0.0
             mins.append((ts // 60, p + g, cost))
         mins.sort()
+        # collapse duplicate minute rows so "active minutes" counts minutes, not rows
+        agg: dict[int, list[float]] = {}
+        for m_idx, tok, cost in mins:
+            slot = agg.setdefault(m_idx, [0.0, 0.0])
+            slot[0] += tok
+            slot[1] += cost
+        mins = sorted((k, v[0], v[1]) for k, v in agg.items())
+        # An hour of watched data minimum. span_hours is floored at 1.0 below,
+        # so without this a two-minute install projects its burst across a year.
+        if len(mins) < 60:
+            reason = "recorded_lt_1h"
+            continue
         # sliding best 60-minute window (tokens and $ independently)
         peak_tok_w = peak_cost_w = cur_tok = cur_cost = 0.0
+        peak_active = cur_active = 0
         start = 0
         for end in range(len(mins)):
             cur_tok += mins[end][1]
             cur_cost += mins[end][2]
+            cur_active += 1          # mins only holds minutes with activity
             while mins[end][0] - mins[start][0] > 59:
                 cur_tok -= mins[start][1]
                 cur_cost -= mins[start][2]
+                cur_active -= 1
                 start += 1
             if cur_tok > peak_tok_w:
                 peak_tok_w = cur_tok
+                peak_active = cur_active
             if cur_cost > peak_cost_w:
                 peak_cost_w = cur_cost
+        # The "best hour" must be an hour, not one busy minute multiplied by a
+        # 60-minute window: a burst of a few requests is not a demonstrated rate.
+        if peak_active < 15:
+            reason = "peak_too_thin"
+            continue
         total_tok = sum(t for _, t, _ in mins)
         # "recorded period" = time the dash was ACTUALLY watching: sum of
         # contiguous minute-clusters (gaps > 2 days split clusters), so a
@@ -281,16 +311,36 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
             cand["proj_day_cost"] = round(avg_day_cost, 2)
             cand["proj_month_cost"] = round(avg_day_cost * 30.4, 2)
             cand["proj_year_cost"] = round(avg_day_cost * 365, 2)
-            # "Your token usage rate makes you lose $X USD a year" (user
-            # spec): best-hour ceiling (best hour x 8760) minus the year
-            # annualized at the RECORDED pace. Same formula the old dash
-            # showed (~$12K) — it is a CEILING minus actual, never "actual x
-            # 8760".
-            cand["loss_year_cost"] = round(peak_cost_w * 8760 - avg_day_cost * 365, 2)
+            # "Your token usage rate makes you leave $X on the table" (user
+            # spec): best-hour ceiling minus what was actually billed, over a
+            # period the data can actually support. The yearly claim used to be
+            # unconditional (best hour x 8760), which is how a $1.44 best hour
+            # printed as a $11-37k "loss" the user called impossible — a machine
+            # that ran its single best hour nonstop for a year is not a fact
+            # about this machine unless a year of it was actually watched.
+            avg_hour_cost = tot_cost / span_hours
+            gap_hour = max(0.0, peak_cost_w - avg_hour_cost)
+            cand["loss_hour_cost"] = round(gap_hour, 2)
+            # what the gap cost during the time the dash was actually watching
+            cand["loss_period_cost"] = round(gap_hour * span_hours, 2)
+            cand["loss_month_cost"] = (
+                round(peak_cost_w * 730 - avg_day_cost * 30.4, 2)
+                if rec_days >= 31 else None)
+            cand["loss_year_cost"] = (
+                round(peak_cost_w * 8760 - avg_day_cost * 365, 2)
+                if rec_days >= 366 else None)
+            # A "lost potential" alert with nothing to advertise is just noise:
+            # if the best hour equals the average hour there is no gap to show.
+            if peak_cost_w <= 0 or max(cand["loss_period_cost"],
+                                       cand["loss_month_cost"] or 0.0,
+                                       cand["loss_year_cost"] or 0.0) <= 0:
+                reason = "nothing_to_claim"
+                continue
         else:
             for _k in ("best_hour_cost", "best_day_cost", "best_month_cost",
                        "best_year_cost", "proj_day_cost",
-                       "proj_month_cost", "proj_year_cost", "loss_year_cost"):
+                       "proj_month_cost", "proj_year_cost", "loss_year_cost",
+                       "loss_month_cost", "loss_period_cost", "loss_hour_cost"):
                 cand[_k] = None
         # "This model is projected to do" = what it DEMONSTRATED it can do:
         # the best recorded hour scaled to a month/year (25M/h -> 600M/day,
@@ -303,5 +353,5 @@ def lost_potential(store, engines: list[dict], pricing_cfg) -> dict:
         if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:
             best = cand
     if best is None:
-        return {"ok": False}
+        return {"ok": False, "reason": reason}
     return {"ok": True, **best}

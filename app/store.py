@@ -12,6 +12,12 @@ import threading
 import time
 
 
+# Plausibility caps for history reads. Samples written before the prefill
+# attribution fix can hold 10k+ tok/s fictions; the sampler refuses to publish
+# those today, so the charts must not resurrect them from old rows either.
+SERIES_MAX = {"prefill_tps_avg": 12000.0, "prefill_tps_now": 12000.0}
+
+
 class Store:
     def __init__(self, path: str, persist_seconds: float = 3600):
         self.path = path
@@ -83,14 +89,27 @@ class Store:
     def save_counter_bucket(self, engine: str, ts: int, b: dict) -> None:
         ts = int(ts) // 60 * 60      # defensive: minute buckets must align,
                                      # unaligned rows fragment hourly windows
+        synth = 1 if b.get("synthetic") else 0
         with self._lock:
+            if synth:
+                # A synthetic seed/gap bucket must never clobber a real minute.
+                # INSERT OR REPLACE used to overwrite the row and minute_rows()
+                # filters synthetic out, so every limcars restart silently
+                # deleted the minute of real traffic the seed landed in
+                # (found while gating the lost-potential alert on an honest
+                # hour of history). A real minute is worth more than a seed.
+                cur = self._con.execute(
+                    "SELECT COALESCE(synthetic,0) FROM counter_buckets"
+                    " WHERE engine=? AND ts=?", (engine, ts)).fetchone()
+                if cur is not None and cur[0] == 0:
+                    return           # keep the real bucket, drop the seed
             self._con.execute(
                 "INSERT OR REPLACE INTO counter_buckets"
                 "(engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,"
                 "spec_sum,spec_n,synthetic) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (engine, ts, b["prompt"], b["cached"], b["gen"], b["reqs"],
                  b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"],
-                 b["spec_n"], 1 if b.get("synthetic") else 0))
+                 b["spec_n"], synth))
             self._con.commit()
         # 366-day retention, old-LIMCARS parity
         with self._lock:
@@ -179,12 +198,19 @@ class Store:
         ~200 points; fetching all 2 Hz rows + json.loads under the store
         lock per poll was needlessly heavy (audit F4)."""
         cutoff = time.time() - seconds
+        cap = SERIES_MAX.get(key)
         with self._lock:
             cur = self._con.execute(
                 "SELECT t, json_extract(data, ?) FROM engine_samples"
                 " WHERE engine=? AND t>=? AND CAST(t AS INTEGER) % ? = 0"
                 " ORDER BY t", (f"$.{key}", engine, cutoff, int(stride_s)))
-            out = [(t, v) for t, v in cur.fetchall() if v is not None]
+            out = [(t, v) for t, v in cur.fetchall()
+                   # pre-fix samples carry completion-attribution fictions
+                   # (10k+ tok/s prefill); never plot what the sampler itself
+                   # would refuse to publish today
+                   if v is not None and not (cap is not None
+                                             and isinstance(v, (int, float))
+                                             and v > cap)]
         return out
 
     def last_active_hour(self, engine: str) -> dict:

@@ -1,5 +1,7 @@
 data/*.db*
 data/server.log
+data/config.json
+data/recipe-logs/
 __pycache__/
 .pytest_cache/
 data/auth.json

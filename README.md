@@ -90,7 +90,13 @@ configuration. Missing metrics degrade to `–`, never to fake zeros.
 | 🧊 exl3 | full — exact prefill/generate pairing |
 | 🧮 TensorFold | full — dual metric families, spec decode |
 | 🦙 llama.cpp | basic — running requests + token counters |
-| 🔁 TandemLLM-family | basic — inflight + token counters |
+| 🔁 TandemLLM-family | **work in progress** — inflight + token counters |
+
+> **TandemLLM detection is still work in progress.** It is recognised only when
+> the engine advertises the `qse_*` metric names; a stock build that reuses plain
+> vLLM metric names is auto-detected as vLLM, which keeps the throughput panels
+> working but leaves the latency bubbles empty until its metric surface settles
+> upstream. Everything else degrades to `–`, never to fake numbers.
 
 Prefill speed is measured **honestly**: prefix-cache hits are excluded and each
 engine family is read through the most exact counter pairing it offers — so you

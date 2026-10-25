@@ -40,6 +40,11 @@ from .rings import Ring
 from .sse import Broker
 
 
+PREFILL_MAX = 12000.0   # plausibility ceiling, tok/s. Real peak measured on
+                        # the GB10 daily driver is ~7.5k; anything above this is
+                        # completion-attribution skew, never a speed.
+
+
 class EngineSampler(threading.Thread):
     daemon = True
 
@@ -52,6 +57,12 @@ class EngineSampler(threading.Thread):
         self.store = store
         self.hz = float(cfg.get("live_hz", 2.0))
         self.window_s = float(cfg.get("window_s", 30.0))
+        # Prefill needs longer to settle than everything else: prompt tokens and
+        # the prefill_seconds they cost are charged at different moments, so a
+        # 30 s ratio still overshoots ~3x. The rate is therefore computed over a
+        # settle window (2 min by default) — which also keeps this gauge slow,
+        # the standing rule for any speed/latency bubble.
+        self.prefill_win_s = float(cfg.get("prefill_window_s", 120.0))
         self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
         self.alive = False
         self.last_scrape = 0.0
@@ -61,6 +72,11 @@ class EngineSampler(threading.Thread):
         self._prev_t = 0.0
         self._hist_prev: dict[str, tuple] = {}  # logical -> hist state at last tick
         self._hist_base: dict[str, list] = {}   # logical -> [(t, state)...] window ago
+        # coarse 5 s history kept for ~1 h: lets a bubble ask for an exact
+        # p50 over the last HOUR (old LIMCARS method) instead of mediating
+        # 30 s windows, whose means swing wildly at low request rates
+        self._hist_hr: dict[str, list] = {}
+        self._hist_hr_t = 0.0
         self._hist_snap_t = 0.0
         self._counter_win: dict[str, list] = {} # logical -> [(t, delta)] ring-ish list
         self._pf_last_sum = None                 # last prefill_time hist sum (per-tick activity)
@@ -195,7 +211,12 @@ class EngineSampler(threading.Thread):
                 row[key] = None
                 self._reset_baseline(now, counters, hists)
             else:
-                row[key] = (cur - old) / dt
+                v = (cur - old) / dt
+                # prompt tokens are completion-charged: a whole prompt landing
+                # in one tick is an attribution artifact, not a speed. Refuse to
+                # show it above the plausibility cap (the bubble holds last).
+                row[key] = None if (key == "prefill_tps_now"
+                                    and v > PREFILL_MAX) else v
             self._win_delta(logical, cur, old, now, dt)
         for logical in ("drafts", "draft_tokens", "accepted_tokens",
                         "prefix_hits", "prefix_queries",
@@ -208,46 +229,7 @@ class EngineSampler(threading.Thread):
         # (e.g. 127k tokens in 0.5 s). The honest prefill speed is
         #     Δprompt_tokens / Δprefill_time_sum   over the window —
         # tokens actually spent per second the engine WAS prefilling.
-        prefill_true = None
-        pd = self._win_sum("prompt_tokens")
-        cd = self._win_sum("prefix_hits")
-        # prompt_tokens_total counts prefix-CACHED tokens too (~90 % here);
-        # prefill_time only counts COMPUTE time — dividing the two inflated
-        # prefill speed ~10x (50k tok/s vs the engine's real ~2.5k). The
-        # honest numerator is uncached prompt tokens only. STRICT: if the
-        # cached window is missing (metrics gap / counter-reset rebuild) the
-        # subtraction would silently inflate — report None instead, the
-        # bubble holds last value rather than lying.
-        uncached = None if (pd is None or cd is None) else max(0.0, pd - cd)
-        hd = self._hist_delta("prefill_time")
-        if hd and hd[1] > 0 and uncached is not None and uncached > 0:
-            rate = uncached / hd[1]
-            if rate <= 12000:          # implausible → counter skew (prompt
-                prefill_true = rate    # deltas are completion-charged); real
-                                       # peak measured on this box is ~7.5k
-        if prefill_true is None:
-            # Engine-native paths (ported from the TandemDash adapter family):
-            # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
-            # DURING prefill — a true live rate, no completion attribution.
-            rt = self._win_rate("prefill_tokens")
-            if rt is not None and 0 < rt <= 12000:
-                prefill_true = rt
-        if prefill_true is None:
-            # exl3/tensorfold alt: prefill_seconds is a cumulative compute-
-            # seconds COUNTER — Δprompt/Δprefill_seconds pairs perfectly
-            # (both completion-charged counters, no histogram involved).
-            psecs = self._win_sum("prefill_seconds")
-            if psecs is not None and psecs > 0 and pd is not None and pd > 0:
-                v = pd / psecs
-                if v <= 12000:
-                    prefill_true = v
-        if prefill_true is None:
-            fr = self._win_rate("prompt_tokens")
-            cr = self._win_rate("prefix_hits")
-            row["prefill_tps_avg"] = (
-                max(0.0, fr - cr) if fr is not None and cr is not None else None)
-        else:
-            row["prefill_tps_avg"] = prefill_true
+        row["prefill_tps_avg"] = self._prefill_rate(now)
         # prefill activity. No metric advances per-tick *during* a prefill
         # (prefix queries charge once at admission; request_prefill_time and
         # prompt_tokens fire at completion; iteration hist only logs decode
@@ -296,6 +278,14 @@ class EngineSampler(threading.Thread):
         # rule for latency bubbles, without ever inventing a percentile.
         st = hists.get("e2e")
         row["e2e_life_avg_ms"] = (st[1] / st[2] * 1000) if st and st[2] else None
+        # the bubble's headline: one true p50 over the last hour (exact bucket
+        # deltas). Kept alongside e2e_med_1h, which stays for the sparkline.
+        sl = self._hist_slice("e2e", 3600.0)
+        if sl:
+            row["e2e_p50_1h_ms"], row["e2e_avg_1h_ms"], row["e2e_n_1h"] = sl
+        else:
+            row["e2e_p50_1h_ms"] = row["e2e_avg_1h_ms"] = None
+            row["e2e_n_1h"] = 0
         row["e2e_med_1h"] = self._hour_median("e2e_avg_ms", row.get("e2e_avg_ms"))
 
         # --- request completion events (count jump) ---
@@ -539,6 +529,7 @@ class EngineSampler(threading.Thread):
         self._prev_t = now
         self._hist_prev = {}
         self._hist_base = {}
+        self._hist_hr = {}
         self._counter_win = {}
         self._pf_last_sum = None
         self._pf_last_move = 0.0
@@ -551,31 +542,35 @@ class EngineSampler(threading.Thread):
             return
         win = self._counter_win.setdefault(logical, [])
         win.append((now, cur - old, dt))
-        cutoff = now - self.window_s * 1.25
+        # keep at least a settle window of deltas: the prefill ratio reads back
+        # further than the 30 s window everything else uses
+        cutoff = now - max(self.window_s, self.prefill_win_s) * 1.1
         while win and win[0][0] < cutoff:
             win.pop(0)
 
-    def _win_rate(self, logical: str) -> float | None:
-        tot_dt = self._win_span(logical)
-        s = self._win_sum(logical)
+    def _win_rate(self, logical: str, since: float | None = None) -> float | None:
+        tot_dt = self._win_span(logical, since)
+        s = self._win_sum(logical, since)
         if s is None or not tot_dt:
             return None
         return s / tot_dt
 
-    def _win_sum(self, logical: str) -> float | None:
+    def _win_sum(self, logical: str, since: float | None = None) -> float | None:
         win = self._counter_win.get(logical)
         if not win:
             return None
         now = time.time()
-        vals = [d for t, d, _ in win if t >= now - self.window_s]
+        floor_t = (now - self.window_s) if since is None else since
+        vals = [d for t, d, _ in win if t >= floor_t]
         return sum(vals) if vals else None
 
-    def _win_span(self, logical: str) -> float | None:
+    def _win_span(self, logical: str, since: float | None = None) -> float | None:
         win = self._counter_win.get(logical)
         if not win:
             return None
         now = time.time()
-        tot = sum(dt for t, _, dt in win if t >= now - self.window_s)
+        floor_t = (now - self.window_s) if since is None else since
+        tot = sum(dt for t, _, dt in win if t >= floor_t)
         return tot or None
 
     def _win_ratio(self, num_logical: str, den_logical: str, scale: float = 1.0) -> float | None:
@@ -597,6 +592,9 @@ class EngineSampler(threading.Thread):
         if now - self._hist_snap_t < 0.5:
             return
         self._hist_snap_t = now
+        hour_tick = now - self._hist_hr_t >= 5.0
+        if hour_tick:
+            self._hist_hr_t = now
         for logical, state in hists.items():
             if state is None:
                 continue
@@ -605,6 +603,12 @@ class EngineSampler(threading.Thread):
             cutoff = now - self.window_s * 1.25
             while base and base[0][0] < cutoff:
                 base.pop(0)
+            # 5 s cadence hour history (~740 samples, a few tens of KB)
+            if hour_tick:
+                hr = self._hist_hr.setdefault(logical, [])
+                hr.append((now, state))
+                while hr and hr[0][0] < now - 3700:
+                    hr.pop(0)
             self._hist_prev[logical] = state
 
     def _hist_delta(self, logical: str):
@@ -625,6 +629,115 @@ class EngineSampler(threading.Thread):
         if d_count <= 0:
             return None
         return d_buckets, d_sum, d_count
+
+    def _hist_slice(self, logical: str, secs: float):
+        """(p50_ms, avg_ms, n) over the last `secs`, from EXACT bucket deltas
+        of the cumulative histogram — the same method the old LIMCARS dash uses
+        for its 'e2e latency (p50)' bubble. One percentile over an hour of
+        requests is inherently slow-moving and does not invent a median out of
+        a handful of 30 s windows."""
+        cur = self._hist_prev.get(logical)
+        hr = self._hist_hr.get(logical)
+        if not cur or not hr:
+            return None
+        cutoff = time.time() - secs
+        old_state = hr[0][1]
+        for t, st in hr:
+            if t <= cutoff:
+                old_state = st
+            else:
+                break
+        (cur_b, cur_s, cur_c), (old_b, old_s, old_c) = cur, old_state
+        if not cur_b or len(cur_b) != len(old_b):
+            return None
+        try:
+            d_b = [(ub, max(0.0, c - oc)) for (ub, c), (_, oc) in zip(cur_b, old_b)]
+            d_s, d_c = cur_s - old_s, cur_c - old_c
+        except TypeError:
+            return None
+        if d_c <= 0:
+            return None
+        p50 = prom.quantile(d_b, 0.50)
+        return (p50 * 1000.0 if p50 is not None else None,
+                d_s / d_c * 1000.0, int(d_c))
+
+    def _hist_span_delta(self, logical: str, secs: float):
+        """(sum_delta, count_delta, covered_seconds) over the last `secs`, from
+        the 5 s coarse anchors. None when the anchors cannot cover the span."""
+        cur = self._hist_prev.get(logical)
+        hr = self._hist_hr.get(logical)
+        if not cur or not hr:
+            return None
+        cutoff = time.time() - secs
+        old_t, old_state = hr[0][0], hr[0][1]
+        for t, st in hr:
+            if t <= cutoff:
+                old_t, old_state = t, st
+            else:
+                break
+        if not cur[0] or len(cur[0]) != len(old_state[0]):
+            return None
+        return (max(0.0, cur[1] - old_state[1]),
+                max(0.0, cur[2] - old_state[2]),
+                time.time() - old_t)
+
+    def _prefill_rate(self, now: float) -> float | None:
+        """Honest prefill speed, or None (bubble holds last) rather than a lie.
+
+        vLLM charges prompt_tokens at request COMPLETION, so a raw counter
+        difference over one tick plots an impossible spike. Both sides of the
+        ratio must therefore cover the SAME stretch of time — anchored on the
+        prefill_time histogram baseline — and that stretch must genuinely be a
+        window. Dividing a window's tokens by the ~1 s span of the ticks a burst
+        happened to land in is what printed 10k+ tok/s peaks on the chart while
+        the engine was doing ~140.
+        """
+        base = self._hist_span_delta("prefill_time", self.prefill_win_s)
+        if base is None:
+            return None
+        d_secs, _d_cnt, covered = base
+        anchor = now - covered
+        # refuse to publish until the anchors really cover a settle window: a
+        # young sampler, or a metrics gap, must not invent a speed
+        if covered < min(self.prefill_win_s * 0.8, 30.0):
+            return None
+        if d_secs > 0:
+            pd = self._win_sum("prompt_tokens", since=anchor)
+            cd = self._win_sum("prefix_hits", since=anchor)
+            # prompt_tokens_total counts prefix-CACHED tokens too (~90 % here);
+            # prefill_time only counts COMPUTE time — dividing the two inflated
+            # prefill speed ~10x. The honest numerator is uncached tokens only.
+            # STRICT: if the cached window is missing (metrics gap / counter
+            # reset) the subtraction would silently inflate — report None.
+            uncached = None if (pd is None or cd is None) else max(0.0, pd - cd)
+            if uncached and uncached > 0:
+                rate = uncached / d_secs
+                if rate <= PREFILL_MAX:
+                    return rate
+        # Engine-native paths (ported from the TandemDash adapter family):
+        # sglang's realtime_tokens_total{mode=prefill*} genuinely advances
+        # DURING prefill — a true live rate, no completion attribution.
+        rt = self._win_rate("prefill_tokens", since=anchor)
+        if rt is not None and 0 < rt <= PREFILL_MAX:
+            return rt
+        # exl3/tensorfold alt: prefill_seconds is a cumulative compute-seconds
+        # COUNTER — Δprompt/Δprefill_seconds pairs perfectly.
+        psecs = self._win_sum("prefill_seconds", since=anchor)
+        pd = self._win_sum("prompt_tokens", since=anchor)
+        if psecs and psecs > 0 and pd and pd > 0:
+            v = pd / psecs
+            if v <= PREFILL_MAX:
+                return v
+        # last resort: wall-clock rate over the SAME anchored span, capped like
+        # every other path (this path used to be uncapped, which is exactly how
+        # completion bursts reached the chart)
+        fr = self._win_rate("prompt_tokens", since=anchor)
+        cr = self._win_rate("prefix_hits", since=anchor)
+        if fr is not None and cr is not None:
+            v = max(0.0, fr - cr)
+            if v <= PREFILL_MAX:
+                return v
+        return None
 
     def _hist_quantile(self, logical: str, q: float) -> float | None:
         d = self._hist_delta(logical)
