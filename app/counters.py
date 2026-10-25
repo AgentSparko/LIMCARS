@@ -375,10 +375,18 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
         # the best recorded hour scaled to a month/year (25M/h -> 600M/day,
         # matching the old dashboard's daily projection). The recorded-pace
         # numbers are kept for the tooltip.
-        cand["proj_month_tokens"] = round(peak_tok_w * 30.4 * duty_hours)
-        cand["proj_year_tokens"] = round(peak_tok_w * 365 * duty_hours)
+        # "This model is projected to do" = the machine's CAPACITY: what the
+        # best recorded hour reaches if the box never stops (25M/h -> 245B/year,
+        # the old dashboard's basis). The duty-cycle scaling belongs to the
+        # money figures below, not to this claim — a capacity claim that quietly
+        # divides by three is not a capacity claim.
+        cand["proj_month_tokens"] = round(peak_tok_w * 24 * 30.4)
+        cand["proj_year_tokens"] = round(peak_tok_w * 24 * 365)
         cand["ceiling_month_tokens"] = round(peak_tok_w * 24 * 30.4)
         cand["ceiling_year_tokens"] = round(peak_tok_w * 24 * 365)
+        # what the demonstrated hour earns at N working hours a day
+        cand["duty_month_tokens"] = round(peak_tok_w * 30.4 * duty_hours)
+        cand["duty_year_tokens"] = round(peak_tok_w * 365 * duty_hours)
         cand["pace_month_tokens"] = round(avg_hour * 730)
         cand["pace_year_tokens"] = round(avg_hour * 8760)
         if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:

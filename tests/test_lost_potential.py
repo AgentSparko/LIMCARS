@@ -48,13 +48,16 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["total_tokens"] == 210_000_000
     assert r["avg_hour_tokens"] == round(210e6 / 1.5)  # 90 min = 1.5 h span
     assert abs(r["pct_usage"] - round(100.0 * (210e6 / 1.5) / 180e6, 1)) < 0.05
-    # capacity projections: the BEST hour scaled (what the model showed it
-    # can do), not the recorded pace (user spec; pace stays in pace_* fields).
-    # The DEFAULT projection assumes a working day, not a machine that never
-    # stops — the 24/7 figure exists only as an explicitly named ceiling.
-    assert r["proj_month_tokens"] == round(180e6 * 30.4 * 8)
-    assert r["proj_year_tokens"] == round(180e6 * 365 * 8)
-    assert r["ceiling_year_tokens"] == round(180e6 * 24 * 365)
+    # capacity projections: the BEST hour scaled to a year at full tilt (what
+    # the model showed it can do), not the recorded pace (user spec; pace stays
+    # in pace_* fields).
+    # capacity claim = the demonstrated hour at full tilt (28M/h -> 245B/year).
+    # This is a CAPACITY figure and must not be scaled by a working day; the
+    # duty cycle only ever touches the money numbers.
+    assert r["proj_month_tokens"] == round(180e6 * 24 * 30.4)
+    assert r["proj_year_tokens"] == round(180e6 * 24 * 365)
+    assert r["ceiling_year_tokens"] == r["proj_year_tokens"]
+    assert r["duty_year_tokens"] == round(180e6 * 365 * 8)
     assert r["pace_month_tokens"] == round(140e6 * 730)
     assert r["pace_year_tokens"] == round(140e6 * 8760)
     # Money figures use the stated working day, never a 24/7 extrapolation:
@@ -217,9 +220,11 @@ def test_projections_carry_the_duty_cycle_assumption(tmp_path):
     r8 = lost_potential(st, LIVE, PRICE, duty_hours=8)
     r24 = lost_potential(st, LIVE, PRICE, duty_hours=24)
     assert r8["ok"] and r8["duty_hours_per_day"] == 8
-    assert r8["proj_year_tokens"] == round(180e6 * 365 * 8)
+    assert r8["duty_year_tokens"] == round(180e6 * 365 * 8)
     assert r8["duty_year_cost"] == round(180.0 * 365 * 8, 2)
-    assert r24["proj_year_tokens"] == round(180e6 * 365 * 24)
+    assert r24["duty_year_tokens"] == round(180e6 * 365 * 24)
+    # a capacity claim does not move with the assumed working day
+    assert r8["proj_year_tokens"] == r24["proj_year_tokens"]
     # the ceiling does not move with the duty cycle — it IS the 24/7 number
     assert r8["ceiling_year_tokens"] == r24["ceiling_year_tokens"]
     assert r8["ceiling_year_cost"] == round(180.0 * 8760, 2)
