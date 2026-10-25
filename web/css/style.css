@@ -33,15 +33,35 @@ a:hover { text-decoration: underline; }
 
 .wrap { max-width: 1480px; margin: 0 auto; padding: 16px 20px 48px; }
 header.top {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  /* one row, always: the header has gained controls over time (palette, page
+     tint) and with flex-wrap the status pill silently dropped to a second
+     line, which also made the sticky bar taller and shifted the whole page */
+  display: flex; align-items: center; gap: 14px; flex-wrap: nowrap;
   padding: 10px 20px; border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, var(--panel-2), var(--bg));
   position: sticky; top: 0; z-index: 5;
 }
-header.top .brand { font-weight: 700; letter-spacing: .06em; font-size: 15px; }
+header.top > * { flex: none; }
+header.top .brand { font-weight: 700; letter-spacing: .06em; font-size: 15px;
+  min-width: 0; }
+header.top .spacer { flex: 1 1 0; min-width: 0; }
+/* the engine pill is the only long, unpredictable text up here: a model id plus
+   a base URL must never push the controls off the row, so it truncates */
+header.top .pill.engine-pill { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+header.top .pill.engine-pill #engine-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 header.top .brand .tagline { color: var(--muted, #8b93a7); font-weight: 400; font-size: 11px;
   letter-spacing: .02em; margin-left: 10px; }
-@media (max-width: 1000px) { header.top .brand .tagline { display: none; } }
+@media (max-width: 1320px) { header.top .brand .tagline { display: none; } }
+/* narrower still: drop the decorative label and tighten gaps before anything is
+   allowed to clip */
+@media (max-width: 1120px) {
+  header.top { gap: 9px; padding: 10px 12px; }
+  header.top .charts-label { display: none; }
+}
+/* a phone genuinely needs two rows — that is the only place wrapping returns */
+@media (max-width: 860px) { header.top { flex-wrap: wrap; } }
 header.top .nav { display: flex; gap: 12px; margin-left: 8px; }
 header.top .nav a { color: var(--muted); font-size: 13px; }
 header.top .nav a.on { color: var(--text); font-weight: 600; }
