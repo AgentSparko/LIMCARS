@@ -160,16 +160,51 @@ LLAMACPP = {
 # TandemLLM family: the engine serves its own dashboard contract; metrics are
 # a small official set. qwen38: is the early-access namespace, tandemllm: the
 # public one — both map identically.
+# TandemLLM's native engine. Three name generations exist in the wild and all
+# three must keep working, so every logical entry lists them in order (first
+# non-null wins): `tandemllm:*` (the current upstream family), `qwen38:*` (the
+# older family), and `qse_*` — the family the engine on this box actually
+# emits, verified against its own `# HELP` text on 2026-10-24.
+#
+# ONE TRAP, recorded because it silently lies: the sampler's prefill truth is
+#     (Δprompt_tokens − Δprefix_hits) / Δprefill_time
+# and it needs prefix_hits in TOKENS (vLLM's prefix_cache_hits_total is a token
+# count). `qse_cache_hits_total` counts LOOKUPS, not tokens — wiring it here
+# would subtract a lookup count from a token count and inflate prefill speed.
+# The token-count equivalent is `qse_prompt_tokens_cached_total` ("prompt
+# tokens restored from the state store"), so THAT is prefix_hits.
+# Consequence: `prefix_queries` has no single-counter counterpart (the engine
+# splits lookups into hits+misses), so cache_hit_pct reads None ("–") rather
+# than a fabricated ratio — the module's standing rule.
 _TANDEM_MAP = {
     "gauge": {
-        "running": ["tandemllm:requests_inflight", "qwen38:requests_inflight"],
+        "running": ["tandemllm:requests_inflight", "qwen38:requests_inflight",
+                    "qse_requests_running"],
+        "waiting": ["tandemllm:requests_waiting", "qwen38:requests_waiting",
+                    "qse_requests_waiting"],
     },
     "counter": {
-        "prompt_tokens": ["tandemllm:prompt_tokens_total", "qwen38:prompt_tokens_total"],
-        "gen_tokens": ["tandemllm:completion_tokens_total", "qwen38:completion_tokens_total"],
-        "req_success": ["tandemllm:requests_total", "qwen38:requests_total"],
+        "prompt_tokens": ["tandemllm:prompt_tokens_total", "qwen38:prompt_tokens_total",
+                          "qse_prompt_tokens_total"],
+        "gen_tokens": ["tandemllm:completion_tokens_total", "qwen38:completion_tokens_total",
+                       "qse_generation_tokens_total"],
+        "req_success": ["tandemllm:requests_total", "qwen38:requests_total",
+                        "qse_request_success_total"],
+        # tokens genuinely run through the layers (excludes cache-restored), so
+        # this is the sampler's engine-native live-prefill path
+        "prefill_tokens": ["qse_prefill_tokens_forwarded_total"],
+        # TOKENS restored from cache — see the trap note above
+        "prefix_hits": ["qse_prompt_tokens_cached_total"],
+        "draft_tokens": ["qse_spec_decode_num_draft_tokens_total"],
+        "accepted_tokens": ["qse_spec_decode_num_accepted_tokens_total"],
     },
-    "hist": {},
+    "hist": {
+        "ttft": ["qse_time_to_first_token_seconds"],
+        "itl": ["qse_time_per_output_token_seconds"],
+        "e2e": ["qse_e2e_request_latency_seconds"],
+        "queue_time": ["qse_request_queue_seconds"],
+        "prefill_time": ["qse_request_prefill_seconds"],
+    },
 }
 TANDEMLLM = {"kind": "tandemllm", "prefix": "tandemllm:", **_TANDEM_MAP}
 
@@ -242,6 +277,12 @@ def detect(body: str) -> str | None:
     if "\ntensorfold:" in probe:
         return "tensorfold"
     if "\nqwen38:" in probe or "\ntandemllm:" in probe:
+        return "tandemllm"
+    # The native engine's current family (verified 2026-10-24 against its own
+    # # HELP text). Deliberately checked LAST and only on two distinctive
+    # family names: a body that matches any family above still resolves to it
+    # exactly as before, so adding this cannot reclassify another engine.
+    if "\nqse_requests_running" in probe or "\nqse_generation_tokens_total" in probe:
         return "tandemllm"
     return None
 

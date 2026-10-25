@@ -157,3 +157,38 @@ def test_vllm_e2e_is_the_whole_request_not_the_running_phase():
     assert h["e2e"][1] == pytest.approx(40.0), \
         "e2e must be the whole request, not the RUNNING phase"
     assert h["e2e"][2] == 10.0
+
+
+QSE_BODY = """qse_requests_running{model_name="m"} 2.0
+qse_requests_waiting 0.0
+qse_prompt_tokens_total 9000.0
+qse_generation_tokens_total 2100.0
+qse_request_success_total 14.0
+qse_prompt_tokens_cached_total 3000.0
+qse_prefill_tokens_forwarded_total 6000.0
+qse_spec_decode_num_draft_tokens_total 800.0
+qse_spec_decode_num_accepted_tokens_total 500.0
+qse_e2e_request_latency_seconds_sum{model_name="m"} 40.0
+qse_e2e_request_latency_seconds_count{model_name="m"} 10.0
+qse_e2e_request_latency_seconds_bucket{model_name="m",le="5"} 10.0
+qse_e2e_request_latency_seconds_bucket{model_name="m",le="+Inf"} 10.0
+"""
+
+
+def test_tandemllm_qse_family_detected_and_mapped():
+    assert D.detect("\n" + QSE_BODY) == "tandemllm"
+    dial = D.DIALECTS["tandemllm"]
+    s = _parse(QSE_BODY)
+    g, c, h = D.read_gauges(s, dial), D.read_counters(s, dial), D.read_hists(s, dial)
+    assert g["running"] == 2.0 and g["waiting"] == 0.0
+    assert c["prompt_tokens"] == 9000.0 and c["gen_tokens"] == 2100.0
+    assert c["req_success"] == 14.0
+    # prefix_hits must be RESTORED TOKENS. qse_cache_hits_total counts lookups;
+    # subtracting a lookup count from a token count inflates prefill speed.
+    assert c["prefix_hits"] == 3000.0
+    assert c["prefill_tokens"] == 6000.0
+    assert c["draft_tokens"] == 800.0 and c["accepted_tokens"] == 500.0
+    st = h["e2e"]
+    assert st[1] == pytest.approx(40.0) and st[2] == 10.0
+    # no single-counter counterpart for prefix_queries -> honest None, never 0%
+    assert c.get("prefix_queries") is None
