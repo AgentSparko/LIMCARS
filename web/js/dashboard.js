@@ -93,25 +93,33 @@ const tps = v => _fin(v) ? Math.round(v).toLocaleString('en-US') + ' tok/s' : '�
 // engine buckets produce round-edge fiction, so show the true window mean.
 // histNum is the numeric form so a bubble can render in its own unit (ms or s)
 // while every latency bubble shares ONE n-gate and one basis rule.
-const histNum = (l, k) => { const n = l[k + '_n'] || 0;
+const histNum = (l, k) => {
+  // Latency bubbles read the LAST HOUR, not the 30 s window: a 30 s window
+  // holds two or three requests in normal use, so its percentile — or its
+  // mean — belongs to whoever queued longest. TTFT read 28.5 s there while the
+  // engine's own hour median was 5 s. Falls back to the window only when the
+  // hour has no samples at all.
+  const nh = l[k + '_n_1h'] || 0;
+  if (nh) return nh >= 20 ? l[k + '_p50_1h_ms']
+         : (l[k + '_avg_1h_ms'] != null ? l[k + '_avg_1h_ms'] : l[k + '_p50_1h_ms']);
+  const n = l[k + '_n'] || 0;
   return n >= 20 ? l[k + '_p50_ms']
-                 : (l[k + '_avg_ms'] != null ? l[k + '_avg_ms'] : l[k + '_p50_ms']); };
+                 : (l[k + '_avg_ms'] != null ? l[k + '_avg_ms'] : l[k + '_p50_ms']);
+};
 const histMs = (l, k) => ms(histNum(l, k));
-const histBasis = (l, k) => { const n = l[k + '_n'] || 0;
+const histBasis = (l, k) => {
+  const nh = l[k + '_n_1h'] || 0;
+  if (nh) return nh >= 20 ? `p50 · last hour · n=${nh}`
+       : `mean · last hour · n=${nh} (too few reqs for p50)`;
+  const n = l[k + '_n'] || 0;
   return n >= 20 ? `p50 · 30 s window · n=${n}`
        : n ? `true mean · 30 s · n=${n} (too few reqs for p50)`
-       : 'idle 30 s · holding last'; };
-// e2e headline: ONE true p50 over the last hour, from exact cumulative-bucket
-// deltas (the old LIMCARS method), so the two dashes agree. Mediating 30 s
-// means instead read 27 s where the old dash read 17.93 s — at low request
-// rates a few long requests own a 30 s window and the median inherits the skew.
-const e2eHourNum = l => { const n = l.e2e_n_1h || 0;
-  return n >= 20 ? l.e2e_p50_1h_ms
-                 : (l.e2e_avg_1h_ms != null ? l.e2e_avg_1h_ms : l.e2e_p50_1h_ms); };
-const e2eHourBasis = l => { const n = l.e2e_n_1h || 0;
-  return n >= 20 ? `p50 · last hour · n=${n}`
-       : n ? `mean · last hour · n=${n} (too few reqs for p50)`
-       : 'last hour · idle'; };
+       : 'idle · no requests yet';
+};
+// e2e kept its own names for the sub-line wording; both now share the one
+// hour-based rule above so no bubble can drift onto a different basis.
+const e2eHourNum = l => histNum(l, 'e2e');
+const e2eHourBasis = l => histBasis(l, 'e2e');
 
 function savingsFor(l, secs) {
   const p = state.pricing;
@@ -1234,13 +1242,16 @@ async function renderLostPotential() {
   // 11-37k USD/year off a $1.44 best hour (user: "huge and impossible with
   // qwen flash next").
   const claims = [];
+  const dh = d.duty_hours_per_day != null ? d.duty_hours_per_day : 8;
   if (d.loss_year_cost != null && d.loss_year_cost > 0)
-    claims.push(fmtUsd0(d.loss_year_cost) + ' USD</span> a year!');
+    claims.push(fmtUsd0(d.loss_year_cost) + ' USD</span> in a year you ran it 366 days!');
   if (d.loss_month_cost != null && d.loss_month_cost > 0)
-    claims.push(fmtUsd0(d.loss_month_cost) + ' USD</span> a month!');
-  if (d.loss_period_cost != null && d.loss_period_cost > 0)
+    claims.push(fmtUsd0(d.loss_month_cost) + ' USD</span> in a month you ran it 31 days!');
+  if (!claims.length && d.loss_period_cost != null && d.loss_period_cost > 0)
     claims.push(fmtUsd0(d.loss_period_cost) + ' USD</span> over the ' +
-                d.recorded_days + ' days recorded!');
+                d.recorded_days + ' days recorded' +
+                (d.loss_week_cost > 0
+                  ? ' — about ' + fmtUsd0(d.loss_week_cost) + ' a week' : '') + '!');
   if (claims.length) {
     titleHtml += ' — Your token usage rate makes you leave on the table <span class="pot-loss">' +
       claims[0];
@@ -1251,24 +1262,35 @@ async function renderLostPotential() {
     fmtTokShort(d.peak_hour_tokens) + ' tokens an hour but historically you ' +
     'use barely ' + pct + ' of that across the ' + d.recorded_days +
     ' recorded days.');
-  sent.push('This model is projected to do ' +
-    fmtTokShort(d.proj_month_tokens) + ' tokens/month or ' +
-    fmtTokShort(d.proj_year_tokens) + '/year.  \u2014  Over the ' +
-    d.recorded_days + ' recorded days you did just ' +
+  // Projections state the duty cycle out loud. Scaling the best hour by 8760 h
+  // and calling it a year (the old behaviour) priced a machine that never
+  // stopped; nobody here runs it 24/7 (user: "the projection is 6K a year but
+  // that is if you work non stop at concurrency=1 and we don't work 24/7").
+  sent.push('If you put it to work ' + dh + ' h a day at that demonstrated ' +
+    'best hour: ' + fmtTokShort(d.proj_month_tokens) + ' tokens/month, ' +
+    fmtTokShort(d.proj_year_tokens) + '/year' +
+    (d.duty_year_cost != null ? '  (\u2248' + fmtUsd0(d.duty_year_cost) +
+      ' of API-equivalent value a year)' : '') + '.');
+  sent.push('For reference, an impossible schedule — never stopping, 8760 h — ' +
+    'would be ' + fmtTokShort(d.ceiling_year_tokens) + ' tokens/year' +
+    (d.ceiling_year_cost != null ? '  (\u2248' + fmtUsd0(d.ceiling_year_cost) + ')' : '') +
+    '. That is a ceiling, not a plan.');
+  sent.push('Over the ' + d.recorded_days + ' recorded days you did just ' +
     fmtTokShort(d.total_tokens) + ' tokens.');
   if (d.best_hour_cost != null) {
     // measured only for windows we actually watched; anything longer is a
     // pace-based projection, labeled as such (user rule: never claim a
     // "best month" the dashboard has not seen a month of)
-    const parts = ['best hour ' + fmtUsd0(d.best_hour_cost)];
-    if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost));
-    else if (d.proj_day_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_day_cost) + '/day');
+    const parts = ['best hour ' + fmtUsd0(d.best_hour_cost) + ' (measured)'];
+    if (d.best_day_cost != null) parts.push('best day ' + fmtUsd0(d.best_day_cost) + ' (measured)');
     if (d.best_month_cost != null) parts.push('best month ' + fmtUsd0(d.best_month_cost) + ' (measured)');
-    else if (d.proj_month_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_month_cost) + '/month');
     if (d.best_year_cost != null) parts.push('best year ' + fmtUsd0(d.best_year_cost) + ' (measured)');
-    else if (d.proj_year_cost != null) parts.push('at this rate ~' + fmtUsd0(d.proj_year_cost) + '/year');
-    sent.push('Historic savings registered: ' + parts.join(', ') +
-      ' — so put this baby to work!');
+    if (d.proj_day_cost != null)
+      parts.push('at your recorded pace ' + fmtUsd0(d.proj_day_cost) + '/day, ' +
+                 fmtUsd0(d.proj_month_cost) + '/month, ' +
+                 fmtUsd0(d.proj_year_cost) + '/year');
+    sent.push('What it actually billed: ' + parts.join(', ') +
+      ' — the gap between that and the best hour is the potential.');
   }
   const msg = sent.join('<br>');
   const pr = state.pricing;

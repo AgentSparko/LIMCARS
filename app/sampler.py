@@ -268,6 +268,18 @@ class EngineSampler(threading.Thread):
             # sample count so the UI can prefer the true sum/count mean when n
             # is too small for a percentile to mean anything.
             row[f"{logical}_n"] = d[2] if d else 0
+            # the SAME statistic over the last hour, from exact cumulative
+            # bucket deltas. This is what the latency bubbles read: a 30 s
+            # window holds two or three requests in normal use, so its p50 (or
+            # its mean) is owned by whoever happened to queue longest — TTFT
+            # showed 28.5 s while the engine's hour median was 5 s.
+            sl = self._hist_slice(logical, 3600.0)
+            if sl:
+                row[f"{logical}_p50_1h_ms"], row[f"{logical}_avg_1h_ms"], \
+                    row[f"{logical}_n_1h"] = sl
+            else:
+                row[f"{logical}_p50_1h_ms"] = row[f"{logical}_avg_1h_ms"] = None
+                row[f"{logical}_n_1h"] = 0
         # e2e smoothing (old LIMCARS gauge basis): cumulative histogram
         # mean = sum/count over the engine's WHOLE life — inherently slow
         # moving like the old dash; plus an hour-median of the p50 samples.

@@ -49,9 +49,12 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["avg_hour_tokens"] == round(210e6 / 1.5)  # 90 min = 1.5 h span
     assert abs(r["pct_usage"] - round(100.0 * (210e6 / 1.5) / 180e6, 1)) < 0.05
     # capacity projections: the BEST hour scaled (what the model showed it
-    # can do), not the recorded pace (user spec; pace stays in pace_* fields)
-    assert r["proj_month_tokens"] == round(180e6 * 24 * 30.4)
-    assert r["proj_year_tokens"] == round(180e6 * 24 * 365)
+    # can do), not the recorded pace (user spec; pace stays in pace_* fields).
+    # The DEFAULT projection assumes a working day, not a machine that never
+    # stops — the 24/7 figure exists only as an explicitly named ceiling.
+    assert r["proj_month_tokens"] == round(180e6 * 30.4 * 8)
+    assert r["proj_year_tokens"] == round(180e6 * 365 * 8)
+    assert r["ceiling_year_tokens"] == round(180e6 * 24 * 365)
     assert r["pace_month_tokens"] == round(140e6 * 730)
     assert r["pace_year_tokens"] == round(140e6 * 8760)
     # Money claims only cover periods that were actually watched: one day of
@@ -199,6 +202,37 @@ def test_synthetic_seed_never_eats_a_real_minute(tmp_path):
     _m(st, "e2", 30, p=99e9, synthetic=1)         # seed first, then real data
     _m(st, "e2", 30, p=7e6)
     assert st.minute_rows("e2") == [(BASE + 30 * 60, 7e6, 0.0, 0.0)]
+
+
+def test_projections_carry_the_duty_cycle_assumption(tmp_path):
+    """User: 'the projection is 6K a year but that is if you work non stop at
+    concurrency=1 and we don't work 24/7' — so a projection must name the
+    working day it assumes, and the never-stopping figure must be labelled
+    as the ceiling it is."""
+    st = Store(str(tmp_path / "t.db"))
+    for m in range(60):
+        _m(st, "e1", m, p=1e6)
+    for m in range(60, 120):
+        _m(st, "e1", m, p=3e6)                 # best hour = 180M tokens / $180
+    r8 = lost_potential(st, LIVE, PRICE, duty_hours=8)
+    r24 = lost_potential(st, LIVE, PRICE, duty_hours=24)
+    assert r8["ok"] and r8["duty_hours_per_day"] == 8
+    assert r8["proj_year_tokens"] == round(180e6 * 365 * 8)
+    assert r8["duty_year_cost"] == round(180.0 * 365 * 8, 2)
+    assert r24["proj_year_tokens"] == round(180e6 * 365 * 24)
+    # the ceiling does not move with the duty cycle — it IS the 24/7 number
+    assert r8["ceiling_year_tokens"] == r24["ceiling_year_tokens"]
+    assert r8["ceiling_year_cost"] == round(180.0 * 8760, 2)
+    # no year was watched, so no yearly loss claim, but the period loss is
+    # expressed per week so it can never be misread as an annual figure
+    assert r8["loss_year_cost"] is None
+    assert r8["loss_month_cost"] is None
+    assert r8["loss_week_cost"] > 0
+    # a nonsense duty cycle is clamped into a sane range, not obeyed
+    assert lost_potential(st, LIVE, PRICE, duty_hours=9999)["duty_hours_per_day"] == 24
+    assert lost_potential(st, LIVE, PRICE, duty_hours=0)["duty_hours_per_day"] == 0.5
+    junk: float = "junk"          # type: ignore[assignment]
+    assert lost_potential(st, LIVE, PRICE, duty_hours=junk)["duty_hours_per_day"] == 8.0
 
 
 def test_empty_store():
