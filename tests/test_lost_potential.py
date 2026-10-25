@@ -57,13 +57,16 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["proj_month_tokens"] == round(180e6 * 24 * 30.4)
     assert r["proj_year_tokens"] == round(180e6 * 24 * 365)
     assert r["ceiling_year_tokens"] == r["proj_year_tokens"]
-    assert r["duty_year_tokens"] == round(180e6 * 365 * 8)
+    assert r["duty_year_tokens"] == round(180e6 * 365 * 1.5)   # measured 1.5 h/day
     assert r["pace_month_tokens"] == round(140e6 * 730)
     assert r["pace_year_tokens"] == round(140e6 * 8760)
-    # Money figures use the stated working day, never a 24/7 extrapolation:
-    # the year figure is the hourly gap priced over 8 working h x 365 days.
-    assert r["loss_year_cost"] == round((180.0 - 140.0) * 8 * 365, 2)
-    assert r["loss_month_cost"] == round((180.0 - 140.0) * 8 * 30.4, 2)
+    # Money figures use the hours a day the dash MEASURED the box producing
+    # tokens (90 active minutes on 1 recorded day = 1.5 h/day) — not an assumed
+    # schedule, and never the 24/7 extrapolation that printed 11-37k USD/year.
+    assert r["duty_basis"] == "measured"
+    assert r["duty_hours_observed_per_day"] == 1.5
+    assert r["loss_year_cost"] == round((180.0 - 140.0) * 1.5 * 365, 2)
+    assert r["loss_month_cost"] == round((180.0 - 140.0) * 1.5 * 30.4, 2)
     # gap over the recorded period = (best hour - avg hour) x hours watched
     assert abs(r["loss_period_cost"] - (180.0 - 140.0) * 1.5) < 1.0
     assert r["recorded_days"] == 1
@@ -223,7 +226,13 @@ def test_projections_carry_the_duty_cycle_assumption(tmp_path):
     assert r8["duty_year_tokens"] == round(180e6 * 365 * 8)
     assert r8["duty_year_cost"] == round(180.0 * 365 * 8, 2)
     assert r24["duty_year_tokens"] == round(180e6 * 365 * 24)
-    # a capacity claim does not move with the assumed working day
+    assert r8["duty_basis"] == "configured"
+    # with no override, the basis is what the dash measured, not a guess:
+    # 120 active minutes on 1 recorded day = 2 h/day of real traffic
+    r0 = lost_potential(st, LIVE, PRICE)
+    assert r0["duty_basis"] == "measured"
+    assert r0["duty_hours_per_day"] == r0["duty_hours_observed_per_day"] == 2.0
+    # the capacity claim does not move with the assumed working day
     assert r8["proj_year_tokens"] == r24["proj_year_tokens"]
     # the ceiling does not move with the duty cycle — it IS the 24/7 number
     assert r8["ceiling_year_tokens"] == r24["ceiling_year_tokens"]
@@ -237,9 +246,10 @@ def test_projections_carry_the_duty_cycle_assumption(tmp_path):
     assert r8["loss_week_cost"] > 0
     # a nonsense duty cycle is clamped into a sane range, not obeyed
     assert lost_potential(st, LIVE, PRICE, duty_hours=9999)["duty_hours_per_day"] == 24
-    assert lost_potential(st, LIVE, PRICE, duty_hours=0)["duty_hours_per_day"] == 0.5
+    assert lost_potential(st, LIVE, PRICE, duty_hours=0)["duty_hours_per_day"] == 0.25
     junk: float = "junk"          # type: ignore[assignment]
-    assert lost_potential(st, LIVE, PRICE, duty_hours=junk)["duty_hours_per_day"] == 8.0
+    # junk is ignored rather than trusted: back to the measured basis
+    assert lost_potential(st, LIVE, PRICE, duty_hours=junk)["duty_hours_per_day"] == 2.0
 
 
 def test_empty_store():

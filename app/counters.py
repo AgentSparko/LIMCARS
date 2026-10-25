@@ -173,7 +173,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
 
 
 def lost_potential(store, engines: list[dict], pricing_cfg,
-                   duty_hours: float = 8.0) -> dict:
+                   duty_hours: float | None = None) -> dict:
     """The 'lost potential' bubble, anchored on the BEST RECORDED HOUR.
 
     The capability claim is what the engine actually sustained in its best
@@ -181,22 +181,26 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
     two hours ago still sees meaningful numbers on day one. Utilisation is
     the recorded average hour over the recorded span vs that best hour.
 
-    Every projection names its own assumption, because a silent 24/7
-    extrapolation of a burst is what produced the 11-37k USD/year alerts the
-    user rejected as impossible:
-      * pace     : recorded average hour x 730/8760 h  ("where you're heading")
-      * duty     : BEST hour x duty_hours x 365/30.4   ("if you work it N h/day")
-      * ceiling  : BEST hour x 8760 h                  ("if it never stopped")
-    duty_hours is how many hours a day the owner actually puts the machine to
-    work, clamped to 0.5-24. Measured fields (best hour / best day / best
-    month / best year) are only published for periods that were actually
-    watched. Sliding window is a two-pointer over minute indices — O(n) — and
-    cost is summed from per-minute hot bills (the pricing function is linear,
-    so the window sum equals hot_costs of the window totals)."""
-    try:
-        duty_hours = min(24.0, max(0.5, float(duty_hours)))
-    except (TypeError, ValueError):
-        duty_hours = 8.0
+    Every projection names its own basis, because a silent 24/7 extrapolation
+    of a burst is what produced the 11-37k USD/year alerts the user rejected as
+    impossible:
+      * capacity / ceiling : best hour x 8760 h — the machine never stopping.
+        A capacity claim, so it is NOT scaled by anything.
+      * duty               : the hourly gap priced over the hours a day this box
+        was MEASURED generating tokens. Agents run unattended and the box may
+        have other users, so this is machine occupancy read out of the recorded
+        minutes — not anyone's screen time. Pass duty_hours to override it.
+      * pace               : your recorded average hour x 730/8760 h.
+    Measured fields (best hour / day / month / year) are only published for
+    periods that were actually watched. Sliding window is a two-pointer over
+    minute indices — O(n) — and cost is summed from per-minute hot bills (the
+    pricing function is linear, so the window sum equals hot_costs of the
+    window totals)."""
+    if duty_hours is not None:
+        try:
+            duty_hours = min(24.0, max(0.25, float(duty_hours)))
+        except (TypeError, ValueError):
+            duty_hours = None      # junk override -> fall back to measurement
     from . import pricing as pricing_mod
 
     # Gates (user report: the alert fired with no engine connected, and priced a
@@ -260,6 +264,14 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
         if peak_active < 15:
             reason = "peak_too_thin"
             continue
+        # Machine occupancy, MEASURED: how many hours a day this box was
+        # actually producing tokens, straight out of the recorded active
+        # minutes. Agents run unattended and the box may serve other users, so
+        # nobody's working hours or screen time enters this number; a caller may
+        # still pin it explicitly with duty_hours.
+        rec_days = len({m // 1440 for m, _, _ in mins})
+        duty_observed = round(min(24.0, len(mins) / 60.0 / max(rec_days, 1)), 2)
+        duty = duty_observed if duty_hours is None else duty_hours
         total_tok = sum(t for _, t, _ in mins)
         # "recorded period" = time the dash was ACTUALLY watching: sum of
         # contiguous minute-clusters (gaps > 2 days split clusters), so a
@@ -341,22 +353,23 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             cand["loss_week_cost"] = round(gap_hour * 24.0 * 7.0, 2)
             # PROJECTIONS carry their assumption in the name. 'ceiling' is the
             # machine never stopping (the honest meaning of best hour x 8760 —
-            # it is a physical ceiling, not a plan). 'duty' is what the same
-            # demonstrated hour earns at N working hours a day, which is the
-            # only projection anyone here actually lives by.
+            # it is a physical ceiling, not a plan). 'duty' prices the same hour
+            # over the hours a day the box was measured producing tokens.
             cand["ceiling_year_cost"] = round(peak_cost_w * 8760, 2)
-            cand["duty_hours_per_day"] = duty_hours
-            cand["duty_day_cost"] = round(peak_cost_w * duty_hours, 2)
-            cand["duty_month_cost"] = round(peak_cost_w * 30.4 * duty_hours, 2)
-            cand["duty_year_cost"] = round(peak_cost_w * 365 * duty_hours, 2)
+            cand["duty_hours_per_day"] = duty
+            cand["duty_hours_observed_per_day"] = duty_observed
+            cand["duty_basis"] = "measured" if duty_hours is None else "configured"
+            cand["duty_day_cost"] = round(peak_cost_w * duty, 2)
+            cand["duty_month_cost"] = round(peak_cost_w * 30.4 * duty, 2)
+            cand["duty_year_cost"] = round(peak_cost_w * 365 * duty, 2)
             # The headline keeps the user-approved wording ("... a year!"), so
-            # the YEAR figure has to be a year of WORK, not a year of never
-            # stopping: the hourly gap priced over duty_hours a day for 365
-            # days. The 24/7 figure still exists, named 'ceiling', and the UI
-            # does not headline it. (This is what made the old number 11-37k:
-            # best hour x 8760 with no duty cycle at all.)
-            cand["loss_month_cost"] = round(gap_hour * duty_hours * 30.4, 2)
-            cand["loss_year_cost"] = round(gap_hour * duty_hours * 365, 2)
+            # the YEAR figure has to be a year of actual use, not a year of
+            # never stopping: the hourly gap priced over the measured hours a
+            # day for 365 days. The 24/7 figure still exists, named 'ceiling',
+            # and the UI does not headline it. (That unpriced-any-assumption
+            # best hour x 8760 is what produced the 11-37k USD/year claims.)
+            cand["loss_month_cost"] = round(gap_hour * duty * 30.4, 2)
+            cand["loss_year_cost"] = round(gap_hour * duty * 365, 2)
             # A "lost potential" alert with nothing to advertise is just noise:
             # if the best hour equals the average hour there is no gap to show.
             if peak_cost_w <= 0 or cand["loss_year_cost"] <= 0:
@@ -370,7 +383,9 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
                        "loss_week_cost", "ceiling_year_cost", "duty_day_cost",
                        "duty_month_cost", "duty_year_cost"):
                 cand[_k] = None
-        cand["duty_hours_per_day"] = duty_hours
+        cand["duty_hours_per_day"] = duty
+        cand["duty_hours_observed_per_day"] = duty_observed
+        cand["duty_basis"] = "measured" if duty_hours is None else "configured"
         # "This model is projected to do" = what it DEMONSTRATED it can do:
         # the best recorded hour scaled to a month/year (25M/h -> 600M/day,
         # matching the old dashboard's daily projection). The recorded-pace
@@ -384,9 +399,9 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
         cand["proj_year_tokens"] = round(peak_tok_w * 24 * 365)
         cand["ceiling_month_tokens"] = round(peak_tok_w * 24 * 30.4)
         cand["ceiling_year_tokens"] = round(peak_tok_w * 24 * 365)
-        # what the demonstrated hour earns at N working hours a day
-        cand["duty_month_tokens"] = round(peak_tok_w * 30.4 * duty_hours)
-        cand["duty_year_tokens"] = round(peak_tok_w * 365 * duty_hours)
+        # what the demonstrated hour earns over the measured active hours
+        cand["duty_month_tokens"] = round(peak_tok_w * 30.4 * duty)
+        cand["duty_year_tokens"] = round(peak_tok_w * 365 * duty)
         cand["pace_month_tokens"] = round(avg_hour * 730)
         cand["pace_year_tokens"] = round(avg_hour * 8760)
         if best is None or cand["peak_hour_tokens"] > best["peak_hour_tokens"]:

@@ -516,9 +516,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(hit[1])
             engines = [{"id": s.id, "model": s.model, "alive": bool(s.alive)}
                        for s in app.engines.all()]
-            # how hard the owner actually runs the box — the assumption every
-            # non-measured projection in the bubble has to state out loud
-            duty = app.cfg.get("duty_hours_per_day", 8.0)
+            # machine occupancy: only set this in config to PIN the hours/day;
+            # left unset, the dash uses the hours a day it actually measured
+            duty = app.cfg.get("duty_hours_per_day")
             payload = counters_mod.lost_potential(
                 app.store, engines, app.cfg.get("pricing"), duty_hours=duty)
             cache["all"] = (now, payload)

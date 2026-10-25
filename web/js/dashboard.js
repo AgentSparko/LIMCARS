@@ -1274,8 +1274,8 @@ async function renderLostPotential() {
       'every $ updates' : '') +
     ' \u00b7 estimated/seed rows are excluded' +
     // the assumption lives on hover, not in the approved message copy
-    (d.duty_hours_per_day ? ' \u00b7 year/month figures assume ' +
-      d.duty_hours_per_day + ' working h/day' : '');
+    (d.duty_hours_per_day ? ' \u00b7 year/month figures use ' +
+      d.duty_hours_per_day + ' h/day of traffic the dash actually measured' : '');
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
     '"><div class="label">' + titleHtml + '</div><div class="value pot-text">' +
     msg + '</div></div>';
