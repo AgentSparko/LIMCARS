@@ -17,6 +17,30 @@ def _b(p=0.0, c=0.0, g=0.0, **kw):
     return d
 
 
+def test_daily_savings_reports_measured_active_hours(tmp_path):
+    """The occupancy stat next to the money line: hours a day the box was
+    MEASURED producing tokens, averaged over the days that had traffic. It is
+    read out of the minute rows — no assumed working day anywhere."""
+    st = Store(str(tmp_path / "t.db"))
+    now = int(time.time())
+    today = now - now % 86400
+    for m in range(90):                       # today: 90 active minutes
+        st.save_counter_bucket("e1", today + m * 60, _b(p=1e6))
+    for m in range(30):                       # yesterday: 30 active minutes
+        st.save_counter_bucket("e1", today - 86400 + m * 60, _b(p=1e6))
+    # idle minutes carry no rows, and synthetic seed rows must not count
+    st.save_counter_bucket("e1", today + 500 * 60, _b(p=1e6, synthetic=1))
+
+    r = daily_savings(st, [{"id": "e1", "model": "M"}], PRICE, 30)
+    assert r["active_minutes"] == 120          # 90 + 30, synthetic excluded
+    assert r["active_days"] == 2
+    assert r["avg_active_hours_per_day"] == round(120 / 60.0 / 2, 2) == 1.0
+
+    empty = daily_savings(Store(str(tmp_path / "e.db")),
+                          [{"id": "e1", "model": "M"}], PRICE, 30)
+    assert empty["avg_active_hours_per_day"] is None
+
+
 def test_daily_savings_grouping_and_pricing(tmp_path):
     st = Store(str(tmp_path / "t.db"))
     now = int(time.time())

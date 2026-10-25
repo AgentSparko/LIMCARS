@@ -60,13 +60,22 @@ def test_best_hour_window_and_pct(tmp_path):
     assert r["duty_year_tokens"] == round(180e6 * 365 * 1.5)   # measured 1.5 h/day
     assert r["pace_month_tokens"] == round(140e6 * 730)
     assert r["pace_year_tokens"] == round(140e6 * 8760)
-    # Money figures use the hours a day the dash MEASURED the box producing
-    # tokens (90 active minutes on 1 recorded day = 1.5 h/day) — not an assumed
-    # schedule, and never the 24/7 extrapolation that printed 11-37k USD/year.
+    # LOST POTENTIAL, per the user's definition: CAPACITY (best recorded hour
+    # priced x 8760 h, the machine never stopping) MINUS the money the dash
+    # REGISTERED as saved (hot-tier $ actually recorded, annualised over the
+    # days it saw traffic). Both sides ship in the payload; check by hand:
+    #   capacity  = $180/h  x 8760 h        = $1,576,800
+    #   registered= $210/day x 365 days     = $76,650
+    #   on table  = $1,500,150
     assert r["duty_basis"] == "measured"
-    assert r["duty_hours_observed_per_day"] == 1.5
-    assert r["loss_year_cost"] == round((180.0 - 140.0) * 1.5 * 365, 2)
-    assert r["loss_month_cost"] == round((180.0 - 140.0) * 1.5 * 30.4, 2)
+    assert r["duty_hours_observed_per_day"] == 1.5   # 90 active min / 1 day
+    assert r["capacity_year_cost"] == round(180.0 * 8760, 2)
+    assert r["ceiling_year_cost"] == r["capacity_year_cost"]
+    assert r["saved_year_cost"] == round(210.0 * 365, 2)
+    assert r["loss_year_cost"] == round(180.0 * 8760 - 210.0 * 365, 2)
+    assert r["capacity_month_cost"] == round(180.0 * 24 * 30.4, 2)
+    assert r["saved_month_cost"] == round(210.0 * 30.4, 2)
+    assert r["loss_month_cost"] == round(180.0 * 24 * 30.4 - 210.0 * 30.4, 2)
     # gap over the recorded period = (best hour - avg hour) x hours watched
     assert abs(r["loss_period_cost"] - (180.0 - 140.0) * 1.5) < 1.0
     assert r["recorded_days"] == 1
@@ -87,12 +96,15 @@ def test_needs_an_hour_of_history_before_it_claims(tmp_path):
         _m(st, "e1", m, p=1e6)
     r = lost_potential(st, LIVE, PRICE)
     assert r["ok"] is False and r["reason"] == "recorded_lt_1h"
-    # A single hour can never show a gap (its best hour IS its average hour),
-    # so the honest claim needs a second hour to compare against.
+    # A single hour cannot show a utilisation gap (its best hour IS its average
+    # hour), but it is a measured hour, so it may carry a capacity claim.
     for m in range(20, 60):
         _m(st, "e1", m, p=1e6)
+    # a full hour is enough to price a capacity claim (user formula: capacity
+    # minus registered saved), so the gate that protects the user is the 60
+    # distinct minutes above, not a longer window
     r = lost_potential(st, LIVE, PRICE)
-    assert r["ok"] is False and r["reason"] == "nothing_to_claim"
+    assert r["ok"] is True
     for m in range(60, 120):                 # second, busier hour
         _m(st, "e1", m, p=3e6)
     r = lost_potential(st, LIVE, PRICE)
@@ -100,14 +112,19 @@ def test_needs_an_hour_of_history_before_it_claims(tmp_path):
     assert r["peak_hour_tokens"] == 180_000_000     # the 3M/min hour
 
 
-def test_a_flat_hour_has_nothing_to_advertise(tmp_path):
-    """With one uniform hour the best hour IS the average hour: no gap, no
-    alert — an 'Attention!' bubble with nothing behind it is the noise the
-    user complained about."""
+def test_a_single_flat_hour_is_still_a_capacity_claim(tmp_path):
+    """Utilisation and capacity are different questions. One uniform hour is
+    100% utilised (best hour IS the average hour), yet the headline is the
+    user's formula — capacity (best hour x 8760 h) minus the money registered
+    as saved — and an hour of running leaves a year of hours unrun."""
     st = Store(str(tmp_path / "t.db"))
     _hour(st, "e1", p=1e6)
     r = lost_potential(st, LIVE, PRICE)
-    assert r["ok"] is False and r["reason"] == "nothing_to_claim"
+    assert r["ok"] is True
+    assert r["pct_usage"] == 100.0
+    assert r["capacity_year_cost"] == round(60.0 * 8760, 2)
+    assert r["saved_year_cost"] == round(60.0 * 365, 2)
+    assert r["loss_year_cost"] == round(60.0 * 8760 - 60.0 * 365, 2)
 
 
 def test_a_burst_minute_is_not_a_demonstrated_peak(tmp_path):
@@ -211,10 +228,10 @@ def test_synthetic_seed_never_eats_a_real_minute(tmp_path):
 
 
 def test_projections_carry_the_duty_cycle_assumption(tmp_path):
-    """User: 'the projection is 6K a year but that is if you work non stop at
-    concurrency=1 and we don't work 24/7' — so a projection must name the
-    working day it assumes, and the never-stopping figure must be labelled
-    as the ceiling it is."""
+    """User: the headline is capacity minus registered money saved, so it must
+    not depend on anyone's schedule; the supplementary duty figures do, and they
+    default to the occupancy the dash MEASURED (active minutes / recorded days),
+    never to an invented working day."""
     st = Store(str(tmp_path / "t.db"))
     for m in range(60):
         _m(st, "e1", m, p=1e6)
@@ -237,12 +254,14 @@ def test_projections_carry_the_duty_cycle_assumption(tmp_path):
     # the ceiling does not move with the duty cycle — it IS the 24/7 number
     assert r8["ceiling_year_tokens"] == r24["ceiling_year_tokens"]
     assert r8["ceiling_year_cost"] == round(180.0 * 8760, 2)
-    # the approved headline says "a year", so the year figure must scale with
-    # the working day — and NOT with a 24/7 schedule
-    gap = 180.0 - 120.0                 # best hour minus average hour
-    assert r8["loss_year_cost"] == round(gap * 8 * 365, 2)
-    assert r24["loss_year_cost"] == round(gap * 24 * 365, 2)
-    assert r24["loss_year_cost"] == round(r8["loss_year_cost"] * 3, 2)
+    # the headline is the user's own formula — CAPACITY minus REGISTERED saved —
+    # so it does not move when someone pins a duty cycle; only the supplementary
+    # duty_* figures do
+    assert r8["loss_year_cost"] == r24["loss_year_cost"] == r0["loss_year_cost"]
+    #   capacity   = $180/h x 8760 h      = $1,576,800
+    #   registered = $240/day x 365 days  = $87,600   (60 min x $1 + 60 min x $3)
+    assert r8["saved_year_cost"] == round(240.0 * 365, 2)
+    assert r8["loss_year_cost"] == round(180.0 * 8760 - 240.0 * 365, 2)
     assert r8["loss_week_cost"] > 0
     # a nonsense duty cycle is clamped into a sane range, not obeyed
     assert lost_potential(st, LIVE, PRICE, duty_hours=9999)["duty_hours_per_day"] == 24

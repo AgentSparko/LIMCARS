@@ -866,7 +866,7 @@ async function fetchCacheLife() {
 const SAV_BASE = ['#4fa3ff', '#ffb454', '#5dd39e', '#e06c9f',
                   '#b48cff', '#ffd75d', '#5ad1d1', '#ff8a65'];
 const SAV_COLORS = SAV_BASE.slice();      // rotated by applyTheme (reactive)
-let savDays = 365;
+let savDays = 30;      // default timeframe: 1 month (user request)
 
 function _savMoney(v) {
   return '$' + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(4));
@@ -979,8 +979,13 @@ async function renderSavingsChart() {
   const st = document.querySelector('#sav-stats');
   if (st) {
     const leg = ids.map(id => `<span style="color:${color[id]}">●</span> ${escH(d.models[id] || id)}`).join('  ');
+    // measured occupancy: hours a day the box actually produced tokens in
+    // this window (from the minute rows), averaged over days that had traffic
+    const occ = (d.avg_active_hours_per_day == null) ? ''
+      : ` · avg <b>${d.avg_active_hours_per_day}</b> h/day active`;
     st.innerHTML = `total saved <b style="color:var(--green,#5dd39e)">${_savMoney(d.totals.cost)}</b>`
       + ` · ${fmtK(d.totals.tokens)} tokens · ${d.days.length} active day${d.days.length === 1 ? '' : 's'}`
+      + occ
       + (ids.length ? ` &nbsp;${leg}` : '');
   }
 }
@@ -1273,9 +1278,13 @@ async function renderLostPotential() {
       String(pr.fetched_at).slice(0, 10) + '); change pricing.json and ' +
       'every $ updates' : '') +
     ' \u00b7 estimated/seed rows are excluded' +
-    // the assumption lives on hover, not in the approved message copy
-    (d.duty_hours_per_day ? ' \u00b7 year/month figures use ' +
-      d.duty_hours_per_day + ' h/day of traffic the dash actually measured' : '');
+    // the headline number, spelled out so it can be checked by hand:
+    // lost potential = capacity (best recorded hour x 8760 h) - registered saved
+    (d.capacity_year_cost != null ? ' \u00b7 on the table = capacity ' +
+      fmtUsd0(d.capacity_year_cost) + '/yr (best recorded hour \u00d7 8760 h) \u2212 ' +
+      'money the dash registered as saved ' + fmtUsd0(d.saved_year_cost) + '/yr' : '') +
+    (d.duty_hours_observed_per_day != null ? ' \u00b7 ' +
+      d.duty_hours_observed_per_day + ' active h/day measured' : '');
   host.innerHTML = '<div class="bubble potential" title="' + escH(title) +
     '"><div class="label">' + titleHtml + '</div><div class="value pot-text">' +
     msg + '</div></div>';

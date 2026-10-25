@@ -149,6 +149,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
     since = (int(time.time()) // 86400 - days + 1) * 86400
     out_days: dict[int, dict] = {}
     models: dict[str, str] = {}
+    active_minutes: set[int] = set()
     tot_cost = tot_tok = 0.0
     for eng in engines:
         eid, model = eng["id"], eng.get("model")
@@ -160,6 +161,12 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
                              or price.get("cache_read") or price.get("input")):
             continue
         models[eid] = model or eid
+        # machine occupancy for this window, straight from the minute rows:
+        # hours a day the box was actually producing tokens (the stat the user
+        # asked to see next to the money line — measured, never assumed)
+        for ts, p_, c_, g_ in store.minute_rows(eid):
+            if ts >= since and (p_ or 0) + (c_ or 0) + (g_ or 0) > 0:
+                active_minutes.add(ts // 60)
         for day, p_, c_, g_ in store.daily_bucket_totals(eid, since):
             cost = pricing_mod.hot_costs(p_, c_, g_, price)["hot"]
             d = out_days.setdefault(day, {})
@@ -167,8 +174,16 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
                       "gen": g_, "tokens": (p_ or 0) + (c_ or 0) + (g_ or 0)}
             tot_cost += cost
             tot_tok += (p_ or 0) + (c_ or 0) + (g_ or 0)
+    act_days = len({m // 1440 for m in active_minutes})
     return {"days": [{"day": d, "engines": e} for d, e in sorted(out_days.items())],
             "models": models, "days_n": days,
+            # average hours a day the box was measured producing tokens, over
+            # the days that actually had traffic (measured, not assumed)
+            "active_minutes": len(active_minutes),
+            "active_days": act_days,
+            "avg_active_hours_per_day": (
+                round(len(active_minutes) / 60.0 / max(act_days, 1), 2)
+                if active_minutes else None),
             "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok}}
 
 
@@ -181,16 +196,22 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
     two hours ago still sees meaningful numbers on day one. Utilisation is
     the recorded average hour over the recorded span vs that best hour.
 
-    Every projection names its own basis, because a silent 24/7 extrapolation
-    of a burst is what produced the 11-37k USD/year alerts the user rejected as
-    impossible:
-      * capacity / ceiling : best hour x 8760 h — the machine never stopping.
-        A capacity claim, so it is NOT scaled by anything.
-      * duty               : the hourly gap priced over the hours a day this box
-        was MEASURED generating tokens. Agents run unattended and the box may
-        have other users, so this is machine occupancy read out of the recorded
-        minutes — not anyone's screen time. Pass duty_hours to override it.
+    LOST POTENTIAL, in the user's own definition, is:
+
+        capacity  -  money the dash registered as saved
+        capacity = best recorded hour priced x 8760 h  (the machine never
+                   stopping; a capacity claim, so it is scaled by NOTHING)
+        registered saved = the hot-tier money the dash actually recorded,
+                   annualised over the days it saw traffic — the same figures
+                   the "Daily money saved" chart plots
+
+    Both sides ship in the payload (capacity_year_cost, saved_year_cost) so the
+    subtraction can be checked by hand. Supplementary figures, never headlined:
       * pace               : your recorded average hour x 730/8760 h.
+      * duty               : best hour priced over the hours a day this box was
+        MEASURED producing tokens (active minutes / 60 / recorded days). Agents
+        run unattended and the box may serve other users, so no one's screen
+        time enters it; duty_hours pins it if a caller insists.
     Measured fields (best hour / day / month / year) are only published for
     periods that were actually watched. Sliding window is a two-pointer over
     minute indices — O(n) — and cost is summed from per-minute hot bills (the
@@ -356,20 +377,30 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             # it is a physical ceiling, not a plan). 'duty' prices the same hour
             # over the hours a day the box was measured producing tokens.
             cand["ceiling_year_cost"] = round(peak_cost_w * 8760, 2)
+            # CAPACITY, in the user's own words: the best recorded hour projected
+            # to a year (best hour x 8760 h — the machine never stopping). The
+            # lost potential is that capacity MINUS the money the dash actually
+            # registered as saved over the same span, annualised. Both sides of
+            # that subtraction are named in the payload so the number can be
+            # checked by hand.
+            cand["capacity_year_cost"] = cand["ceiling_year_cost"]
+            # the money the dash REGISTERED as saved, from the same hot-tier
+            # figures the "Daily money saved" chart shows (tot_cost over the
+            # days actually recorded) — not a pace invented here
+            cand["saved_period_cost"] = round(tot_cost, 2)
+            cand["saved_year_cost"] = cand["proj_year_cost"]
+            cand["saved_month_cost"] = cand["proj_month_cost"]
+            cand["capacity_month_cost"] = round(peak_cost_w * 24 * 30.4, 2)
+            cand["loss_year_cost"] = round(
+                max(0.0, cand["capacity_year_cost"] - cand["saved_year_cost"]), 2)
+            cand["loss_month_cost"] = round(
+                max(0.0, cand["capacity_month_cost"] - cand["saved_month_cost"]), 2)
             cand["duty_hours_per_day"] = duty
             cand["duty_hours_observed_per_day"] = duty_observed
             cand["duty_basis"] = "measured" if duty_hours is None else "configured"
             cand["duty_day_cost"] = round(peak_cost_w * duty, 2)
             cand["duty_month_cost"] = round(peak_cost_w * 30.4 * duty, 2)
             cand["duty_year_cost"] = round(peak_cost_w * 365 * duty, 2)
-            # The headline keeps the user-approved wording ("... a year!"), so
-            # the YEAR figure has to be a year of actual use, not a year of
-            # never stopping: the hourly gap priced over the measured hours a
-            # day for 365 days. The 24/7 figure still exists, named 'ceiling',
-            # and the UI does not headline it. (That unpriced-any-assumption
-            # best hour x 8760 is what produced the 11-37k USD/year claims.)
-            cand["loss_month_cost"] = round(gap_hour * duty * 30.4, 2)
-            cand["loss_year_cost"] = round(gap_hour * duty * 365, 2)
             # A "lost potential" alert with nothing to advertise is just noise:
             # if the best hour equals the average hour there is no gap to show.
             if peak_cost_w <= 0 or cand["loss_year_cost"] <= 0:
@@ -380,7 +411,11 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
                        "best_year_cost", "proj_day_cost",
                        "proj_month_cost", "proj_year_cost", "loss_year_cost",
                        "loss_month_cost", "loss_period_cost", "loss_hour_cost",
-                       "loss_week_cost", "ceiling_year_cost", "duty_day_cost",
+                       "loss_week_cost", "ceiling_year_cost",
+                       "capacity_year_cost", "capacity_month_cost",
+                       "saved_period_cost", "saved_year_cost",
+                       "saved_month_cost",
+                       "duty_day_cost",
                        "duty_month_cost", "duty_year_cost"):
                 cand[_k] = None
         cand["duty_hours_per_day"] = duty
