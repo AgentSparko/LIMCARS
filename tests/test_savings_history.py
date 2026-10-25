@@ -17,6 +17,23 @@ def _b(p=0.0, c=0.0, g=0.0, **kw):
     return d
 
 
+def test_hot_costs_respects_the_cached_subset_contract():
+    """`cached` is a SHARE of the prompt tokens, never extra tokens. A dialect
+    whose cached counter is block-rounded (prefix_cache_hits_total on older
+    vLLM builds) can report cached > prompt; billing must then stop at the
+    prompt, or the dash charges read-rate for tokens nobody prompted."""
+    from app.pricing import hot_costs
+    pr = {"input": 1.0, "cache_write": 1.0, "cache_read": 0.1,
+          "cache_read_hot": 0.1, "output": 2.0}
+    honest = hot_costs(1_000_000, 400_000, 100_000, pr)
+    assert abs(honest["hot"] - (0.6 * 1.0 + 0.4 * 0.1 + 0.1 * 2.0)) < 1e-9
+    inflated = hot_costs(1_000_000, 1_400_000, 100_000, pr)
+    assert abs(inflated["hot"] - (0.0 * 1.0 + 1.0 * 0.1 + 0.1 * 2.0)) < 1e-9
+    assert inflated["hot"] <= honest["hot"] + 1e-9
+    assert hot_costs(0, 0, 0, pr)["hot"] == 0.0
+    assert hot_costs(None, None, None, pr)["hot"] == 0.0
+
+
 def test_daily_savings_reports_measured_active_hours(tmp_path):
     """The occupancy stat next to the money line: hours a day the box was
     MEASURED producing tokens, averaged over the days that had traffic. It is
@@ -58,9 +75,16 @@ def test_daily_savings_grouping_and_pricing(tmp_path):
     assert e["prompt"] == 1e6 and e["cached"] == 5e5 and e["gen"] == 2e5
     exp = (1e6 - 5e5) / 1e6 * 1.0 + 5e5 / 1e6 * 0.1 + 2e5 / 1e6 * 2.0
     assert abs(e["cost"] - round(exp, 4)) < 1e-6
-    assert e["tokens"] == 1e6 + 5e5 + 2e5
+    # A token total is prompt + gen: cached is a SUBSET of the prompt tokens
+    # (vLLM counts each prompt token once whether served from the prefix cache
+    # or recomputed), so adding it counted every cache-hit token twice — the
+    # 1.9x the user spotted when he compared the two dashes.
+    assert e["tokens"] == 1e6 + 2e5                       # prompt + gen
+    assert e["cached"] == 5e5                              # kept as "of which"
     assert abs(r["totals"]["cost"] - round(exp, 4)) < 1e-6
     assert r["totals"]["tokens"] == e["tokens"]
+    assert r["totals"]["cached"] == 5e5
+    assert r["totals"]["tokens"] < e["prompt"] + e["cached"] + e["gen"]
     assert r["models"] == {"e1": "M"}
 
     # 365-day window picks up the old day too; totals are all-model sums

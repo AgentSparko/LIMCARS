@@ -150,7 +150,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
     out_days: dict[int, dict] = {}
     models: dict[str, str] = {}
     active_minutes: set[int] = set()
-    tot_cost = tot_tok = 0.0
+    tot_cost = tot_tok = tot_cached = 0.0
     for eng in engines:
         eid, model = eng["id"], eng.get("model")
         price = pricing_mod.effective_price(model, pricing_cfg)
@@ -165,15 +165,28 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
         # hours a day the box was actually producing tokens (the stat the user
         # asked to see next to the money line — measured, never assumed)
         for ts, p_, c_, g_ in store.minute_rows(eid):
-            if ts >= since and (p_ or 0) + (c_ or 0) + (g_ or 0) > 0:
+            # an active minute is one where the box produced a token: prompt
+            # already contains the cached share, so p + g is the honest test
+            if ts >= since and (p_ or 0) + (g_ or 0) > 0:
                 active_minutes.add(ts // 60)
         for day, p_, c_, g_ in store.daily_bucket_totals(eid, since):
             cost = pricing_mod.hot_costs(p_, c_, g_, price)["hot"]
             d = out_days.setdefault(day, {})
+            # A token TOTAL is prompt + gen. cached_tokens is a SUBSET of the
+            # prompt tokens (vLLM counts each prompt token once in
+            # prompt_tokens_total whether it was served from the prefix cache or
+            # recomputed — verified: Δprompt_tokens_total equals the sum of the
+            # client-reported prompt_tokens for the same requests), so adding
+            # the cached share counted every cache-hit token twice — 1.9x
+            # inflation on this box, where 2.46B of 2.77B prompt tokens hit the
+            # cache. `cached` stays on the row as the "of which" figure, and
+            # pricing keeps its own (prompt - cached) split, which was always
+            # correct.
             d[eid] = {"cost": round(cost, 4), "prompt": p_, "cached": c_,
-                      "gen": g_, "tokens": (p_ or 0) + (c_ or 0) + (g_ or 0)}
+                      "gen": g_, "tokens": (p_ or 0) + (g_ or 0)}
             tot_cost += cost
-            tot_tok += (p_ or 0) + (c_ or 0) + (g_ or 0)
+            tot_tok += (p_ or 0) + (g_ or 0)
+            tot_cached += (c_ or 0)
     act_days = len({m // 1440 for m in active_minutes})
     return {"days": [{"day": d, "engines": e} for d, e in sorted(out_days.items())],
             "models": models, "days_n": days,
@@ -184,7 +197,10 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             "avg_active_hours_per_day": (
                 round(len(active_minutes) / 60.0 / max(act_days, 1), 2)
                 if active_minutes else None),
-            "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok}}
+            "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok,
+                       # "of which served from prefix cache" — a subset of the
+                       # prompt tokens, never an addend of the total
+                       "cached": round(tot_cached)}}
 
 
 def lost_potential(store, engines: list[dict], pricing_cfg,

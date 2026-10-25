@@ -89,6 +89,24 @@ def test_vllm_reads():
     assert st[1] == pytest.approx(1234.5) and st[2] == 771.0
 
 
+def test_vllm_cached_tokens_prefers_the_authoritative_counter():
+    """The money split and every token total assume cached is a SUBSET of the
+    prompt tokens, so it must come from vLLM's own cached-prompt counter when
+    the build exposes it — prefix_cache_hits_total is block-rounded and is only
+    a fallback for older builds."""
+    dial = D.DIALECTS["vllm"]
+    with_cached = VLLM_BODY + "vllm:prompt_tokens_cached_total 12000000.0\n"
+    c = D.read_counters(_parse(with_cached), dial)
+    cached, prompt = c["cached_tokens"], c["prompt_tokens"]
+    assert cached is not None and prompt is not None
+    assert cached == 12000000.0                             # NOT the hits figure
+    assert cached <= prompt                                 # subset invariant
+    assert c["prefix_hits"] == 53403904.0                   # still its own signal
+    # older build without that counter: fall back to the prefix-cache hits
+    c2 = D.read_counters(_parse(VLLM_BODY), dial)
+    assert c2["cached_tokens"] == 53403904.0
+
+
 def test_sglang_prefill_mode_label_match():
     dial = D.DIALECTS["sglang"]
     s = _parse(SGLANG_BODY)

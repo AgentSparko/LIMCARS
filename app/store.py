@@ -233,6 +233,9 @@ class Store:
                 " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0",
                 (engine, anchor - 3600)).fetchone()
         prompt, cached, gen, n = r2
+        # NOTE: this is an activity test, not a token total — cached is summed
+        # in deliberately, so an engine whose cached counter is NOT a subset of
+        # prompt still counts as active. Displayed totals are always p + g.
         if not n or (prompt + cached + gen) <= 0:
             return {"empty": True}
         return {"empty": False, "prompt": prompt, "cached": cached, "gen": gen,

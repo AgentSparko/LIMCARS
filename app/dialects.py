@@ -90,7 +90,15 @@ VLLM = {
     "counter": {
         "prompt_tokens": "vllm:prompt_tokens_total",
         "gen_tokens": "vllm:generation_tokens_total",
-        "cached_tokens": "vllm:prefix_cache_hits_total",
+        # cached_tokens is the prompt-token share served from cache. It MUST
+        # stay a subset of prompt_tokens: the pricing split bills
+        # (prompt - cached) at the write rate and cached at the read rate, and
+        # every token TOTAL on the dash is prompt + gen. vLLM's
+        # prompt_tokens_cached_total is the authoritative figure;
+        # prefix_cache_hits_total is the fallback for older builds (it is
+        # block-rounded, so it can sit a hair above the true cached share).
+        "cached_tokens": ["vllm:prompt_tokens_cached_total",
+                          "vllm:prefix_cache_hits_total"],
         "proc_start": "process_start_time_seconds",
         "iterations": "vllm:iteration_tokens_total_count",
         "prefix_queries": "vllm:prefix_cache_queries_total",

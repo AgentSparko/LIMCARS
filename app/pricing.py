@@ -110,7 +110,8 @@ def effective_price(model: str | None, override: dict | None = None) -> dict | N
     return resolve(model)
 
 
-def hot_costs(prompt: float, cached: float, gen: float, price: dict) -> dict:
+def hot_costs(prompt: float | None, cached: float | None, gen: float | None,
+              price: dict) -> dict:
     """Canonical cloud-API cost trio (old LIMCARS basis):
     uncached@cache-WRITE + cached@cache-READ(_HOT) + gen@OUTPUT."""
     _g = lambda k: (lambda v: 0.0 if v is None else float(v))(price.get(k))
@@ -120,7 +121,16 @@ def hot_costs(prompt: float, cached: float, gen: float, price: dict) -> dict:
     p_w = float(cw) if cw is not None else (p_in or 0.0)   # 0 is a real price
     crh = price.get("cache_read_hot")
     p_rhot = float(crh) if crh is not None else p_r
-    uncached = max(0.0, prompt - cached)
+    # the dialect contract is that `cached` is a SUBSET of `prompt` (vLLM's
+    # prompt_tokens_cached_total / SGLang's cached_tokens_total are shares of
+    # the prompt, not extra tokens). Clamp it: an engine whose cached counter is
+    # block-rounded (prefix_cache_hits_total on older vLLM builds) could
+    # otherwise bill cache-read tokens that were never prompted, on top of the
+    # write rate for the whole prompt.
+    prompt = max(0.0, float(prompt or 0.0))
+    cached = max(0.0, min(float(cached or 0.0), prompt))
+    gen = max(0.0, float(gen or 0.0))
+    uncached = prompt - cached
     return {
         "hot": uncached / 1e6 * p_w + cached / 1e6 * p_rhot + gen / 1e6 * p_out,
         "base": uncached / 1e6 * p_w + cached / 1e6 * p_r + gen / 1e6 * p_out,

@@ -374,7 +374,7 @@ function refresh() {
         ? '$' + sv[ref.d.savings].toLocaleString('en-US', { maximumFractionDigits: sv[ref.d.savings] < 100 ? 2 : 0 })
         : '–';
       ref.sub.textContent = sv && sv.tokens
-        ? `${sv.basis} · ${fmtK(sv.tokens.prompt)} in + ${fmtK(sv.tokens.cached)} cached + ${fmtK(sv.tokens.gen)} gen`
+        ? `${sv.basis} · ${fmtK(sv.tokens.prompt)} in (${fmtK(sv.tokens.cached)} from cache) + ${fmtK(sv.tokens.gen)} gen`
         : 'collecting first minute…';
     }
     else { ref.v.textContent = ref.d.main(l); ref.sub.textContent = ref.d.sub ? ref.d.sub(l) : ''; }
@@ -966,7 +966,7 @@ async function renderSavingsChart() {
       for (const [id, e] of Object.entries(rec)) {
         html += `<br><span style="color:${color[id]}">●</span> ${escH(d.models[id] || id)}
           <b>${_savMoney(e.cost)}</b> · ${fmtK(e.tokens)} tok
-          <br><span class="muted" style="margin-left:14px">w ${fmtK(e.prompt)} · r ${fmtK(e.cached)} · d ${fmtK(e.gen)}</span>`;
+          <br><span class="muted" style="margin-left:14px">w ${fmtK(Math.max(0, (e.prompt || 0) - (e.cached || 0)))} · r ${fmtK(e.cached)} · d ${fmtK(e.gen)}</span>`;
       }
       html += `<br><b>${_savMoney(dayTot(rec))}</b> <span class="muted">total</span>`;
     }
@@ -984,7 +984,11 @@ async function renderSavingsChart() {
     const occ = (d.avg_active_hours_per_day == null) ? ''
       : ` · avg <b>${d.avg_active_hours_per_day}</b> h/day active`;
     st.innerHTML = `total saved <b style="color:var(--green,#5dd39e)">${_savMoney(d.totals.cost)}</b>`
-      + ` · ${fmtK(d.totals.tokens)} tokens · ${d.days.length} active day${d.days.length === 1 ? '' : 's'}`
+      + ` · ${fmtK(d.totals.tokens)} tokens`
+      // cached is a subset of the prompt tokens, so it is reported as "of
+      // which" and never added into the total (that addition was the 1.9x)
+      + (d.totals.cached ? ` <span class="muted">(of which ${fmtK(d.totals.cached)} from cache)</span>` : '')
+      + ` · ${d.days.length} active day${d.days.length === 1 ? '' : 's'}`
       + occ
       + (ids.length ? ` &nbsp;${leg}` : '');
   }
