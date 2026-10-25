@@ -40,10 +40,10 @@ const BUBS = {
     { label: 'TTFT', series: 'ttft_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => Math.round(v) + ' ms',
       main: l => histMs(l, 'ttft'), sub: l => 'time to first token · ' + histBasis(l, 'ttft') },
-    { label: 'e2e latency (p50)', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
+    { label: 'e2e latency', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
-      main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : l.e2e_p50_ms),
-      sub: l => `median · ${l.e2e_med_1h != null ? 'last hour' : 'live 30 s'} · now ${num(l.e2e_p50_ms)} ms · lifetime ${num(l.e2e_life_avg_ms)} ms` },
+      main: l => sec(l.e2e_med_1h != null ? l.e2e_med_1h : histNum(l, 'e2e')),
+      sub: l => `median of 30 s means · last hour · ${histBasis(l, 'e2e')} · now ${ms(histNum(l, 'e2e'))} · lifetime ${ms(l.e2e_life_avg_ms)}` },
     { label: 'Spec acceptance', series: 'spec_accept_pct', color: () => COLORS.violet,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.spec_accept_pct),
@@ -91,9 +91,12 @@ const sec = v => _fin(v) ? (v / 1000).toFixed(2) + ' s' : '–';
 const tps = v => _fin(v) ? Math.round(v).toLocaleString('en-US') + ' tok/s' : '–';
 // Histogram bubbles: p50 only from a population; with few samples the coarse
 // engine buckets produce round-edge fiction, so show the true window mean.
-const histMs = (l, k) => { const n = l[k + '_n'] || 0;
-  return ms(n >= 20 ? l[k + '_p50_ms']
-                    : (l[k + '_avg_ms'] != null ? l[k + '_avg_ms'] : l[k + '_p50_ms'])); };
+// histNum is the numeric form so a bubble can render in its own unit (ms or s)
+// while every latency bubble shares ONE n-gate and one basis rule.
+const histNum = (l, k) => { const n = l[k + '_n'] || 0;
+  return n >= 20 ? l[k + '_p50_ms']
+                 : (l[k + '_avg_ms'] != null ? l[k + '_avg_ms'] : l[k + '_p50_ms']); };
+const histMs = (l, k) => ms(histNum(l, k));
 const histBasis = (l, k) => { const n = l[k + '_n'] || 0;
   return n >= 20 ? `p50 · 30 s window · n=${n}`
        : n ? `true mean · 30 s · n=${n} (too few reqs for p50)`
@@ -457,12 +460,13 @@ function renderModelTable(force) {
       <td>${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'}</td>
       <td>${(() => { const v = (l.ttft_n >= 20 || l.ttft_avg_ms == null) ? l.ttft_p50_ms : l.ttft_avg_ms;
                      return v != null ? Math.round(v) + (l.ttft_n < 20 ? ' *' : '') : '–'; })()}</td>
-      <td>${l.e2e_p50_ms != null ? (l.e2e_p50_ms / 1000).toFixed(2) : '–'}</td>
+      <td>${(() => { const v = histNum(l, 'e2e');
+                     return v != null ? (v / 1000).toFixed(2) + ((l.e2e_n || 0) < 20 ? ' *' : '') : '–'; })()}</td>
       <td>${(state.store.at(`${meta.id}.decode_tps_now`) || []).length}</td>
       <td>${meta.last_scrape ? new Date(meta.last_scrape * 1000).toTimeString().slice(0, 8) : '–'}</td></tr>` + detail;
   });
   t.innerHTML = `<tr><th>Model</th><th>Backend</th><th>Run</th><th>Wait</th><th>KV %</th>
-    <th>Spec accept</th><th>TTFT p50</th><th>e2e p50 s</th><th>Samples</th><th>Seen</th></tr>` +
+    <th>Spec accept</th><th title="p50 over the 30 s window; * = true mean, too few requests in the window for a p50 to mean anything">TTFT ms</th><th title="request in to last token out, queue included; * = true mean, too few requests for a p50">e2e s</th><th>Samples</th><th>Seen</th></tr>` +
     (rows.join('') || '<tr><td colspan="10" class="muted">no engines</td></tr>');
   t.querySelectorAll('tr[data-model]').forEach(tr => tr.addEventListener('click', () => {
     state.expanded = state.expanded === tr.dataset.model ? null : tr.dataset.model;

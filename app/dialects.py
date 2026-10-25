@@ -106,7 +106,10 @@ VLLM = {
         "decode_time": "vllm:request_decode_time_seconds",
         "itl": "vllm:inter_token_latency_seconds",
         "queue_time": "vllm:request_queue_time_seconds",
-        "e2e": "vllm:request_inference_time_seconds",
+        # True end-to-end: vllm:e2e_request_latency_seconds covers the whole
+        # request. request_inference_time_seconds is the RUNNING phase only and
+        # silently drops queue time, so it under-reads whenever requests wait.
+        "e2e": "vllm:e2e_request_latency_seconds",
     },
 }
 

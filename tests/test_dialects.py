@@ -137,3 +137,23 @@ def test_tandemllm_dual_namespace_alt():
     g = D.read_gauges(s, dial)
     assert c["prompt_tokens"] == 42.0   # qwen38 alt resolves
     assert g["running"] == 1.0
+
+
+def test_vllm_e2e_is_the_whole_request_not_the_running_phase():
+    """vllm:request_inference_time_seconds is 'time spent in RUNNING phase' and
+    excludes queueing. A bubble labelled end-to-end that reads it under-reads by
+    exactly whatever requests spent waiting."""
+    body = (
+        'vllm:e2e_request_latency_seconds_sum{model_name="m"} 40.0\n'
+        'vllm:e2e_request_latency_seconds_count{model_name="m"} 10.0\n'
+        'vllm:e2e_request_latency_seconds_bucket{model_name="m",le="5"} 10.0\n'
+        'vllm:e2e_request_latency_seconds_bucket{model_name="m",le="+Inf"} 10.0\n'
+        'vllm:request_inference_time_seconds_sum{model_name="m"} 10.0\n'
+        'vllm:request_inference_time_seconds_count{model_name="m"} 10.0\n'
+        'vllm:request_inference_time_seconds_bucket{model_name="m",le="5"} 10.0\n'
+        'vllm:request_inference_time_seconds_bucket{model_name="m",le="+Inf"} 10.0\n'
+    )
+    h = D.read_hists(_parse(body), D.DIALECTS["vllm"])
+    assert h["e2e"][1] == pytest.approx(40.0), \
+        "e2e must be the whole request, not the RUNNING phase"
+    assert h["e2e"][2] == 10.0

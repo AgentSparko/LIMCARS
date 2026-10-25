@@ -289,9 +289,14 @@ class EngineSampler(threading.Thread):
         # e2e smoothing (old LIMCARS gauge basis): cumulative histogram
         # mean = sum/count over the engine's WHOLE life — inherently slow
         # moving like the old dash; plus an hour-median of the p50 samples.
+        # The hour median rides the WINDOW MEAN, not the p50: vLLM's coarse
+        # buckets make a low-n p50 a bucket-edge, and medians of fictions are
+        # still fictions (a real workload read 25.00 s against a true 3.24 s).
+        # Median-of-means keeps the gauge a slow medium, which is the standing
+        # rule for latency bubbles, without ever inventing a percentile.
         st = hists.get("e2e")
         row["e2e_life_avg_ms"] = (st[1] / st[2] * 1000) if st and st[2] else None
-        row["e2e_med_1h"] = self._hour_median("e2e_p50_ms", row.get("e2e_p50_ms"))
+        row["e2e_med_1h"] = self._hour_median("e2e_avg_ms", row.get("e2e_avg_ms"))
 
         # --- request completion events (count jump) ---
         cur_rs = counters.get("req_success")
