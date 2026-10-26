@@ -18,7 +18,12 @@ DEFAULTS = {
     "live_hz": 2.0,          # engine sampler ticks per second (1-4)
     "hw_hz": 1.0,            # hardware sampler ticks per second
     "ring_seconds": 3900,    # in-memory ring depth (65 min — supports the 1 h window)
-    "persist_seconds": 604800, # sqlite downsample depth (1 s resolution, 7 d)
+    # 1 s-resolution ring window. This is the whole database: ~1.7 KB per tick
+    # row per engine, so 7 d was roughly 1 GB/engine of data the UI never
+    # renders -- charts above 1 h come from the hourly counter_buckets, which
+    # is retained 366 d and is three orders of magnitude smaller. Editable in
+    # Settings (5 min .. 7 d); 48 h keeps two days of forensic detail.
+    "persist_seconds": 172800,
     "window_s": 30.0,        # window for p50 / avg derived stats
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [
