@@ -487,6 +487,14 @@ class EngineSampler(threading.Thread):
         while self._rate_min and self._rate_min[0]["t"] < cutoff:
             self._rate_min.popleft()
         if self.store:
+            # Freeze the money with the tokens, using the SAME price source the
+            # report and bubbles use (pricing.effective_price), so the panel,
+            # the chart and the savings bubble can never disagree — and so a
+            # later edit of pricing.json cannot rewrite this minute's cost.
+            from . import pricing as pricing_mod
+            _money = pricing_mod.money_stamped(
+                max(0, dp), max(0, dc), max(0, dg),
+                pricing_mod.effective_price(self.model, self.cfg.get("pricing")))
             self.store.save_counter_bucket(self.id, int(self._rate_prev_t // 60) * 60, {
                 "prompt": max(0, dp), "cached": max(0, dc), "gen": max(0, dg),
                 "reqs": max(0, dr), "iters": max(0, di),
@@ -496,7 +504,8 @@ class EngineSampler(threading.Thread):
                 # gap-spanning bucket (sampler was down/quiet > 2 min): real
                 # tokens but NOT a valid "one busy minute" for rate/savings
                 # anchors — excluded from last_active_hour (audit M2)
-                "synthetic": 1 if (now - self._rate_prev_t) > 120 else 0})
+                "synthetic": 1 if (now - self._rate_prev_t) > 120 else 0,
+                **_money})
         self._rate_prev = base
         self._rate_prev_t = now
 

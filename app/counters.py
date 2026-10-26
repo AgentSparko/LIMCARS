@@ -42,11 +42,32 @@ def report(store, engine: str, window: str, model: str | None,
         if t.get("empty"):
             return None
         c = pricing_mod.hot_costs(t["prompt"], t["cached"], t["gen"], price)
+        # Money is a historical fact, not a function of today's price file.
+        # Rows carry the cost frozen at write time, so a provider's rate change
+        # cannot rewrite what the box registered as saved last month. Only rows
+        # that predate stamping (or were written with no price known) fall back
+        # to the current rate, and the figure says which basis it used.
+        npr = t.get("money_rows") or 0
+        nlg = t.get("money_legacy_rows") or 0
+        if npr and not nlg:
+            hot, base, nc, mode = (t["cost_hot"], t["cost_base"],
+                                   t["cost_nocache"], "as_written")
+        elif npr:
+            ext = pricing_mod.hot_costs(t.get("legacy_prompt") or 0.0,
+                                        t.get("legacy_cached") or 0.0,
+                                        t.get("legacy_gen") or 0.0, price)
+            hot = t["cost_hot"] + ext["hot"]
+            base = t["cost_base"] + ext["base"]
+            nc = t["cost_nocache"] + ext["nocache"]
+            mode = "mixed"
+        else:
+            hot, base, nc, mode = c["hot"], c["base"], c["nocache"], "current"
         uncached = max(0.0, t["prompt"] - t["cached"])
         return {**t, "uncached": uncached,
                 "cache_hit": round(100 * t["cached"] / t["prompt"], 1) if t["prompt"] else None,
                 "per_batch": round(uncached / t["reqs"]) if t["reqs"] else None,
-                "cost_hot": c["hot"], "cost_base": c["base"], "cost_nocache": c["nocache"]}
+                "cost_hot": hot, "cost_base": base, "cost_nocache": nc,
+                "money_basis": mode, "priced_rows": npr, "unpriced_rows": nlg}
 
     out = {"empty": False, "window": window, "totals": pack(w), "all_time": pack(life),
            "price": {"input": p_in, "output": p_out, "cache_write": p_w,
@@ -151,6 +172,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
     models: dict[str, str] = {}
     active_minutes: set[int] = set()
     tot_cost = tot_tok = tot_cached = 0.0
+    priced_rows = unpriced_rows = 0      # how much of this window is as-earned
     for eng in engines:
         eid, model = eng["id"], eng.get("model")
         price = pricing_mod.effective_price(model, pricing_cfg)
@@ -169,8 +191,18 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             # already contains the cached share, so p + g is the honest test
             if ts >= since and (p_ or 0) + (g_ or 0) > 0:
                 active_minutes.add(ts // 60)
-        for day, p_, c_, g_ in store.daily_bucket_totals(eid, since):
-            cost = pricing_mod.hot_costs(p_, c_, g_, price)["hot"]
+        for day, p_, c_, g_, hot_d, base_d, nc_d, npr, nlg, lp_, lc_, lg_ in \
+                store.daily_bucket_totals(eid, since):
+            # Money as it was EARNED. Only the rows that predate cost stamping
+            # (or were written while no price was known) are re-priced from
+            # today's table, and the day is labelled so a re-priced number can
+            # never be read as history. A price change must not rewrite what
+            # the box saved in March.
+            extra = pricing_mod.hot_costs(lp_, lc_, lg_, price)["hot"] if nlg else 0.0
+            cost = (hot_d or 0.0) + extra
+            mode = "as_written" if (npr and not nlg) else ("mixed" if npr else "current")
+            priced_rows += npr
+            unpriced_rows += nlg
             d = out_days.setdefault(day, {})
             # A token TOTAL is prompt + gen. cached_tokens is a SUBSET of the
             # prompt tokens (vLLM counts each prompt token once in
@@ -183,7 +215,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             # pricing keeps its own (prompt - cached) split, which was always
             # correct.
             d[eid] = {"cost": round(cost, 4), "prompt": p_, "cached": c_,
-                      "gen": g_, "tokens": (p_ or 0) + (g_ or 0)}
+                      "gen": g_, "tokens": (p_ or 0) + (g_ or 0), "priced": mode}
             tot_cost += cost
             tot_tok += (p_ or 0) + (g_ or 0)
             tot_cached += (c_ or 0)
@@ -200,7 +232,13 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok,
                        # "of which served from prefix cache" — a subset of the
                        # prompt tokens, never an addend of the total
-                       "cached": round(tot_cached)}}
+                       "cached": round(tot_cached),
+                       # provenance of the money: as_written = every row priced
+                       # when it happened; current = the whole window predates
+                       # stamping and is today's rate, not history.
+                       "priced": ("as_written" if (priced_rows and not unpriced_rows)
+                                  else ("mixed" if priced_rows else "current")),
+                       "priced_rows": priced_rows, "unpriced_rows": unpriced_rows}}
 
 
 def lost_potential(store, engines: list[dict], pricing_cfg,

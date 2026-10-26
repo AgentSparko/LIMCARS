@@ -7,6 +7,7 @@ history instead of an empty chart. Pruned to persist_seconds on write.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -53,6 +54,24 @@ class Store:
                 "ALTER TABLE counter_buckets ADD COLUMN synthetic INTEGER DEFAULT 0")
         except Exception:  # duplicate column on existing DBs
             pass
+        # Money as it was EARNED. Cloud prices move (the fetcher refreshes
+        # pricing.json, a user edits it), and every $ figure used to be
+        # recomputed at read time from whatever the rate was right then — so
+        # historical savings silently rewrote themselves. A bucket is a fact,
+        # so its cost is frozen here alongside the rates that produced it.
+        # NULL means "priced under the old code / no price known then", which
+        # readers must NOT report as $0.00.
+        for col, typ in (("cost_hot", "REAL"), ("cost_base", "REAL"),
+                         ("cost_nocache", "REAL"), ("price_slug", "TEXT"),
+                         ("price_in", "REAL"), ("price_out", "REAL"),
+                         ("price_cw", "REAL"), ("price_cr", "REAL"),
+                         ("price_crhot", "REAL"), ("priced_at", "REAL"),
+                         ("price_src", "TEXT")):
+            try:
+                self._con.execute(
+                    f"ALTER TABLE counter_buckets ADD COLUMN {col} {typ}")
+            except Exception:  # duplicate column on existing DBs
+                pass
         self._con.commit()
 
     def save_engine_samples(self, engine: str, rows: list[tuple[float, dict]]) -> None:
@@ -113,12 +132,41 @@ class Store:
                 if cur is not None and cur[0] == 0:
                     return           # keep the real bucket, drop the seed
             self._con.execute(
-                "INSERT OR REPLACE INTO counter_buckets"
-                "(engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,"
-                "spec_sum,spec_n,synthetic) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                """
+                INSERT INTO counter_buckets
+                  (engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,
+                   spec_sum,spec_n,synthetic,
+                   cost_hot,cost_base,cost_nocache,price_slug,price_in,price_out,
+                   price_cw,price_cr,price_crhot,priced_at,price_src)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(engine,ts) DO UPDATE SET
+                  prompt=excluded.prompt, cached=excluded.cached, gen=excluded.gen,
+                  reqs=excluded.reqs, iters=excluded.iters,
+                  dec_min=excluded.dec_min, dec_peak=excluded.dec_peak,
+                  spec_sum=excluded.spec_sum, spec_n=excluded.spec_n,
+                  synthetic=excluded.synthetic,
+                  -- money is write-once: the first stamp is the historical fact.
+                  -- Re-saving a minute (restart, gap backfill, importer) must never
+                  -- re-price what was already earned, so an existing value always wins.
+                  cost_hot=COALESCE(counter_buckets.cost_hot, excluded.cost_hot),
+                  cost_base=COALESCE(counter_buckets.cost_base, excluded.cost_base),
+                  cost_nocache=COALESCE(counter_buckets.cost_nocache, excluded.cost_nocache),
+                  price_slug=COALESCE(counter_buckets.price_slug, excluded.price_slug),
+                  price_in=COALESCE(counter_buckets.price_in, excluded.price_in),
+                  price_out=COALESCE(counter_buckets.price_out, excluded.price_out),
+                  price_cw=COALESCE(counter_buckets.price_cw, excluded.price_cw),
+                  price_cr=COALESCE(counter_buckets.price_cr, excluded.price_cr),
+                  price_crhot=COALESCE(counter_buckets.price_crhot, excluded.price_crhot),
+                  priced_at=COALESCE(counter_buckets.priced_at, excluded.priced_at),
+                  price_src=COALESCE(counter_buckets.price_src, excluded.price_src)
+                """,
                 (engine, ts, b["prompt"], b["cached"], b["gen"], b["reqs"],
                  b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"],
-                 b["spec_n"], synth))
+                 b["spec_n"], synth,
+                 b.get("cost_hot"), b.get("cost_base"), b.get("cost_nocache"),
+                 b.get("price_slug"), b.get("price_in"), b.get("price_out"),
+                 b.get("price_cw"), b.get("price_cr"), b.get("price_crhot"),
+                 b.get("priced_at"), b.get("price_src")))
             self._con.commit()
         # 366-day retention, old-LIMCARS parity
         with self._lock:
@@ -135,6 +183,39 @@ class Store:
         self._prune("engine_samples", "t")
         self._prune("hw_samples", "t")
         return self.persist_s
+
+    def storage_stats(self, tables: bool = False) -> dict:
+        """File-level truth for the operator: how big the database is and how much
+        of it is freelist pages that a compact would hand back.
+
+        `tables` runs dbstat, which walks every page — expensive on a large file,
+        so it is opt-in (?tables=1) and never on the dashboard's polling path.
+        """
+        with self._lock:
+            pages = self._con.execute("PRAGMA page_count").fetchone()[0]
+            free = self._con.execute("PRAGMA freelist_count").fetchone()[0]
+            ps = self._con.execute("PRAGMA page_size").fetchone()[0]
+            counts = {}
+            for t in ("engine_samples", "hw_samples", "counter_buckets", "events"):
+                try:
+                    counts[t] = self._con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                except sqlite3.Error:
+                    counts[t] = None
+            tops = {}
+            if tables:
+                try:
+                    tops = {r[0]: r[1] for r in self._con.execute(
+                        "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name"
+                        " ORDER BY 2 DESC LIMIT 10")}
+                except sqlite3.Error:
+                    tops = {}
+        try:
+            wal = os.path.getsize(self.path + "-wal") if os.path.exists(self.path + "-wal") else 0
+        except OSError:
+            wal = 0
+        return {"path": self.path, "pages": pages, "free_pages": free,
+                "page_size": ps, "bytes": pages * ps, "dead_bytes": free * ps,
+                "wal_bytes": wal, "rows": counts, "tables_bytes": tops}
 
     def compact(self, reclaim_ratio: float = 0.10) -> dict:
         """Return pages to the filesystem after pruning.
@@ -160,7 +241,51 @@ class Store:
             out["vacuumed"] = True
             out["pages"] = after
             out["bytes_after"] = after * page_size
+            self._drain_wal(out)
             return out
+
+    def _drain_wal(self, out: dict) -> None:
+        """Push the VACUUM's pages from the WAL back into the main file.
+
+        In WAL mode VACUUM rewrites the whole database *through* the WAL, so
+        immediately afterwards the main file is still its old size and a fresh
+        copy of the new pages sits in -wal: measured on a real 818 MB database,
+        VACUUM left a 499 MB WAL and the file looked like it had GROWN by that
+        much. A checkpoint issued from the connection that just did the VACUUM
+        can return without raising and still leave those pages in place, so this
+        checkpoints from fresh connections until the WAL is actually small —
+        otherwise every auto-compaction looks like a no-op to the operator.
+        """
+        try:
+            self._con.close()
+        except Exception:  # noqa: BLE001 — worst case we simply retry below
+            pass
+        wal = 0
+        for _ in range(40):
+            try:
+                con = sqlite3.connect(self.path, timeout=120)
+                try:
+                    con.isolation_level = None
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                break
+            try:
+                wal = os.path.getsize(self.path + "-wal") if os.path.exists(
+                    self.path + "-wal") else 0
+            except OSError:
+                wal = 0
+            if wal <= 64 * 1024:
+                break
+            time.sleep(0.25)
+        out["wal_bytes"] = wal
+        try:
+            self._con = sqlite3.connect(self.path, check_same_thread=False)
+            self._con.execute("PRAGMA journal_mode=WAL")
+            self._con.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error as exc:                 # pragma: no cover — pathological
+            out["reopen_error"] = str(exc)
 
     def save_counter_raw(self, engine: str, t: float, raw: dict) -> None:
         """Last-seen ABSOLUTE engine counters. Survives limcars restarts so
@@ -188,7 +313,20 @@ class Store:
         q = ("SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
              " COALESCE(SUM(gen),0), COALESCE(SUM(reqs),0), COALESCE(SUM(iters),0),"
              " MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0),"
-             " COALESCE(SUM(spec_n),0), MIN(ts), MAX(ts) FROM counter_buckets"
+             " COALESCE(SUM(spec_n),0), MIN(ts), MAX(ts),"
+             # money earned at the time, and how much of the range lacks it.
+             # Splitting the unpriced rows out (rather than treating NULL as 0)
+             # is what lets the reader say "this total is part as-earned, part
+             # re-priced today" instead of silently mixing the two.
+             " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN cost_hot END),0),"
+             " COALESCE(SUM(CASE WHEN cost_base IS NOT NULL THEN cost_base END),0),"
+             " COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL THEN cost_nocache END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN 1 ELSE 0 END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN 1 ELSE 0 END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN prompt END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN cached END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN gen END),0)"
+             " FROM counter_buckets"
              " WHERE engine=?" + (" AND ts>=?" if since_ts is not None else "")
              + (" AND COALESCE(synthetic,0)=0" if real_only else ""))
         params = [engine] + ([since_ts] if since_ts is not None else [])
@@ -196,12 +334,16 @@ class Store:
             r = self._con.execute(q, params).fetchone()
         if not r or r[9] is None:
             return {"empty": True}
-        (prompt, cached, gen, reqs, iters, dmin, dpeak, ssum, sn, first, last) = r
+        (prompt, cached, gen, reqs, iters, dmin, dpeak, ssum, sn, first, last,
+         chot, cbase, cnocache, n_priced, n_legacy, lp, lc, lg) = r
         return {"empty": False, "prompt": prompt, "cached": cached, "gen": gen,
                 "reqs": reqs, "iters": iters,
                 "dec_min": dmin, "dec_peak": dpeak,
                 "spec": (ssum / sn) if sn else None,
-                "first_ts": first, "last_ts": last}
+                "first_ts": first, "last_ts": last,
+                "cost_hot": chot, "cost_base": cbase, "cost_nocache": cnocache,
+                "money_rows": n_priced, "money_legacy_rows": n_legacy,
+                "legacy_prompt": lp, "legacy_cached": lc, "legacy_gen": lg}
 
     def counter_bucket_rows(self, engine: str, seconds: float) -> list[tuple]:
         """(ts, prompt, cached, gen) raw minute-buckets for sparklines."""
@@ -222,16 +364,32 @@ class Store:
                 (engine,)).fetchall()
 
     def daily_bucket_totals(self, engine: str, since_ts: int) -> list[tuple]:
-        """(utc_day, prompt, cached, gen) calendar-day sums for the daily
+        """(utc_day, prompt, cached, gen, cost_hot, cost_base, cost_nocache,
+        priced_rows, unpriced_rows, unpriced_prompt, unpriced_cached, unpriced_gen)
+        calendar-day sums for the daily
         money-saved chart. SYNTHETIC buckets (seed/gap) are EXCLUDED: the
         lifetime seed bucket parked at "today" would otherwise render as one
         engine-lifetime-sized bar dominating the chart (audit F7), and gap
         backfill covers downtime, not the measured day. The chart therefore
-        means "what was measured live", consistent with every other rate view."""
+        means "what was measured live", consistent with every other rate view.
+
+        Money comes back split into what was frozen at the time and what is
+        still unpriced, so the caller never has to present a re-priced figure
+        as if it were historical.
+        """
         with self._lock:
             return self._con.execute(
                 "SELECT ts/86400, COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
-                " COALESCE(SUM(gen),0) FROM counter_buckets"
+                " COALESCE(SUM(gen),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN cost_hot END),0),"
+                " COALESCE(SUM(CASE WHEN cost_base IS NOT NULL THEN cost_base END),0),"
+                " COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL THEN cost_nocache END),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN 1 ELSE 0 END),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN 1 ELSE 0 END),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN prompt END),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN cached END),0),"
+                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN gen END),0)"
+                " FROM counter_buckets"
                 " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
                 " GROUP BY ts/86400 ORDER BY ts/86400",
                 (engine, int(since_ts))).fetchall()

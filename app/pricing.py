@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
-DATA = Path(__file__).resolve().parent.parent / "data"
+from . import config as _config
+
+DATA = _config.data_dir()
 FILE = DATA / "pricing.json"
 
 _cache: dict | None = None
@@ -108,6 +111,40 @@ def effective_price(model: str | None, override: dict | None = None) -> dict | N
         p.setdefault("display_name", p.get("label") or "manual override")
         return p
     return resolve(model)
+
+
+def money_stamped(prompt: float | None, cached: float | None, gen: float | None,
+                  price: dict | None, *, src: str = "live") -> dict:
+    """Costs PLUS the price identity that produced them, for persistence.
+
+    Cloud prices move under us: pricing.json is refreshed by the fetcher and a user can edit
+    it by hand, and until now every $ figure was recomputed from whatever the rate happened to
+    be at read time. That means last March's savings silently changed when a provider cut a
+    price. A bucket is a historical fact, so the money is frozen here, together with the rates
+    used, so any figure can be audited ("$12.34 at slug qwen38flash, input 0.25, read 0.03")
+    instead of being a function of today's file.
+
+    Returns the three canonical costs plus provenance. Nothing here guesses: when no price is
+    available the caller must store NULL (unknown), not 0.0 — a fabricated zero would look
+    exactly like a genuinely free hour.
+    """
+    p = price or {}
+    if not p:
+        return {}
+    c = hot_costs(prompt, cached, gen, p)
+    return {
+        "cost_hot": round(c["hot"], 6),
+        "cost_base": round(c["base"], 6),
+        "cost_nocache": round(c["nocache"], 6),
+        "price_slug": p.get("slug"),
+        "price_in": p.get("input"),
+        "price_out": p.get("output"),
+        "price_cw": p.get("cache_write"),
+        "price_cr": p.get("cache_read"),
+        "price_crhot": p.get("cache_read_hot"),
+        "priced_at": time.time(),
+        "price_src": src,
+    }
 
 
 def hot_costs(prompt: float | None, cached: float | None, gen: float | None,
