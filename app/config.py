@@ -6,7 +6,25 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
+
+
+def data_dir() -> Path:
+    """Where all runtime state lives: config.json, auth.json, recipes.json,
+    pricing.json, the ssh control dir, and the default database.
+
+    Defaults to <repo>/data. LIMCARS_DATA relocates the whole set in one knob,
+    because every state path resolves through here. That knob exists for a
+    reason: the security suite boots the real app with cwd=<repo>, and with one
+    shared data dir its POSTs landed in the same data/auth.json and
+    data/config.json the running dashboard uses — one test's /api/auth/set
+    created a real password on the production instance. A test that mutates the
+    operator's state is not a test.
+    """
+    v = os.environ.get("LIMCARS_DATA")
+    return Path(v).expanduser() if v else ROOT / "data"
+
+
+DATA = data_dir()
 WEB = ROOT / "web"
 
 DEFAULTS = {

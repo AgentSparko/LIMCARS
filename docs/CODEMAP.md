@@ -55,7 +55,7 @@ sampler.py / hw.py / nodes.py  ──poll engines, /proc, ssh──> broker topi
 Reads (`snapshot`, `counters`, `lost-potential`, `engines-live`, `engine-info`,
 `clients`, `savings-history`, `health`) are open by design — the dash is meant to be
 watched from a phone on the LAN. The knobs are exactly `LIMCARS_HOST`,
-`LIMCARS_PORT`, `LIMCARS_DB`, `LIMCARS_TOKEN` and `data/config.json`; there is **no**
+`LIMCARS_PORT`, `LIMCARS_DB`, `LIMCARS_TOKEN`, `LIMCARS_DATA` and `data/config.json`; there is **no**
 "allow remote writes" override -- setting a password is the supported path for LAN
 administration. (Earlier drafts of these docs promised such a variable; it was never
 implemented, and `tests/test_docs_knobs.py` now fails whenever docs and code drift

@@ -16,7 +16,11 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOCS = [ROOT / "README.md", ROOT / "docs" / "CODEMAP.md", ROOT / "docs" / "AUDIT.md"]
-EXPECTED = {"LIMCARS_HOST", "LIMCARS_PORT", "LIMCARS_DB", "LIMCARS_TOKEN"}
+# Five knobs, five README lines. LIMCARS_DATA was added deliberately: without a
+# data-dir override, any process booted with cwd=<repo> writes the live dashboard's
+# config.json/auth.json, which let one security test set a production password. A
+# knob that exists only to make tests honest is still a knob, so it is documented.
+EXPECTED = {"LIMCARS_HOST", "LIMCARS_PORT", "LIMCARS_DB", "LIMCARS_TOKEN", "LIMCARS_DATA"}
 
 
 def _knobs_in(root, suffix="*.py"):

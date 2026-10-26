@@ -109,9 +109,21 @@ class Limcars:
         from .clients import ClientSampler
         self.clients = ClientSampler(self.broker)
         self.clients.start()
-        self.settings = _Settings(cfg.get("settings_path", "data/settings.json"))
+        # was "data/settings.json" (relative): a process booted from anywhere but
+        # the repo root silently read/wrote a different file, and one booted IN the
+        # repo shared the live dashboard's settings. Resolve it through the data dir.
+        self.settings = _Settings(cfg.get("settings_path")
+                                  or str(config.DATA / "settings.json"))
         from .auth import AuthGate
         self.auth = AuthGate(cfg.get("auth_path") or str(config.DATA / "auth.json"))
+        # Reclaim the history database ourselves. Users update by pulling and
+        # restarting; the installs that never installed a tidy timer are the ones
+        # still holding a high-water-mark file full of freelist pages, so the
+        # first pass runs a few seconds after boot (right after an update) and
+        # then daily. Never deletes rows — only returns pages to the filesystem.
+        from .maintenance import Maintenance
+        self.maintenance = Maintenance(cfg, self.store)
+        self.maintenance.start()
 
     def settings_all(self) -> dict:
         return self.settings.all()
@@ -563,6 +575,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             return self._json({"ok": True, "version": VERSION,
                                "uptime_s": round(time.time() - _START_T, 1)})
+        if path == "/api/storage":
+            # read-only introspection: file size, freelist, what the self-tidy thread
+            # decided last time. ?tables=1 adds dbstat (walks every page, so it is
+            # opt-in and never on a polling path).
+            want_tables = (qs.get("tables") or ["0"])[0] in ("1", "true", "yes")
+            return self._json({"ok": True,
+                               "maintenance": app.maintenance.snapshot(),
+                               "db": app.store.storage_stats(tables=want_tables)})
         if path == "/api/auth/status":
             return self._json({"enabled": app.auth.enabled,
                                "locked_for_you": round(app.auth.locked_for(self._client_ip()), 1)})

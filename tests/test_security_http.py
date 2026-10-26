@@ -222,6 +222,11 @@ def live():
     data = tempfile.mkdtemp(prefix="limcars-sectest-")
     port = 8990 + os.getpid() % 90
     env = dict(os.environ, LIMCARS_PORT=str(port), LIMCARS_HOST="0.0.0.0",
+               # NOT just the database: this fixture boots with cwd=<repo>, so
+               # config.json, auth.json and recipes.json would otherwise be the
+               # real files next to the running dashboard. A test here once
+               # POSTed /api/auth/set and put a live password on production.
+               LIMCARS_DATA=data,
                LIMCARS_DB=os.path.join(data, "h.db"))
     proc = subprocess.Popen([sys.executable, "-m", "app"], cwd=root, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

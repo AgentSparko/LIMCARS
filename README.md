@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 165 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 192 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -132,6 +132,7 @@ Handy environment variables:
 | `LIMCARS_PORT` | `8951` | dashboard port |
 | `LIMCARS_DB` | `data/limcars.db` | history database path |
 | `LIMCARS_TOKEN` | unset | shared token required by the read/trace endpoints (`app/config.py`); the password in the header is the usual way to get the same protection -- this exists so a headless box can be gated before anyone opens the UI |
+| `LIMCARS_DATA` | `<repo>/data` | directory holding every runtime state file -- `config.json`, `auth.json`, `recipes.json`, `pricing.json`, the ssh control dir and the default database. Relocate it in one knob (a read-only or shared-state install, or a test suite that must not touch the live dashboard's files) |
 
 ## 🔁 Autorun — survive reboots, forget about it
 
@@ -213,6 +214,75 @@ agent does well. 🤖
 Everything stays on your box. `data/` (history, settings, recipes, password
 hash, logs) is gitignored and never leaves the machine. LIMCARS makes no
 outbound requests except to the inference engines you point it at. 🏠
+
+## 💾 Storage, retention and self-tidy
+
+**What is kept, and for how long.**
+
+| data | resolution | retention | default |
+|---|---|---|---|
+| engine samples | per tick (`live_hz`, 2.0/s) | `persist_seconds` | 48 h |
+| hardware samples | per tick (`hw_hz`, 1.0/s) | `persist_seconds` | 48 h |
+| counter buckets (the money history) | per busy minute, per engine | 366 d | — |
+
+Pruning runs on every write, so the 1-second rings stay a ring and never a year of them. The
+charts cap at one hour and the money math reads the buckets, so nothing is lost from the
+live views — the rings are recent drill-down detail.
+
+**The database tidies itself.** SQLite never returns deleted pages to the filesystem: after a
+prune they sit on the freelist and the file keeps its high-water mark forever. A live install
+measured 818 MB with 322 MB (39%) of it dead pages. So the app reclaims it on its own — once
+a few seconds after boot, which is the moment right after an update, and then daily:
+
+| knob (in `data/config.json`) | default | meaning |
+|---|---|---|
+| `auto_compact` | `true` | master switch for the self-tidy thread |
+| `compact_delay_s` | `45` | grace period after boot before the first pass |
+| `compact_interval_s` | `86400` | how often it re-checks |
+| `compact_reclaim_ratio` | `0.10` | only rewrite the file if the freelist is at least this share of it |
+| `compact_min_bytes` | `20971520` | ignore small databases — nothing to win |
+| `compact_disk_headroom` | `1.2` | refuse to start unless free disk ≥ this × the file |
+
+`GET /api/storage` shows what it decided (`runs`, `last_vacuum`, `freed_bytes_total`, a plain
+`note` explaining any refusal) plus file size, freelist pages and row counts. `?tables=1`
+adds per-table bytes; it walks every page, so leave it off the polling path.
+
+**Prefer a cron/systemd timer?** The same engine is a script, so the nightly job and a
+one-shot migration can never drift apart:
+
+```bash
+python3 scripts/limcars_tidy.py --check              # dry run: measures, writes nothing
+python3 scripts/limcars_tidy.py --apply              # backup -> gate -> VACUUM -> verify
+python3 scripts/limcars_tidy.py --install-timer      # daily user timer (04:30, randomised)
+```
+
+It keeps a `*.pretidy-<stamp>` backup, refuses to run against an open database unless
+`--allow-live`, refuses when the disk lacks headroom, and **aborts and restores** if any
+headline figure moves: a reclaim that changed a token total is a bug, not a saving.
+
+## 💵 Money is recorded as it was earned
+
+Cloud prices move — the price fetcher refreshes `data/pricing.json` and you can edit it by
+hand. Every bucket therefore stores its cost (`cost_hot`, `cost_base`, `cost_nocache`) at the
+moment it is written, together with the rates that produced it (`price_slug`, `price_in`,
+`price_out`, `price_cw`, `price_cr`, `price_crhot`, `priced_at`, `price_src`). The stamp is
+**write-once**: re-saving a minute after a restart, a gap backfill or an import refreshes the
+tokens but can never re-price money that was already earned, so last March's savings stay what
+they were when March happened.
+
+Readers report their basis rather than quietly mixing two:
+
+- `"money_basis": "as_written"` / `"priced": "as_written"` — every row in the range was priced
+  when it occurred.
+- `"mixed"` — some rows predate stamping; those are re-priced at today's rate and the figure
+  says so.
+- `"current"` — the whole range predates stamping (e.g. an imported history), so the money is
+  today's rate, not history.
+
+Buckets whose cost was never known stay `NULL`, never `0.0`: unknown money must not render as
+a free hour. Rates used for *projections* (the capacity claim, the per-hour rate anchor) are
+deliberately today's prices — that is what "what would this cost now" means — while every
+historical total is money as earned.
 
 ## 🤝 Contributing
 
