@@ -1,0 +1,31 @@
+# Hand-authored, NOT recorded: no Atlas engine runs on this box. Series come from
+# the registry in crates/spark-server/src/metrics.rs on master (2026-10-26). Only
+# the 11 names Atlas actually registers appear here; process_start_time_seconds is
+# absent because Atlas does not emit it. Do not present this as a real scrape.
+# TYPE atlas_requests_active gauge
+atlas_requests_active 1
+# TYPE atlas_requests_total counter
+atlas_requests_total 412
+# TYPE atlas_prompt_tokens_total counter
+atlas_prompt_tokens_total 188000
+# TYPE atlas_generation_tokens_total counter
+atlas_generation_tokens_total 61200
+# TYPE atlas_decoded_tokens_total counter
+atlas_decoded_tokens_total 58110
+# TYPE atlas_spec_decode_verify_total counter
+atlas_spec_decode_verify_total{outcome="accept"} 3900
+atlas_spec_decode_verify_total{outcome="reject"} 640
+# TYPE atlas_time_to_first_token_seconds histogram
+atlas_time_to_first_token_seconds_bucket{le="0.1"} 210
+atlas_time_to_first_token_seconds_bucket{le="1"} 405
+atlas_time_to_first_token_seconds_bucket{le="+Inf"} 412
+atlas_time_to_first_token_seconds_sum 88.4
+atlas_time_to_first_token_seconds_count 412
+# TYPE atlas_tool_calls_total counter
+atlas_tool_calls_total 77
+# TYPE atlas_loop_detector_verdicts_total counter
+atlas_loop_detector_verdicts_total{verdict="clean"} 400
+# TYPE atlas_http_bytes_in_total counter
+atlas_http_bytes_in_total 2210000
+# TYPE atlas_http_bytes_out_total counter
+atlas_http_bytes_out_total 980000

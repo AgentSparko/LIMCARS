@@ -14,6 +14,7 @@ SSE framing: `id:` per event so a dropped tab resumes with Last-Event-ID.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import hmac
 import logging
@@ -94,6 +95,8 @@ class Limcars:
         from .hw import HwSampler
         self.hw = HwSampler(cfg, self.broker, self.store)
         self.hw.start()
+        from .nodes import start_nodes
+        self.nodes = start_nodes(cfg, self.broker)   # agentless cluster nodes (SSH)
         from .services import Services
         self.services = Services(cfg)
         from .recipes import Recipes
@@ -114,6 +117,25 @@ class Limcars:
 
     def settings_update(self, patch: dict) -> None:
         self.settings.update(patch)
+
+
+_TOPIC_RE = re.compile(r"[A-Za-z0-9:_-]{1,64}")
+# static text assets are gzipped once per (mtime, size) and served to any
+# client that accepts it; the bytes the browser decodes are unchanged
+_GZIP_MIN = 1024
+_GZIP_TYPES = ("text/", "application/javascript", "application/json", "image/svg+xml")
+_gzip_cache: dict[str, tuple[tuple[int, int], bytes]] = {}
+
+
+def _gzipped(f: Path, data: bytes) -> bytes:
+    st = f.stat()
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _gzip_cache.get(str(f))
+    if hit and hit[0] == key:
+        return hit[1]
+    gz = gzip.compress(data, 9, mtime=0)
+    _gzip_cache[str(f)] = (key, gz)
+    return gz
 
 
 def _sse_format(topic: str, sid: int, data: str) -> bytes:
@@ -452,10 +474,13 @@ class Handler(BaseHTTPRequestHandler):
         # window_s:"x" persisted and crashed boot on the next restart.
         if "pricing" in body and body["pricing"] is not None:
             pv = body["pricing"]
+            labels = ("display_name", "provider")
             if not isinstance(pv, dict) or any(
                     isinstance(v, bool) or not isinstance(v, (int, float))
-                    for v in pv.values()):
-                return self._err(400, "pricing must be a dict of numbers")
+                    for k, v in pv.items() if k not in labels) or any(
+                    not isinstance(pv[k], str) for k in labels if k in pv):
+                return self._err(400, "pricing must be a dict of numbers "
+                                      "(plus optional display_name/provider strings)")
         for k in ("window_s", "live_hz", "hw_hz", "persist_seconds"):
             if k in body:
                 try:
@@ -509,6 +534,22 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- API ----------------
 
+    def _picked_sampler(self, qs: dict):
+        """The engine the browser is actually showing (tests/test_engine_selection.py).
+
+        Without this the money endpoints resolved next(iter(engines.all())) while the
+        header displayed another engine, so one engine's tokens and dollars were
+        quoted under another engine's name. Falls back to the first sampler, so
+        single-engine installs behave exactly as before.
+        """
+        want = (qs.get("engine") or [""])[0]
+        all_s = list(self.app.engines.all())
+        if want:
+            for s in all_s:
+                if s.id == want or getattr(s, "label", None) == want:
+                    return s
+        return all_s[0] if all_s else None
+
     def _api_get(self, path: str, qs: dict) -> None:
         app = self.app
         if path == "/api/health":
@@ -533,7 +574,8 @@ class Handler(BaseHTTPRequestHandler):
                     secs = min(secs, float(self.app.cfg.get(
                         "persist_seconds", 3600)) + 300)
             eng_snap = app.engines.snapshots(secs)
-            _model = next(iter(eng_snap.values()), {}).get("model")
+            _sel = (qs.get("engine") or [None])[0]
+            _model = (eng_snap.get(_sel) or next(iter(eng_snap.values()), {})).get("model")
             from . import pricing as _pr
             return self._json({
                 "ok": True, "version": VERSION,
@@ -541,6 +583,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pricing": self.app.cfg.get("pricing") or _pr.resolve(_model),
                 "engines": eng_snap,
                 "hw": app.hw.snapshot(secs),
+                "nodes": {n.id: n.snapshot(secs) for n in app.nodes},
                 "services": app.services.status_all(),
             })
         if path == "/api/history":
@@ -596,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/counters/?", path)
         if m:
             from . import counters as counters_mod
-            smp = next(iter(self.app.engines.all()), None)
+            smp = self._picked_sampler(qs)
             if not smp or not self.app.store:
                 return self._json({"empty": True})
             win = (qs.get("window") or ["all"])[0]
@@ -606,7 +649,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/engine-info/?", path)
         if m:
             from . import engine_info
-            smp = next(iter(self.app.engines.all()), None)
+            smp = self._picked_sampler(qs)
             if not smp:
                 return self._json({"healthy": False, "error": "no engine"})
             return self._json(engine_info.info(smp.url))
@@ -615,8 +658,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.app.settings_all())
         m = re.fullmatch(r"/api/session-tokens/?", path)
         if m:
+            # Hermes session ids and profile names are private content, the same
+            # class of data as the transcripts that _require_read_traces already
+            # guards. It simply was never wired to this route: with no password
+            # configured, any LAN host could enumerate them (verified before this
+            # commit, and re-verified against the merged stack afterwards).
+            if not self._require_read_traces(qs):
+                return
             from . import session_tokens
-            smp = next(iter(self.app.engines.all()), None)
+            smp = self._picked_sampler(qs)
             want = (qs.get("model") or [""])[0] or (smp.model if smp else None)
             return self._json(session_tokens.today_sessions(want))
         m = re.fullmatch(r"/api/clients/?", path)
@@ -677,17 +727,19 @@ class Handler(BaseHTTPRequestHandler):
         # no engine connected 'requests' and 'events' did not exist yet, the
         # browser's own topic list was rejected, and the page retried a 400 every
         # 2 s forever (user: "the web ui keeps refreshing itself very often").
-        import re as _re
         known = set(self.app.broker._topics.keys())
         core = {"hw", "requests", "events"}
-        allowed = known | core | {f"engine:{s.id}" for s in self.app.engines.all()}
+        allowed = (known | core | {f"engine:{s.id}" for s in self.app.engines.all()}
+                   | {n.topic for n in self.app.nodes})
         bad = [t for t in wanted
-               if not _re.fullmatch(r"[A-Za-z0-9:_-]{1,64}", t) or t not in allowed]
-        if len(wanted) > 32 or bad:
+               if not _TOPIC_RE.fullmatch(t) or t not in allowed]
+        if len(wanted) > max(32, len(allowed)) or bad:   # big clusters: one topic per node
             return self._err(400, "bad topics")
         # Subscribe to what the broker already carries; a valid topic that has
         # simply not published yet is created on subscribe rather than punished.
-        wanted = {t for t in wanted if t in known} or (wanted & allowed)
+        # every requested topic passed the allowlist; keep them all (a node that
+        # has not published yet must still stream once its first SSH poll lands)
+        wanted &= allowed
         last = self.headers.get("Last-Event-ID")  # "topic:seq"
         since: dict[str, int] = {}
         if last:
@@ -816,9 +868,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
         data = f.read_bytes()
+        compressible = len(data) >= _GZIP_MIN and ctype.startswith(_GZIP_TYPES)
+        gz = compressible and "gzip" in self.headers.get("Accept-Encoding", "")
+        if gz:
+            data = _gzipped(f, data)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if compressible:
+            self.send_header("Vary", "Accept-Encoding")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
         # no-store: dashboards get iterated constantly; a tab resurrected
         # from bfcache running yesterday's JS caused stale prompt() flows
         self.send_header("Cache-Control", "no-store")
@@ -842,3 +902,5 @@ def serve(cfg: dict) -> None:
         for s in app.engines.all():
             s.stop()
         app.hw.stop()
+        for n in app.nodes:
+            n.stop()

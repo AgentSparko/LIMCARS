@@ -6,34 +6,40 @@
 <title>🏎️ LIMCARS — Local Inference Monitor · Cost Analyzer · Recipe Server</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
-<link rel="stylesheet" href="/css/style.css">
-<link rel="stylesheet" href="/css/dashboard.css?v=20261024j">
+<link rel="stylesheet" href="/css/style.css?v=20261026j">
+<link rel="stylesheet" href="/css/dashboard.css?v=20261026j">
 </head>
 <body>
 <header class="top">
   <div class="brand" title="Local Inference Monitor · Cost Analyzer · Recipe Server">LIMCARS<span class="tagline">Local Inference Monitor · Cost Analyzer · Recipe Server</span></div>
-  <span class="pill engine-pill"><span id="engine-dot" class="dot"></span><span id="engine-name" class="mono">–</span></span>
+  <button class="pill engine-pill" id="btn-engine" title="Engine shown on the dashboard" aria-haspopup="listbox" aria-expanded="false"><span id="engine-dot" class="dot"></span><span id="engine-name" class="mono">–</span><span id="engine-caret" class="eng-caret" hidden>▾</span></button>
+  <div id="engine-pop" class="engine-pop" role="listbox" aria-label="Engines" hidden></div>
   <div class="spacer"></div>
   <span class="muted small charts-label">Charts</span>
-  <button class="pill" data-win="180">3 min</button>
-  <button class="pill on" data-win="900">15 min</button>
-  <button class="pill" data-win="3600">1 h</button>
-  <select class="pill" id="refresh-sel" title="UI refresh interval (shared setting)" style="appearance:auto">
+  <button class="pill" data-win="180" aria-pressed="false">3 min</button>
+  <button class="pill on" data-win="900" aria-pressed="true">15 min</button>
+  <button class="pill" data-win="3600" aria-pressed="false">1 h</button>
+  <div class="hdr-tools" id="hdr-tools">
+  <select class="pill" id="refresh-sel" aria-label="UI refresh interval" title="UI refresh interval (shared setting)" style="appearance:auto">
     <option value="0.5">0.5 s</option><option value="1" selected>1 s</option>
     <option value="2">2 s</option><option value="3">3 s</option><option value="5">5 s</option>
   </select>
-  <button class="pill" id="btn-theme" title="Day / night theme">🌙</button>
-  <button class="pill" id="btn-palette" title="Accent palette">🎨</button>
+  <button class="pill" id="btn-theme" title="Day / night theme" aria-label="Toggle day / night theme">🌙</button>
+  <button class="pill" id="btn-palette" title="Accent palette" aria-label="Accent color" aria-haspopup="true" aria-expanded="false">🎨</button>
   <div id="palette-pop" class="palette-pop" hidden></div>
-  <button class="pill" id="btn-bg" title="Page tint theme">🖼️</button>
+  <button class="pill" id="btn-bg" title="Page tint theme" aria-label="Page tint" aria-haspopup="true" aria-expanded="false">🖼️</button>
   <div id="bg-pop" class="palette-pop" hidden></div>
-  <button class="pill" id="btn-refresh" title="Re-pull the snapshot now">↻</button>
-  <span class="pill"><span id="conn-dot" class="dot"></span><span id="conn-txt">…</span></span>
+  <button class="pill" id="btn-refresh" title="Re-pull the snapshot now" aria-label="Reload data now">↻</button>
+  </div>
+  <button class="pill" id="btn-tools" title="Display settings" aria-label="Display settings" aria-haspopup="true" aria-expanded="false" aria-controls="hdr-tools">⚙️</button>
+  <span class="pill"><span id="conn-dot" class="dot"></span><span id="conn-txt" aria-live="polite">…</span></span>
 </header>
 
 <div class="dash-layout">
   <!-- LEFT SIDEBAR: system -->
   <aside class="side">
+    <div id="node-pick" class="node-pick" role="group" aria-label="Hardware source" hidden></div>
+    <div id="node-err" class="small node-err" role="status" hidden></div>
     <div class="side-tiles" id="side-tiles"></div>
     <div class="chart-card side-chart"><div class="head"><span class="title">GPU power · last 3 min</span>
       <span class="cur" id="cur-gpu-power"></span><button class="pill tiny autoy on">AUTO Y</button></div>
@@ -47,28 +53,37 @@
     <div class="chart-card side-chart"><div class="head"><span class="title">Unified RAM (GB) · last 3 min</span>
       <span class="cur" id="cur-ram"></span><button class="pill tiny autoy on">AUTO Y</button></div>
       <div id="sch-ram"></div></div>
-    <div class="side-h">⚙️ Panel settings</div>
+    <button class="side-h side-toggle" data-sec="settings" aria-expanded="true" aria-controls="sec-settings">⚙️ Panel settings</button>
+    <div class="side-sec" id="sec-settings">
     <div id="side-settings"></div>
     <div class="side-lbl">stats scope</div>
     <div id="side-scope" style="display:flex;gap:6px"></div>
+    </div>
     <button class="btn traces-btn" id="btn-traces" style="width:100%;margin-top:12px">🐝 Hermes Traces</button>
     <div class="probe-box">
       <button class="btn" id="btn-probe" style="width:100%">⚡ Ping engine</button>
       <div class="probe-out" id="probe-out">⚡ <span class="muted">one streamed request — real TTFT, prefill &amp; generation speed</span></div>
     </div>
-    <div class="side-h" style="margin-top:14px">🟢 Live engines</div>
+    <button class="side-h side-toggle" data-sec="engines" aria-expanded="true" aria-controls="sec-engines" style="margin-top:14px">🟢 Live engines</button>
+    <div class="side-sec" id="sec-engines">
     <div id="engine-list"><span class="muted small">scanning…</span></div>
-    <div class="side-h" style="margin-top:14px">🔒 Security</div>
+    </div>
+    <button class="side-h side-toggle" data-sec="security" aria-expanded="true" aria-controls="sec-security" style="margin-top:14px">🔒 Security</button>
+    <div class="side-sec" id="sec-security">
     <div id="auth-status" class="small muted">checking…</div>
     <button class="pill" id="btn-auth" style="width:100%;margin-top:6px">Set password</button>
-    <div class="side-h" style="margin-top:14px">🧾 Recipes</div>
+    </div>
+    <button class="side-h side-toggle" data-sec="recipes" aria-expanded="true" aria-controls="sec-recipes" style="margin-top:14px">🧾 Recipes</button>
+    <div class="side-sec" id="sec-recipes">
     <div id="recipe-list"><span class="muted small">loading…</span></div>
     <button class="btn" id="btn-recipes-manage" style="width:100%;margin-top:8px">⚙️ Manage recipes</button>
+    </div>
   </aside>
 
   <!-- MAIN -->
   <main class="main">
    <div id="dash-pane">
+    <div id="stale-banner" class="stale-banner" role="status" hidden></div>
     <div class="cards hero" id="hero"></div>
 
     <div class="bub-group"><div class="cards" id="bub-main"></div></div>
@@ -81,6 +96,7 @@
           <label>read $/M <input class="btn mono" id="pr-r" size="6" type="number" step="0.001"></label>
           <label>out $/M <input class="btn mono" id="pr-out" size="6" type="number" step="0.01"></label>
           <button class="btn" id="pr-save">save</button>
+          <span id="pr-msg" class="small muted" role="status"></span>
           <span class="muted small">override for this model (blank w+out clears → data/pricing.json)</span>
         </div>
       </div>
@@ -140,6 +156,6 @@
   </main>
 </div>
 
-<script type="module" src="/js/dashboard.js?v=20261024j"></script>
+<script type="module" src="/js/dashboard.js?v=20261026j"></script>
 </body>
 </html>

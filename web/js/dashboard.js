@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS } from './charts.js?v=20261023h';
+import { SeriesStore, LineChart, spark, fmt, COLORS } from './charts.js?v=20261026g';
 
 const state = {
   store: new SeriesStore(4000),
@@ -20,49 +20,51 @@ const HERO = [];
 
 const BUBS = {
   'bub-main': [
-    { label: 'Gen speed', series: 'decode_tps_now', color: () => COLORS.green,
+    { label: 'Gen speed', series: 'decode_tps_now', tip: 'Generated tokens per second right now, plus the average. Dims while the engine is not decoding.', color: () => COLORS.green,
       dimWhen: 'decode_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.decode_tps_now), sub: l => `tok/s now · avg ${tps(l.decode_tps_avg)}` },
-    { label: 'Prefill speed', series: 'prefill_tps_avg', color: () => COLORS.teal, dimZero: true,
+    { label: 'Prefill speed', series: 'prefill_tps_avg', tip: 'Uncached prompt tokens per second of actual prefill time. Cache hits are excluded and attribution is capped, so prompt tokens charged at completion never read as a fake prefill burst.', color: () => COLORS.teal, dimZero: true,
       dimWhen: 'prefill_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.prefill_tps_avg), sub: l => `uncached tok / prefill-sec · burst ${tps(l.prefill_tps_now)}` },
-    { label: 'KV cache used', hot: true, series: 'kv_pct', color: () => COLORS.yellow, holdZero: true,
+    { label: 'KV cache used', hot: true, tip: "Share of the engine's KV token pool in use. Idle vLLM reports 0 while prefix-cached blocks stay resident, so the last non-zero reading is held.", series: 'kv_pct', color: () => COLORS.yellow, holdZero: true,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.kv_pct),
       sub: l => l.kv_pool_tokens
         ? `${fmtK(l.kv_used_tokens ?? 0)} / ${fmtK(l.kv_pool_tokens)} tok used · ${fmtK(l.kv_free_tokens ?? 0)} free`
         : '% of token pool' },
-    { label: 'Running reqs', series: 'running', color: () => COLORS.green,
+    { label: 'Running reqs', series: 'running', tip: "Requests being decoded now; 'waiting' are queued for a slot.", color: () => COLORS.green,
       sparkFmt: v => String(Math.round(v)),
       main: l => num(l.running), sub: l => `${num(l.waiting)} waiting` },
-    { label: 'TTFT', series: 'ttft_p50_ms', color: () => COLORS.violet, hist: true,
+    { label: 'TTFT', series: 'ttft_p50_ms', tip: 'Time to first token over the last hour. A p50 is shown only with n ≥ 20 requests: engine histogram buckets are coarse, so below that the true mean (sum ÷ count) is shown. n is always displayed.', color: () => COLORS.violet, hist: true,
       sparkFmt: v => Math.round(v) + ' ms',
       main: l => histMs(l, 'ttft'), sub: l => 'time to first token · ' + histBasis(l, 'ttft') },
-    { label: 'e2e latency', series: 'e2e_p50_ms', color: () => COLORS.violet, hist: true,
+    { label: 'e2e latency', series: 'e2e_p50_ms', tip: 'Request in → last token out, queue included. Same rule as TTFT: p50 only at n ≥ 20, otherwise the true mean, with n shown.', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
       main: l => sec(e2eHourNum(l) != null ? e2eHourNum(l) : histNum(l, 'e2e')),
       sub: l => `${e2eHourBasis(l)} · now ${sec(histNum(l, 'e2e'))} · lifetime ${sec(l.e2e_life_avg_ms)}` },
-    { label: 'Spec acceptance', series: 'spec_accept_pct', color: () => COLORS.violet,
+    { label: 'Spec acceptance', series: 'spec_accept_pct', seriesAlt: 'spec_step_accept_pct', tip: 'Share of speculative draft tokens the target model accepted, mean accepted length per step and draft tokens proposed per step.', color: () => COLORS.violet,
       sparkFmt: v => v.toFixed(1) + ' %',
-      main: l => pct(l.spec_accept_pct),
-      sub: l => `accept len ${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'} tok · `
+      main: l => pct(l.spec_accept_pct ?? l.spec_step_accept_pct),
+      sub: l => l.spec_accept_pct == null && l.spec_step_accept_pct != null
+        ? 'of verify steps accepted ≥1 draft · engine reports steps, not tokens'
+        : `accept len ${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'} tok · `
               + `${l.draft_tok_per_step != null ? l.draft_tok_per_step.toFixed(1) : '–'} draft tok/step · DFlash` },
-    { label: 'Prefix cache hit', series: 'cache_hit_pct', life: true, color: () => COLORS.teal,
+    { label: 'Prefix cache hit', series: 'cache_hit_pct', tip: 'Share of prompt tokens served from the prefix cache — median over the last hour. Cached tokens are a subset of prompt tokens, never added on top.', life: true, color: () => COLORS.teal,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.cache_hit_med_1h != null ? l.cache_hit_med_1h : l.cache_hit_pct),
       sub: l => `median · last hour · now ${pct(l.cache_hit_pct)} · lifetime ${pct(l.cache_hit_life_pct)}` },
-    { label: 'Gen speed peak', series: 'gen_peak', color: () => COLORS.cobalt,
+    { label: 'Gen speed peak', series: 'gen_peak', tip: 'Highest decode speed seen in the last hour.', color: () => COLORS.cobalt,
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.gen_peak), sub: () => 'tok/s · last hour' },
   ],
   'bub-savings': [
-    { label: 'Projected save · day', hot: true, series: 'savings_day', savings: 'day', color: () => COLORS.green,
+    { label: 'Projected save · day', hot: true, series: 'savings_day', savings: 'day', tip: 'What the same tokens would cost at the cloud API price shown above — a projection at this rate from the last active hour of real minute buckets. Cached tokens are priced at the cache-read rate; estimated (synthetic) minutes never feed a $ figure.', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(2) },
-    { label: 'Projected save · month', hot: true, series: 'savings_month', savings: 'month', color: () => COLORS.green,
+    { label: 'Projected save · month', hot: true, series: 'savings_month', savings: 'month', tip: 'What the same tokens would cost at the cloud API price shown above — a projection at this rate from the last active hour of real minute buckets. Cached tokens are priced at the cache-read rate; estimated (synthetic) minutes never feed a $ figure.', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(2) },
-    { label: 'Projected save · year', hot: true, series: 'savings_year', savings: 'year', color: () => COLORS.green,
+    { label: 'Projected save · year', hot: true, series: 'savings_year', savings: 'year', tip: 'What the same tokens would cost at the cloud API price shown above — a projection at this rate from the last active hour of real minute buckets. Cached tokens are priced at the cache-read rate; estimated (synthetic) minutes never feed a $ figure.', color: () => COLORS.green,
       sparkFmt: v => '$' + v.toFixed(0) },
   ],
 };
@@ -74,8 +76,12 @@ const SIDE_TILES = [
   ['GPU temp', h => [h.gpu_temp_c != null ? h.gpu_temp_c.toFixed(0) + ' °C' : '–']],
   ['GPU power', h => [h.gpu_power_w != null ? h.gpu_power_w.toFixed(1) + ' W' : '–']],
   ['GPU clock', h => [h.gpu_clock_mhz != null ? num(h.gpu_clock_mhz) + ' MHz' : '–']],
-  ['Unified RAM', h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–']],
+  [h => h.vram_total_gb ? 'System RAM' : 'Unified RAM',
+   h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–']],
   ['SSD free', h => [h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–']],
+  // discrete GPUs only (hidden on unified-memory boxes like the DGX Spark)
+  ['VRAM', h => [h.vram_total_gb ? (h.vram_total_gb - h.vram_used_gb).toFixed(1) + ' GB free'
+                   + ` of ${Math.round(h.vram_total_gb)}` : '–'], { wide: true, vram: true }],
   // duo/wide: down and up shown side by side in a full-row tile (user ask:
   // not stacked — one after another, double width)
   ['Net traffic', h => h.net_r_mbs != null
@@ -121,20 +127,16 @@ const histBasis = (l, k) => {
 const e2eHourNum = l => histNum(l, 'e2e');
 const e2eHourBasis = l => histBasis(l, 'e2e');
 
-function savingsFor(l, secs) {
-  const p = state.pricing;
-  if (!p || !l) return '–';
-  const pre = l.prefill_tps_avg || 0, dec = l.decode_tps_avg || 0;
-  if (!pre && !dec) return '–';
-  const perSec = (pre * p.input_per_mtok + dec * p.output_per_mtok) / 1e6;
-  return '$' + (perSec * secs).toLocaleString('en-US', { maximumFractionDigits: 0 });
-}
-
 // ---------------- build ----------------
 
-const eng = () => Object.keys(state.engines)[0];
+// selected engine (header switcher; ?engine= > cookie > first configured)
+const eng = () => (state.sel && state.engines[state.sel]) ? state.sel : Object.keys(state.engines)[0];
 const latest = () => (state.engines[eng()] || {}).latest || {};
-const hwLatest = () => state.hw.latest || {};
+// sidebar hardware source: this box, or a cluster node picked in the sidebar
+const hwNode = () => (state.nodeSel && state.nodes && state.nodes[state.nodeSel]) || null;
+const hwPrefix = () => hwNode() ? `hw@${state.nodeSel}` : 'hw';
+const hwSrc = () => hwNode() || state.hw || {};
+const hwLatest = () => hwSrc().latest || {};
 
 const cardRefs = [];
 
@@ -150,6 +152,7 @@ function buildCards() {
       el.innerHTML = `<div class="label">${d.label}</div>
         <div class="value"><span class="v">–</span></div><div class="sub"></div>
         ${d.series ? '<svg class="spark"></svg>' : ''}`;
+      if (d.tip) el.title = d.tip;
       host.appendChild(el);
       cardRefs.push({ el, d, v: el.querySelector('.v'), sub: el.querySelector('.sub'), sp: el.querySelector('.spark') });
     }
@@ -166,12 +169,98 @@ function buildCards() {
     cardRefs.push({ el, d, hero: true, v: el.querySelector('.v'), sub: el.querySelector('.sub'), sp: el.querySelector('.spark') });
   }
   document.querySelector('#side-tiles').innerHTML = SIDE_TILES.map(([l, , opt]) =>
-    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"><div class="l">${l}</div><div class="v">–</div></div>`).join('');
+    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"${opt?.vram && !hwLatest().vram_total_gb ? ' hidden' : ''}>` +
+    `<div class="l">${typeof l === 'function' ? l(hwLatest()) : l}</div><div class="v">–</div></div>`).join('');
   const p = state.pricing;
   document.querySelector('#pricing-note').textContent = p
     ? `· vs ${p.display_name || p.slug || 'API'} @ $${p.cache_write} w / $${p.cache_read} read / $${p.output} out per Mtok` +
       (p.provider ? ` (${p.provider})` : '') + (p.fetched_at ? ` · prices ${String(p.fetched_at).slice(0, 10)}` : '')
     : '· no pricing entry for this model';
+}
+
+function sideChart(host, series, fmtFn, chartOpts = {}) {
+  // user rule: hw side charts always show last 3 min — more relevant than
+  // following the global window button
+  const c = new LineChart(host, { store: state.store, window: 180, h: 110, series, ...chartOpts });
+  const card = host.closest('.side-chart');
+  card._fixedWin = true;
+  if (chartOpts.autoY === false) {   // user choice: power & RAM default to the
+    c.setAutoY(false);               // 0..physical-max view
+    card.querySelector('.autoy').classList.remove('on');
+  }
+  card.querySelector('.autoy').addEventListener('click', () => {
+    const on = c.autoY ? false : true; c.setAutoY(on);
+    card.querySelector('.autoy').classList.toggle('on', on);
+  });
+  card._chart = c; card._series = series; card._cur = card.querySelector('.cur'); card._fmt = fmtFn;
+  state.charts.push(card);
+  return c;
+}
+
+// Discrete-GPU boxes: RAM and VRAM get separate charts, and 2+ cards get one
+// chart each. Unified-memory boxes (DGX Spark) keep the original sidebar.
+let gpuSig = null;
+function ensureGpuCards() {
+  const h = hwLatest();
+  const n = h.gpu_count || 0, vram = !!h.vram_total_gb;
+  const names = (hwSrc().gpus || []).map(g => g.name).join('|');
+  const hp = hwPrefix(), sig = `${hp}:${n}:${vram}:${names}`;   // names: titles fill in once known
+  const ramCard = document.querySelector('#sch-ram')?.closest('.side-chart');
+  if (sig === gpuSig || !ramCard) return;
+  gpuSig = sig;
+  document.querySelectorAll('.gpu-dyn').forEach(c => {
+    c._chart && c._chart.destroy();
+    state.charts = state.charts.filter(x => x !== c); c.remove(); });
+  let after = ramCard;
+  const add = (id, title, series, fmtFn, opts) => {
+    const card = document.createElement('div');
+    card.className = 'chart-card side-chart gpu-dyn';
+    card.innerHTML = `<div class="head"><span class="title"></span><span class="cur"></span>
+      <button class="pill tiny autoy on">AUTO Y</button></div><div id="${id}"></div>`;
+    card.querySelector('.title').textContent = title;
+    after.after(card); after = card;
+    sideChart(card.querySelector('#' + id), series, fmtFn, opts);
+  };
+  if (vram) add('sch-vram', 'VRAM (GB) · last 3 min',
+    [{ key: `${hp}.vram_used_gb`, label: 'GB used', color: () => COLORS.violet, fill: true }],
+    v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: h.vram_total_gb, autoY: false });
+  if (n > 1) {
+    const gpus = hwSrc().gpus || [];
+    for (let i = 0; i < n; i++) {
+      const series = [{ key: `${hp}.gpu${i}_util`, label: 'util %', color: () => COLORS.cobalt, fill: true }];
+      if (vram) series.push({ key: `${hp}.gpu${i}_mem_pct`, label: 'VRAM %', color: () => COLORS.violet });
+      add(`sch-gpu${i}`, `GPU ${i}${gpus[i] ? ' · ' + gpus[i].name : ''} · util${vram ? ' + VRAM' : ''} % · last 3 min`,
+          series, v => v != null ? Math.round(v) + '%' : '', { yCeil: 100 });
+    }
+  }
+}
+// Titles and physical ceilings follow the detected hardware; on a Spark
+// (no VRAM, no power limit reported) they stay exactly as before.
+function adaptHwCharts(h) {
+  const hp = hwPrefix(), from = state._hwPrefix || 'hw';
+  if (hp !== from) {                 // node picker changed: retarget the fixed side charts
+    for (const card of state.charts) {
+      if (!card._fixedWin || !card._series) continue;
+      for (const s of card._series) if (s.key.startsWith(from + '.')) s.key = hp + s.key.slice(from.length);
+      card._lastCur = null;          // never show the previous source's held reading
+      card._chart && card._chart.mark();
+    }
+    state._hwPrefix = hp;
+  }
+  ensureGpuCards();
+  const discrete = !!h.vram_total_gb, many = (h.gpu_count || 0) > 1;
+  const set = (sel, title, ceil) => {
+    const card = document.querySelector(sel)?.closest('.side-chart');
+    if (!card) return;
+    const t = card.querySelector('.title');
+    if (t.textContent !== title) t.textContent = title;
+    if (card._chart && ceil && card._chart.yCeil !== ceil) { card._chart.yCeil = ceil; card._chart.mark(); }
+  };
+  set('#sch-ram', `${discrete ? 'System' : 'Unified'} RAM (GB) · last 3 min`,
+      discrete && h.mem_total_gb ? Math.ceil(h.mem_total_gb) : 128);
+  set('#sch-power', `GPU power${many ? ' · all cards' : ''} · last 3 min`,
+      h.gpu_power_limit_w ? Math.ceil(h.gpu_power_limit_w) : 110);
+  set('#sch-temp', `Temperature (CPU + GPU${many ? ' max' : ''}) · last 3 min`, 100);
 }
 
 function buildCharts() {
@@ -234,24 +323,7 @@ function buildCharts() {
   });
   renderClientChart();
 
-  const side = (hostSel, series, fmtFn, chartOpts = {}) => {
-    const host = document.querySelector(hostSel);
-    // user rule: hw side charts always show last 3 min — more relevant than
-    // following the global window button
-    const c = new LineChart(host, { store: st, window: 180, h: 110, series, ...chartOpts });
-    const card = host.closest('.side-chart');
-    card._fixedWin = true;
-    if (chartOpts.autoY === false) {   // user choice: power & RAM default to the
-      c.setAutoY(false);               // 0..physical-max view
-      card.querySelector('.autoy').classList.remove('on');
-    }
-    card.querySelector('.autoy').addEventListener('click', () => {
-      const on = c.autoY ? false : true; c.setAutoY(on);
-      card.querySelector('.autoy').classList.toggle('on', on);
-    });
-    card._chart = c; card._series = series; card._cur = card.querySelector('.cur'); card._fmt = fmtFn;
-    state.charts.push(card);
-  };
+  const side = (sel, ...args) => sideChart(document.querySelector(sel), ...args);
   // yCeil = physical maximum: with AUTO Y OFF the view is 0..ceiling (real
   // amplitude vs the hardware range); ON zooms to the data extremes.
   side('#sch-power', [{ key: 'hw.gpu_power_w', label: 'W', color: () => COLORS.cobalt, fill: true }], v => v != null ? v.toFixed(1) + ' W' : '', { yCeil: 110, autoY: false });
@@ -260,14 +332,54 @@ function buildCharts() {
   side('#sch-clock', [{ key: 'hw.gpu_clock_mhz', label: 'MHz', color: () => COLORS.teal, fill: true }], v => v != null ? Math.round(v) + ' MHz' : '', { yCeil: 3003 });
   side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: () => COLORS.rose, fill: true }],
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
+  gpuSig = null;
+  ensureGpuCards();
 }
 
-// Single pass over ALL six specials, '&' included. '&' was missing from the
-// character class, so the '&' entry in this map was unreachable: a bare '&' in
-// engine-reported text (session titles, model names) passed through raw and let
-// an attacker-supplied entity like &lt; decode into '<' on screen. Tag/attribute
-// breakout was never possible here — < > " ' are escaped and no sink puts this
-// into a URL — but escaping must be complete to be a contract, not a vibe.
+// ---------------- toasts + in-page confirm (no blocking alert/confirm) ----------------
+
+function toast(msg, kind = 'info') {
+  let host = document.getElementById('toasts');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toasts'; host.className = 'toasts';
+    host.setAttribute('role', 'status'); host.setAttribute('aria-live', 'polite');
+    document.body.appendChild(host);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind;
+  t.textContent = msg;
+  t.title = 'click to dismiss';
+  t.addEventListener('click', () => t.remove());
+  host.appendChild(t);
+  setTimeout(() => t.remove(), kind === 'err' ? 8000 : 4500);
+}
+
+function confirmDialog(msg, okLabel = 'OK') {
+  return new Promise(resolve => {
+    const prev = document.activeElement;
+    const ov = document.createElement('div');
+    ov.className = 'rec-overlay';
+    ov.innerHTML = `<div class="rec-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="cf-msg">
+      <div class="confirm-msg" id="cf-msg"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="pill" data-a="0">Cancel</button><button class="btn confirm-ok" data-a="1"></button></div></div>`;
+    ov.querySelector('.confirm-msg').textContent = msg;
+    ov.querySelector('.confirm-ok').textContent = okLabel;
+    const done = v => { ov.remove(); prev && prev.focus && prev.focus(); resolve(v); };
+    ov.addEventListener('click', e => {
+      if (e.target === ov) return done(false);
+      const b = e.target.closest('button[data-a]');
+      if (b) done(b.dataset.a === '1');
+    });
+    ov.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } });
+    document.body.appendChild(ov);
+    ov.querySelector('button[data-a="0"]').focus();   // destructive actions: safe default
+  });
+}
+
+// Single pass over all six HTML specials; the ampersand must be in the class or
+// its map entry is dead code. Pinned in tests/test_web_escapes.py.
 const escH = s => String(s || '').replace(/[&<>"'\\]/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\\': '&#92;' }[c]));
 
@@ -345,7 +457,7 @@ async function renderSessionTokens() {
   const el = document.querySelector('#sess-tok');
   if (!el) return;
   let d;
-  try { d = await (await fetch('/api/session-tokens')).json(); }
+  try { d = await (await fetch('/api/session-tokens?engine=' + encodeURIComponent(eng()))).json(); }
   catch (e) { return; }
   const mm = document.querySelector('#st-model');
   if (mm) mm.textContent = d.model || '–';
@@ -429,7 +541,15 @@ function refresh() {
               { times: rows.map(r => r[0]), fmt: sfmt });
       } else {
         const now = Date.now() / 1000;
-        let rows = state.store.at(`${eng()}.${ref.d.series}`).filter(([t]) => t >= now - 3600);
+        const hour = k => state.store.at(`${eng()}.${k}`).filter(([t]) => t >= now - 3600);
+        const has = rs => rs.some(([, v]) => v != null);
+        let rows = hour(ref.d.series);
+        // engines without the token-level series (Atlas) chart the step-level
+        // one — chosen by which series holds history, so idle gaps keep it
+        if (ref.d.seriesAlt && !has(rows)) {
+          const alt = hour(ref.d.seriesAlt);
+          if (has(alt)) rows = alt;
+        }
         const step = Math.max(1, Math.ceil(rows.length / 200));
         rows = rows.filter((_, i) => i % step === 0 || i === rows.length - 1);
         spark(ref.sp, rows.map(r => r[1]), ref.d.color,
@@ -438,9 +558,13 @@ function refresh() {
     }
   }
   // side tiles
+  renderNodePicker();
   const h = hwLatest();
   document.querySelectorAll('#side-tiles .st').forEach((el, i) => {
     const vals = SIDE_TILES[i][1](h);
+    const [lbl, , opt] = SIDE_TILES[i];
+    if (typeof lbl === 'function') el.querySelector('.l').textContent = lbl(h);
+    if (opt?.vram) el.hidden = !h.vram_total_gb;
     const vEl = el.querySelector('.v');
     if (SIDE_TILES[i][2]?.duo) {
       vEl.innerHTML = vals.map(s => `<span>${s}</span>`).join('');
@@ -464,7 +588,66 @@ function refresh() {
   const meta = e.meta || {};
   document.querySelector('#engine-dot').className = 'dot ' + (meta.alive ? 'up' : 'down');
   document.querySelector('#engine-name').textContent = `${meta.model || meta.kind || '–'} @ ${meta.url || ''}`;
+  document.querySelector('#engine-caret').hidden = Object.keys(state.engines).length < 2;
+  updateTabStatus(meta);
+  renderStaleBanner(meta);
+  adaptHwCharts(hwLatest());
   renderModelTable();
+}
+
+// Selected engine as this tab sees it: 'down' = stream dropped or engine
+// unreachable, 'stale' = no fresh row for STALE_AFTER_S (sampler ticks at 2 Hz).
+// state.connected stays undefined until the first stream attempt settles.
+const STALE_AFTER_S = 10;
+function engineHealth() {
+  const e = state.engines[eng()] || {};
+  const age = e.rx ? (Date.now() - e.rx) / 1000 : null;
+  if (state.connected === false) return { st: 'down', why: 'stream', age };
+  if (e.meta && e.meta.alive === false) return { st: 'down', why: 'engine', age };
+  if (state.connected && (age == null || age > STALE_AFTER_S)) return { st: 'stale', why: 'quiet', age };
+  return { st: 'up', age };
+}
+
+// Tab title carries live decode speed; the favicon gains a status dot only
+// when something is wrong, so a background tab still tells the truth.
+const favLink = document.querySelector('link[rel="icon"][type="image/svg+xml"]');
+const favHref = favLink ? favLink.getAttribute('href') : null;
+let favSvg = null, favState = 'up';
+if (favHref) fetch(favHref).then(r => r.text()).then(t => { favSvg = t; }).catch(() => {});
+function updateTabStatus(meta) {
+  const { st } = engineHealth();
+  const l = latest();
+  const model = String(meta.model || meta.id || '').split('/').pop();
+  const speed = st === 'up' && _fin(l.decode_tps_now) && l.decode_tps_now > 0
+    ? Math.round(l.decode_tps_now).toLocaleString('en-US') + ' tok/s · ' : '';
+  const title = (st === 'up' ? '' : st === 'stale' ? '⏸ ' : '⚠ ') + speed +
+    (model ? model + ' — ' : '') + 'LIMCARS';
+  if (document.title !== title) document.title = title;
+  if (!favLink || !favSvg || st === favState) return;
+  favState = st;
+  if (st === 'up') { favLink.setAttribute('href', favHref); return; }
+  const col = st === 'stale' ? '#facc15' : '#fb7185';
+  const svg = favSvg.replace('</svg>',
+    `<circle cx="50" cy="14" r="12" fill="${col}" stroke="#0b0e13" stroke-width="3"/></svg>`);
+  favLink.setAttribute('href', 'data:image/svg+xml,' + encodeURIComponent(svg));
+}
+
+const fmtAge = s => s == null ? 'an unknown time' : s < 90 ? Math.round(s) + ' s'
+  : s < 5400 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h';
+function renderStaleBanner(meta) {
+  const b = document.querySelector('#stale-banner');
+  if (!b) return;
+  const { st, why, age } = engineHealth();
+  const stale = st !== 'up';
+  document.querySelector('#dash-pane').classList.toggle('is-stale', stale);
+  b.hidden = !stale;
+  if (!stale) return;
+  const name = String(meta.model || meta.id || 'engine').split('/').pop();
+  b.textContent = why === 'stream'
+    ? `⚠ Live stream disconnected — reconnecting. Values below are from ${fmtAge(age)} ago.`
+    : why === 'engine'
+      ? `⚠ ${name} is unreachable — showing its last values from ${fmtAge(age)} ago.`
+      : `⏸ No update from ${name} for ${fmtAge(age)} — values below may be stale.`;
 }
 
 function renderModelTable(force) {
@@ -511,16 +694,19 @@ function renderFeed() {
 // ---------------- snapshot + SSE ----------------
 
 async function seed(reseedWindow = true) {
-  const r = await fetch(`/api/snapshot?seconds=${state.windowSec + 30}`);
+  const sel = state.sel ? `&engine=${encodeURIComponent(state.sel)}` : '';
+  const r = await fetch(`/api/snapshot?seconds=${state.windowSec + 30}${sel}`);
   const snap = await r.json();
   state.engines = {};
   for (const [id, e] of Object.entries(snap.engines || {})) {
-    state.engines[id] = { meta: e, latest: e.latest || {} };
+    state.engines[id] = { meta: e, latest: e.latest || {},
+      rx: e.last_scrape ? Date.now() - Math.max(0, (snap.ts || 0) - e.last_scrape) * 1000 : 0 };
     for (const [k, rows] of Object.entries(e.series || {})) state.store.seed(`${id}.${k}`, rows);
     // e2e/queue p50 series aren't in snapshot series list — seed from ring rows missing: skip, SSE fills in
   }
   state.hw = snap.hw || {};
   for (const [k, rows] of Object.entries(snap.hw?.series || {})) state.store.seed(`hw.${k}`, rows);
+  seedNodes(snap);
   state.lastHwSeed = Date.now();
   state.pricing = snap.pricing;
   if (reseedWindow) {
@@ -536,11 +722,20 @@ async function seed(reseedWindow = true) {
 // costs one cheap GET and NEVER restarts a chart from 0 — it backfills the
 // window the SSE stream missed (whitelist gaps, server restarts, zombie
 // sockets where reader.read() hangs forever without erroring).
+function seedNodes(snap) {
+  state.nodes = state.nodes || {};
+  for (const [id, n] of Object.entries(snap.nodes || {})) {
+    state.nodes[id] = Object.assign(state.nodes[id] || {}, n);
+    for (const [k, rows] of Object.entries(n.series || {})) state.store.seed(`hw@${id}.${k}`, rows);
+  }
+}
 async function hwResync() {
   try {
     const snap = await (await fetch('/api/snapshot?seconds=210')).json();
     if (snap && snap.hw && snap.hw.series)
       for (const [k, rows] of Object.entries(snap.hw.series)) state.store.seed(`hw.${k}`, rows);
+    if (snap && snap.hw && snap.hw.gpus) state.hw.gpus = snap.hw.gpus;
+    if (snap) seedNodes(snap);
     state.lastHwSeed = Date.now();
   } catch { /* server briefly down — the 30 s watchdog retries */ }
 }
@@ -559,7 +754,8 @@ setInterval(() => {
 
 const lastId = {};
 async function connect() {
-  const topics = ['hw', 'requests', 'events', ...Object.keys(state.engines).map(id => `engine:${id}`)].join(',');
+  const topics = ['hw', 'requests', 'events', ...Object.keys(state.engines).map(id => `engine:${id}`),
+                  ...Object.keys(state.nodes || {}).map(id => `hw:${id}`)].join(',');
   // self-heal on (re)connect: hw series come back from the SERVER rings, so a
   // reconnect after a server restart or a dropped socket never starts charts
   // from 0
@@ -575,6 +771,7 @@ async function connect() {
     // audit: pill used to glow 'live 2 Hz' on response headers alone
     document.querySelector('#conn-dot').className = 'dot up';
     document.querySelector('#conn-txt').textContent = 'live 2 Hz';
+    state.connected = true;
     const reader = res.body.getReader(); const dec = new TextDecoder();
     let buf = '';
     while (true) {
@@ -602,15 +799,28 @@ async function connect() {
           // 'again the RAM chart does not SHOW the chart')
           for (const [k, v] of Object.entries(o))
             if (k !== 't' && typeof v === 'number') state.store.push(`hw.${k}`, o.t, v);
+        } else if (ev.startsWith('hw:')) {
+          const nid = ev.slice(3), n = state.nodes && state.nodes[nid];
+          if (!n) continue;
+          n.latest = o; n.alive = true; n.error = null;
+          for (const [k, v] of Object.entries(o))
+            if (k !== 't' && typeof v === 'number') state.store.push(`hw@${nid}.${k}`, o.t, v);
         } else if (ev.startsWith('engine:')) {
           const id_ = ev.slice(7);
           const e = state.engines[id_]; if (!e) continue;
-          e.latest = o; if (e.meta) e.meta.latest = o;
+          e.latest = o; e.rx = Date.now();
+          if (e.meta) { e.meta.latest = o; e.meta.alive = true; }
           for (const k of ['prefill_tps_now','decode_tps_now','prefill_tps_avg','decode_tps_avg',
                            'running','waiting','kv_pct','ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
-                           'e2e_p50_ms','cache_hit_pct','spec_accept_pct','spec_accept_len',
+                           'e2e_p50_ms','cache_hit_pct','spec_accept_pct','spec_step_accept_pct','spec_accept_len',
                            'draft_tok_per_step','gen_peak','prompt_total','gen_total'])
             state.store.push(`${id_}.${k}`, o.t, o[k]);
+        } else if (ev === 'events' && o.type === 'node_down') {
+          const n = state.nodes && state.nodes[o.node];
+          if (n) { n.alive = false; n.error = o.error; }
+        } else if (ev === 'events' && o.type === 'engine_down') {
+          const e = state.engines[o.engine];
+          if (e && e.meta) e.meta.alive = false;
         } else if (ev === 'requests') {
           state.reqFeed.unshift(o); if (state.reqFeed.length > 50) state.reqFeed.pop();
           renderFeed();
@@ -618,6 +828,7 @@ async function connect() {
       }
     }
   } catch { /* fall through */ }
+  state.connected = false;
   document.querySelector('#conn-dot').className = 'dot down';
   document.querySelector('#conn-txt').textContent = 'reconnecting…';
   // self-heal: re-pull snapshot rings so engine latest/bubbles never sit
@@ -644,7 +855,7 @@ async function renderCounters() {
     `<button class="pill tiny${l===cntLabel?' on':''}" data-l="${l}">${t}</button>`).join('');
   tabs.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { cntLabel = b.dataset.l; renderCounters(); });
   let d;
-  try { d = await (await fetch('/api/counters?window=' + cntLabel)).json(); }
+  try { d = await (await fetch('/api/counters?window=' + cntLabel + '&engine=' + encodeURIComponent(eng()))).json(); }
   catch (e) { return; }  // audit: uncaught rejection every 30 s during outages
   state._savSparks = d.sparks || state._savSparks || {};
   const tbl = document.querySelector('#cnt-tbl');
@@ -840,13 +1051,13 @@ async function renderInfo() {
     body: JSON.stringify({ name, cmd }) }).then(r => r.json());
   const bqs = document.querySelector('#rec-qs');
   if (bqs) bqs.onclick = () => {
-    if (!d.launch) return alert('no running launch recipe detected');
+    if (!d.launch) return toast('No running launch recipe detected', 'err');
     recipeDialog({ title: '＋ Add Quickstart — current running recipe',
       name: '🚀 ' + (d.model || 'engine').split('/').pop(), cmd: d.launch, onSave: saveRec });
   };
   const bec = document.querySelector('#rec-edit-cur');
   if (bec) bec.onclick = () => {
-    if (!d.launch) return alert('no running launch recipe detected');
+    if (!d.launch) return toast('No running launch recipe detected', 'err');
     recipeDialog({ title: '✎ Edit current recipe → save to sidebar',
       name: '🔧 ' + (d.model || 'engine').split('/').pop(), cmd: d.launch, onSave: saveRec });
   };
@@ -889,7 +1100,7 @@ async function renderSavingsChart() {
   if (!host || host.closest('[style*="display: none"]')) return;
   let d;
   try {
-    const res = await fetch('/api/savings-history?days=' + savDays);
+    const res = await fetch('/api/savings-history?days=' + savDays + '&engine=' + encodeURIComponent(eng()));
     d = await res.json();
     if (!d.ok) throw new Error(d.error || 'bad response');
   } catch (e) {
@@ -1050,7 +1261,6 @@ let uiPrefs = readUiPrefs();
 // the chosen base — relationships between roles (decode vs prefill vs
 // latency hues) stay exactly as in the default orange theme (user spec:
 // "nuances of the base color the same way as in the default theme now").
-const NOW_HUE = 29;                        // hue of house orange #ff8c1a
 const FAMILY_BASE = { cobalt: '#4f8cff', teal: '#2dd4bf', violet: '#a78bfa',
                       rose: '#fb7185', yellow: '#facc15', green: '#34d399' };
 function hexToHsl(hex) {
@@ -1159,7 +1369,7 @@ function wireThemeUi() {
   const tb = document.getElementById('btn-theme');
   if (!tb) return;
   tb.addEventListener('click', () => {
-    const next = (uiPrefs.theme === 'light') ? 'dark' : 'light';
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
     uiPrefs = writeUiPrefs({ theme: next });
     applyTheme();
   });
@@ -1171,28 +1381,35 @@ function wireThemeUi() {
     { btn: document.getElementById('btn-bg'), pop: document.getElementById('bg-pop'),
       key: 'bg', attr: 'data-bg', withDefault: true },
   ];
-  const closeAll = () => pops.forEach(p => { if (p.pop) p.pop.hidden = true; });
+  const closeAll = () => pops.forEach(p => {
+    if (p.pop) p.pop.hidden = true;
+    if (p.btn) p.btn.setAttribute('aria-expanded', 'false');
+  });
   for (const P of pops) {
     if (!P.btn || !P.pop) continue;
     const openPop = () => {
       const sel = uiPrefs[P.key] || (P.withDefault ? 'default' : 'orange');
       const sw = (P.withDefault
-        ? `<button ${P.attr}="default" title="house default"` +
+        ? `<button ${P.attr}="default" title="house default" aria-label="house default"` +
           ` style="background:linear-gradient(135deg,#0b0e13,#121722)"` +
-          `${sel === 'default' ? ' class="sel"' : ''}></button>`
+          ` aria-pressed="${sel === 'default'}"${sel === 'default' ? ' class="sel"' : ''}></button>`
         : '') + Object.entries(PALETTES).map(([name, hex]) =>
-        `<button ${P.attr}="${name}" title="${name}" style="background:${hex}"` +
-        `${sel === name ? ' class="sel"' : ''}></button>`).join('');
+        `<button ${P.attr}="${name}" title="${name}" aria-label="${name}" style="background:${hex}"` +
+        ` aria-pressed="${sel === name}"${sel === name ? ' class="sel"' : ''}></button>`).join('');
       P.pop.innerHTML = sw;
       const r = P.btn.getBoundingClientRect();
       P.pop.style.top = (r.bottom + 6) + 'px';
       P.pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 210)) + 'px';
       closeAll();
       P.pop.hidden = false;
+      P.btn.setAttribute('aria-expanded', 'true');
     };
     P.btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (P.pop.hidden) openPop(); else P.pop.hidden = true;
+      if (P.pop.hidden) {
+        openPop();
+        if (e.detail === 0) (P.pop.querySelector('.sel') || P.pop.querySelector('button'))?.focus();   // opened from keyboard
+      } else closeAll();
     });
     P.pop.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1201,6 +1418,17 @@ function wireThemeUi() {
       uiPrefs = writeUiPrefs({ [P.key]: b.getAttribute(P.attr) });
       applyTheme();
       openPop();           // refresh the selection ring
+      P.pop.querySelector('.sel')?.focus();
+    });
+    // keyboard: arrows walk the 6-column swatch grid, Esc returns to the button
+    P.pop.addEventListener('keydown', (e) => {
+      const items = [...P.pop.querySelectorAll('button')];
+      const i = items.indexOf(document.activeElement);
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 6, ArrowUp: -6 }[e.key];
+      if (step && i >= 0) {
+        e.preventDefault();
+        items[Math.max(0, Math.min(items.length - 1, i + step))].focus();
+      } else if (e.key === 'Escape') { e.stopPropagation(); closeAll(); P.btn.focus(); }
     });
   }
   document.addEventListener('click', closeAll);
@@ -1208,6 +1436,27 @@ function wireThemeUi() {
 }
 applyTheme();
 wireThemeUi();
+(function wireSideSections() {
+  document.querySelectorAll('.side-toggle').forEach(b => {
+    const sec = document.getElementById('sec-' + b.dataset.sec);
+    if (!sec) return;
+    const set = c => { sec.classList.toggle('collapsed', c); b.setAttribute('aria-expanded', String(!c)); };
+    set(!!(uiPrefs.collapsed || {})[b.dataset.sec]);
+    b.addEventListener('click', () => {
+      const c = !sec.classList.contains('collapsed');
+      set(c);
+      uiPrefs = writeUiPrefs({ collapsed: { ...(uiPrefs.collapsed || {}), [b.dataset.sec]: c } });
+    });
+  });
+})();
+(function wireHeaderTools() {
+  const btn = document.getElementById('btn-tools'), box = document.getElementById('hdr-tools');
+  if (!btn || !box) return;
+  const set = open => { box.classList.toggle('open', open); btn.setAttribute('aria-expanded', String(open)); };
+  btn.addEventListener('click', e => { e.stopPropagation(); set(!box.classList.contains('open')); });
+  document.addEventListener('click', e => { if (!box.contains(e.target)) set(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') set(false); });
+})();
 window.__setTheme = (p, b) => {   // test hook: recolor without page reload
   const patch = {};
   if (p !== undefined && p !== null) patch.palette = p;
@@ -1238,9 +1487,11 @@ async function renderLostPotential() {
   const grp = host.closest('.bub-group');
   if (sideSettings.bubbles_potential === false) { if (grp) grp.style.display = 'none'; return; }
   let d = null;
-  try { d = await (await fetch('/api/lost-potential')).json(); } catch (e) { return; }
+  try { d = await (await fetch('/api/lost-potential?engine=' + encodeURIComponent(eng()))).json(); } catch (e) { return; }
   if (!d || !d.ok) { if (grp) grp.style.display = 'none'; host.innerHTML = ''; return; }
   if (grp) grp.style.display = '';
+  host.title = 'Measured best hour/day/month/year only cover periods LIMCARS actually watched; ' +
+    'month/year figures are "at this rate" projections, not measurements. Prices come from data/pricing.json.';
   const pct = d.pct_usage == null ? '—' : d.pct_usage + '%';
   // User-approved wording: lead with the yearly LOSS (best-hour ceiling x
   // 8760 minus the year at recorded pace), then demonstrated peak rate,
@@ -1311,7 +1562,8 @@ setInterval(fetchCacheLife, 60000);
 
 document.querySelectorAll('[data-win]').forEach(btn => btn.addEventListener('click', async () => {
   state.windowSec = +btn.dataset.win;
-  document.querySelectorAll('[data-win]').forEach(b => b.classList.toggle('on', b === btn));
+  document.querySelectorAll('[data-win]').forEach(b => {
+    b.classList.toggle('on', b === btn); b.setAttribute('aria-pressed', String(b === btn)); });
   const label = { 180: '3 min', 900: '15 min', 3600: '1 h' }[state.windowSec];
   document.querySelector('#win-label').textContent = 'last ' + label;
   document.querySelectorAll('#charts-grid .w').forEach(w => w.textContent = label);
@@ -1329,21 +1581,55 @@ document.querySelector('#btn-pricing').addEventListener('click', () => {
   document.querySelector('#pr-r').value = p.cache_read ?? '';
   document.querySelector('#pr-out').value = p.output ?? '';
   ed.style.display = ed.style.display === 'none' ? 'block' : 'none';
+  if (ed.style.display === 'block') { prValidate(); document.querySelector('#pr-name').focus(); }
 });
-document.querySelector('#pr-save').addEventListener('click', async () => {
-  const out = parseFloat(document.querySelector('#pr-out').value);
-  const w = parseFloat(document.querySelector('#pr-w').value);
-  if (!out && !w) return alert('need at least output or write $/Mtok (leave blank to clear override)');
-  const body = { pricing: document.querySelector('#pr-out').value === '' && document.querySelector('#pr-w').value === ''
+const PR_IDS = ['#pr-w', '#pr-r', '#pr-out'];
+const prVal = id => document.querySelector(id).value.trim();
+// inline validation: numbers >= 0; write/out both blank = clear the override
+function prValidate() {
+  const msg = document.querySelector('#pr-msg');
+  let ok = true, text = '';
+  for (const id of PR_IDS) {
+    const v = prVal(id);
+    // type=number reports half-typed input like "1e" as value '' + badInput
+    const bad = document.querySelector(id).validity.badInput ||
+      (v !== '' && !(Number.isFinite(+v) && +v >= 0));
+    document.querySelector(id).setAttribute('aria-invalid', String(bad));
+    if (bad) { ok = false; text = 'Prices must be numbers ≥ 0.'; }
+  }
+  const w = prVal('#pr-w'), out = prVal('#pr-out');
+  if (ok && w === '' && out === '') text = 'Write and out blank → saving clears the override (back to data/pricing.json).';
+  else if (ok && !(+w > 0) && !(+out > 0)) { ok = false; text = 'Need a write or out price above 0.'; }
+  msg.textContent = text;
+  msg.className = 'small ' + (ok ? 'muted' : 'pr-err');
+  document.querySelector('#pr-save').disabled = !ok;
+  return ok;
+}
+async function prSave() {
+  if (!prValidate()) return;
+  const w = prVal('#pr-w'), out = prVal('#pr-out');
+  const body = { pricing: w === '' && out === ''
     ? null
-    : { display_name: document.querySelector('#pr-name').value || 'manual override',
+    : { display_name: prVal('#pr-name') || 'manual override',
         provider: 'manual override',
-        cache_write: w || 0, cache_read: parseFloat(document.querySelector('#pr-r').value) || 0,
-        output: out || 0 } };
-  const r = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(body) })).json();
-  if (r.ok) { state.pricing = r.config.pricing; await seed(false);
-    document.querySelector('#pricing-edit').style.display = 'none'; }
-  else alert('save failed: ' + (r.error || '?'));
+        cache_write: +w || 0, cache_read: +prVal('#pr-r') || 0, output: +out || 0 } };
+  let r;
+  try { r = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  catch (e) { r = { ok: false, error: String(e) }; }
+  if (r.ok) {
+    state.pricing = r.config.pricing; await seed(false);
+    document.querySelector('#pricing-edit').style.display = 'none';
+    toast(body.pricing ? 'Pricing override saved ✓' : 'Pricing override cleared ✓', 'ok');
+  } else {
+    const msg = document.querySelector('#pr-msg');
+    msg.textContent = 'Save failed: ' + (r.error || '?'); msg.className = 'small pr-err';
+  }
+}
+document.querySelector('#pr-save').addEventListener('click', prSave);
+document.querySelector('#pricing-edit').addEventListener('input', prValidate);
+document.querySelector('#pricing-edit').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); prSave(); }
+  if (e.key === 'Escape') document.querySelector('#pricing-edit').style.display = 'none';
 });
 
 document.querySelector('#btn-probe').addEventListener('click', async () => {
@@ -1357,9 +1643,104 @@ document.querySelector('#btn-probe').addEventListener('click', async () => {
   } catch (e) { out.innerHTML = `⚡ probe error: ${escH(String(e))}`; }
 });
 
+// ---------------- engine switcher ----------------
+
+function selectEngine(id) {
+  const prev = eng();
+  if (!state.engines[id] || id === prev) return;
+  state.sel = id;
+  uiPrefs = writeUiPrefs({ engine: id });
+  const u = new URL(location.href);
+  u.searchParams.set('engine', id);
+  history.replaceState(null, '', u);
+  for (const card of state.charts) {
+    if (card._fixedWin || !card._series) continue;
+    for (const s of card._series)
+      if (s.key.startsWith(prev + '.')) s.key = id + s.key.slice(prev.length);
+    card._chart && card._chart.mark();
+  }
+  state._held = {}; state._heldNz = {}; state._cacheHitLife = [];
+  fetchCacheLife();
+  seed(false).catch(() => {});
+  refresh();
+  renderModelTable(true);
+}
+
+function wireEngineSwitcher() {
+  const btn = document.querySelector('#btn-engine');
+  const pop = document.querySelector('#engine-pop');
+  const close = () => { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  const open = () => {
+    const cur = eng();
+    pop.innerHTML = Object.entries(state.engines).map(([id, { meta = {} }]) =>
+      `<button role="option" data-eng="${escH(id)}" aria-selected="${id === cur}">` +
+      `<span class="dot ${meta.alive ? 'up' : 'down'}"></span>` +
+      `<span class="mono">${escH(meta.model || id)}</span>` +
+      `<span class="eng-url">${escH(meta.url || '')}</span></button>`).join('');
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (r.bottom + 6) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 280)) + 'px';
+    pop.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    (pop.querySelector('[aria-selected="true"]') || pop.querySelector('button'))?.focus();
+  };
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (Object.keys(state.engines).length < 2) return;
+    pop.hidden ? open() : close();
+  });
+  pop.addEventListener('click', e => {
+    e.stopPropagation();
+    const b = e.target.closest('button[data-eng]');
+    if (!b) return;
+    close(); btn.focus();
+    selectEngine(b.dataset.eng);
+  });
+  pop.addEventListener('keydown', e => {
+    const items = [...pop.querySelectorAll('button')];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+    } else if (e.key === 'Escape') { close(); btn.focus(); }
+  });
+  document.addEventListener('click', close);
+}
+wireEngineSwitcher();
+
+// ---------------- cluster node picker (agentless SSH nodes, config `nodes`) ----------------
+
+function renderNodePicker() {
+  const host = document.querySelector('#node-pick'), err = document.querySelector('#node-err');
+  if (!host) return;
+  const ids = Object.keys(state.nodes || {});
+  host.hidden = !ids.length;
+  const sel = hwNode() ? state.nodeSel : null;
+  const sig = sel + '|' + ids.map(id => id + (state.nodes[id].alive ? '+' : '-')).join(',');
+  if (ids.length && host._sig !== sig) {
+    host._sig = sig;
+    host.innerHTML = [[null, 'this box', true], ...ids.map(id => [id, id, state.nodes[id].alive])]
+      .map(([id, label, up]) =>
+        `<button class="pill tiny${id === sel ? ' on' : ''}" data-node="${escH(id ?? '')}" aria-pressed="${id === sel}">` +
+        `<span class="dot ${up ? 'up' : 'down'}"></span>${escH(label)}</button>`).join('');
+  }
+  const n = hwNode();
+  err.hidden = !(n && !n.alive);
+  if (n && !n.alive) err.textContent = `⚠ ${sel} unreachable over SSH — ${n.error || 'no response yet'}`;
+}
+document.querySelector('#node-pick').addEventListener('click', e => {
+  const b = e.target.closest('button[data-node]');
+  if (!b) return;
+  state.nodeSel = b.dataset.node || null;
+  uiPrefs = writeUiPrefs({ node: state.nodeSel });
+  refresh();
+});
+
 // ---------------- boot ----------------
 
 (async () => {
+  state.sel = new URLSearchParams(location.search).get('engine') || uiPrefs.engine || null;
+  state.nodeSel = uiPrefs.node || null;
   try {
     await seed();
   } catch (e) {
@@ -1472,7 +1853,7 @@ async function recAction(id, act, btn) {
     .then(r => r.json()).catch(e => ({ ok: false, error: String(e) }));
   if (res.ok === false) {
     if (btn) { btn.disabled = false; btn.textContent = act === 'start' ? '▶ Start' : '■ Stop'; }
-    alert('⚠ ' + (res.error || act + ' failed'));
+    toast('⚠ ' + (res.error || act + ' failed'), 'err');
   }
   loadRecipes();
 }
@@ -1508,7 +1889,7 @@ document.querySelector('#btn-recipes-manage').onclick = async () => {
   ov.querySelectorAll('.rec-mdel').forEach(b => b.onclick = async () => {
     const row = b.closest('.rec-mrow');
     const res = await post(`/api/recipes/${row.dataset.id}/delete`);
-    if (res.ok === false) { alert('⚠ ' + (res.error || 'delete failed')); return; }
+    if (res.ok === false) { toast('⚠ ' + (res.error || 'delete failed'), 'err'); return; }
     row.remove();
     loadRecipes();
   });
@@ -1548,11 +1929,11 @@ async function loadEngines() {
     const row = b.closest('.eng-row');
     const pid = row.dataset.pid;
     const label = row.querySelector('.rec-name').textContent;
-    if (!confirm(`Stop ${label} (pid ${pid})?\nThis SIGTERMs → SIGKILLs its whole process group.`)) return;
+    if (!(await confirmDialog(`Stop ${label} (pid ${pid})?\nThis SIGTERMs → SIGKILLs its whole process group.`, '■ Stop'))) return;
     b.disabled = true; b.textContent = 'stopping…';
     const res = await fetch(`/api/engines-live/${pid}/stop`, { method: 'POST' })
       .then(r => r.json()).catch(err => ({ ok: false, error: String(err) }));
-    if (res.ok === false) { b.disabled = false; b.textContent = '■ Stop'; alert('⚠ ' + (res.error || 'stop failed')); }
+    if (res.ok === false) { b.disabled = false; b.textContent = '■ Stop'; toast('⚠ ' + (res.error || 'stop failed'), 'err'); }
     loadEngines();
   });
 }
@@ -1612,7 +1993,7 @@ async function authFetch(url, opts = {}) {
   }
   if (r.status === 423) {
     let s = 60; try { s = Math.ceil((await r.clone().json()).retry_after || 60); } catch (e) {}
-    alert(`⏳ Too many wrong passwords — locked for ~${s} s. Try again after that.`);
+    toast(`⏳ Too many wrong passwords — locked for ~${s} s. Try again after that.`, 'err');
   }
   return r;
 }
@@ -1647,12 +2028,15 @@ document.querySelector('#btn-auth').addEventListener('click', async () => {
   let nw = (d.enabled ? v[1] : v[0]) || '';
   if (!nw.trim()) nw = '';
   const rep = d.enabled ? v[2] : v[1];
-  if (nw && rep !== nw) return alert('Passwords do not match.');
+  if (nw && rep !== nw) return toast('Passwords do not match.', 'err');
   const r = await fetch('/api/auth/set', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ current: cur, new: nw }) }).then(r => r.json())
     .catch(e => ({ ok: false, error: String(e) }));
-  if (r.ok) { state.pw = nw || ''; sessionStorage.setItem('lc-pw', state.pw); renderAuth(); }
-  else alert(r.error === 'locked' ? `⏳ Locked — retry in ${Math.ceil(r.retry_after || 60)} s`
-        : 'Failed: ' + (r.error || '?'));
+  if (r.ok) {
+    state.pw = nw || ''; sessionStorage.setItem('lc-pw', state.pw); renderAuth();
+    toast(nw ? 'Password saved ✓' : 'Password protection removed', 'ok');
+  }
+  else toast(r.error === 'locked' ? `⏳ Locked — retry in ${Math.ceil(r.retry_after || 60)} s`
+        : 'Failed: ' + (r.error || '?'), 'err');
 });
