@@ -11,6 +11,14 @@ import subprocess
 import threading
 import time
 
+from . import procs
+
+
+def _argv(cmd: str):
+    # Windows: CreateProcess parses the line itself; POSIX quoting would eat
+    # backslashes in paths
+    return cmd if procs.IS_WIN else shlex.split(cmd)
+
 
 class Services:
     def __init__(self, cfg: dict):
@@ -32,7 +40,7 @@ class Services:
         if not cmd:
             return "unknown", ""
         try:
-            r = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=5)
+            r = subprocess.run(_argv(cmd), capture_output=True, text=True, timeout=5)
             detail = (r.stdout or r.stderr).strip().splitlines()
             return ("running" if r.returncode == 0 and detail and detail[0] not in ("", "0")
                     else "stopped"), (detail[0] if detail else "")
@@ -51,7 +59,7 @@ class Services:
                 return {"ok": False, "error": f"{sid} busy ({self._busy[sid]})"}
             self._busy[sid] = act
         try:
-            r = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=120)  # noqa: S603
+            r = subprocess.run(_argv(cmd), capture_output=True, text=True, timeout=120)  # noqa: S603
             return {"ok": r.returncode == 0, "exit": r.returncode,
                     "stdout": r.stdout[-2000:], "stderr": r.stderr[-2000:],
                     "at": time.time()}

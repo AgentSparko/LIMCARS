@@ -10,6 +10,7 @@ ControlMaster connection per node keeps the per-tick cost to one exec.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -47,6 +48,87 @@ def _sections(out: str) -> dict[str, list[str]]:
     return sec
 
 
+# ssh options a node may carry from data/config.json. Anything not on this list
+# is refused: options are spliced into argv BEFORE the "--" separator, so an
+# unvalidated list is a code-execution path, not a typo risk. -o ProxyCommand,
+# LocalCommand (with PermitLocalCommand), RemoteCommand and friends make ssh
+# execute a LOCAL process, which turns "edit a config file" into "run as the
+# dashboard user" -- the same class of exposure the recipes endpoint has, but
+# without the password gate.
+_SAFE_SSH_OPTS = {"-4", "-6", "-v", "-q", "-n", "-T", "-x"}
+_SAFE_SSH_OPT_KEYS = {"batchmode", "connecttimeout", "serveraliveinterval",
+                      "serveralivecountmax", "stricthostkeychecking",
+                      "preferredauthentications", "compression", "ciphers",
+                      "macs", "kexalgorithms", "loglevel", "port", "user"}
+_FORBIDDEN_SSH_OPT_KEYS = {"proxycommand", "proxyjump", "proxycmd", "localcommand",
+                           "permitlocalcommand", "remotecommand", "identityfile",
+                           "certificatefile", "identityagent", "forwardagent",
+                           "userknownhostsfile", "globalknownhostsfile",
+                           "addkeystoagent", "controlpath", "controlmaster",
+                           "visualhostkey", "pubkeyacceptedalgorithms"}
+_SAFE_TOKEN = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    "-_.,:/=[]@+*~ ")          # no quotes, semicolons, backticks, $ or pipes
+
+
+def sanitise_ssh_opts(raw):
+    """-> (kept, rejected). ssh accepts -oKey=v AND "-o" "Key=v" as two argv
+    entries, so both forms are parsed; anything else is refused. Fail closed: a
+    token we cannot classify never reaches argv, it is reported so the node card
+    says why the sampler is idle.
+    """
+    kept, rejected, i = [], [], 0
+    raw = [str(a) for a in (raw or [])]
+
+    def ok_key(body):
+        if "=" not in body:
+            return False
+        key = body.split("=", 1)[0].strip().lower()
+        if not key or key in _FORBIDDEN_SSH_OPT_KEYS:
+            return False
+        if key not in _SAFE_SSH_OPT_KEYS:
+            return False
+        val = body.split("=", 1)[1]
+        return all(ch in _SAFE_TOKEN for ch in val)
+
+    while i < len(raw):
+        tok = raw[i]
+        if any(ch not in _SAFE_TOKEN for ch in tok):
+            rejected.append(tok)
+            i += 1
+            continue
+        low = tok.lower()
+        if low == "-o":                                   # two-token form
+            body = raw[i + 1] if i + 1 < len(raw) else ""
+            if ok_key(body):
+                kept += [tok, body]
+            else:
+                rejected += [tok] + ([body] if body else [])
+            i += 2
+            continue
+        if low.startswith("-o") and len(low) > 2:          # glued form -oKey=v
+            body = tok[2:]
+            if ok_key(body):
+                kept.append(tok)
+            else:
+                rejected.append(tok)
+            i += 1
+            continue
+        if low in _SAFE_SSH_OPTS:
+            kept.append(tok)
+            i += 1
+            continue
+        if low.startswith("-"):
+            rejected.append(tok)                           # unknown flag: refuse
+            i += 1
+            continue
+        kept.append(tok)                                   # vetted bare value
+        i += 1
+    return kept, rejected
+
+
+
+
 class NodeSampler(threading.Thread):
     daemon = True
 
@@ -54,13 +136,17 @@ class NodeSampler(threading.Thread):
         self.id = node["id"]
         super().__init__(name=f"sampler-node-{self.id}", daemon=True)
         self.target = node["ssh"]
-        self.extra = [str(a) for a in node.get("ssh_opts", [])]
+        self.extra, self.rejected = sanitise_ssh_opts(node.get("ssh_opts"))
         self.broker = broker
         self.topic = f"hw:{self.id}"
         self.hz = min(1.0, float(node.get("hz", cfg.get("hw_hz", 1.0))))
         self.ring = Ring(float(cfg.get("ring_seconds", 900)))
         self.alive = False
-        self.error: str | None = None
+        # Set here rather than above: an earlier assignment was clobbered by this
+        # line, so a refused config looked healthy on the card.
+        self.error: str | None = (
+            "refused unsafe ssh_opts: " + ", ".join(self.rejected[:4])
+            if self.rejected else None)
         self.gpus: list[dict] = []
         self._prev: tuple | None = None   # (t, cpu_total, cpu_idle, rx, tx)
         self._stop = threading.Event()
@@ -72,9 +158,12 @@ class NodeSampler(threading.Thread):
         self._stop.set()
 
     def argv(self) -> list[str]:
+        # Windows OpenSSH has no connection multiplexing: one handshake per tick
+        mux = [] if os.name == "nt" else [
+            "-o", "ControlMaster=auto", "-o", f"ControlPath={self._ctl}",
+            "-o", "ControlPersist=60"]
         return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-                "-o", "ServerAliveInterval=5", "-o", "ControlMaster=auto",
-                "-o", f"ControlPath={self._ctl}", "-o", "ControlPersist=60",
+                "-o", "ServerAliveInterval=5", *mux,
                 *self.extra, "--", self.target, "sh", "-s"]
 
     def snapshot(self, seconds: float | None = None) -> dict:
@@ -94,6 +183,8 @@ class NodeSampler(threading.Thread):
                 self._stop.wait(sleep)
 
     def _tick(self) -> None:
+        if getattr(self, "rejected", None):
+            return                      # never exec ssh with vetted-away options
         try:
             p = subprocess.run(self.argv(), input=SCRIPT, capture_output=True,  # noqa: S603 — fixed argv
                                text=True, timeout=8)

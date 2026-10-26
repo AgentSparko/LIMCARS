@@ -40,7 +40,7 @@ def load() -> dict:
         # every $ endpoint AND the sampler's blanket except (fake engine_down
         # + baseline wipe). Keep serving the last good copy instead.
         try:
-            _cache = json.loads(FILE.read_text())
+            _cache = json.loads(FILE.read_text(encoding="utf-8"))
             _cache_mtime = mt
         except (OSError, ValueError):
             return _cache if _cache is not None else {}
