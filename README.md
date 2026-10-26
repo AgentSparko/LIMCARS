@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # optional sanity check — 23 tests, instant
+python3 -m pytest tests/ -q     # 165 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -128,9 +128,10 @@ Handy environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LIMCARS_HOST` | `0.0.0.0` | bind address (`127.0.0.1` = local-only) |
+| `LIMCARS_HOST` | `127.0.0.1` | bind address -- local-only by default; set `0.0.0.0` to reach the dashboard from your LAN |
 | `LIMCARS_PORT` | `8951` | dashboard port |
 | `LIMCARS_DB` | `data/limcars.db` | history database path |
+| `LIMCARS_TOKEN` | unset | shared token required by the read/trace endpoints (`app/config.py`); the password in the header is the usual way to get the same protection -- this exists so a headless box can be gated before anyone opens the UI |
 
 ## 🔁 Autorun — survive reboots, forget about it
 
@@ -186,8 +187,26 @@ agent does well. 🤖
 - 🧱 Escalating per-IP lockout — 3 wrong tries → 1 min, 6 → 5 min, 9 → 30 min,
   12 → 2 h. Passwords are stored as salted **scrypt** hashes and compared in
   constant time.
-- ⚠️ The recipe server executes stored commands — treat the password as your
-  admin boundary, and on shared networks bind `LIMCARS_HOST=127.0.0.1`.
+- 🔒 **The dashboard binds to `127.0.0.1` by default.** The recipe server
+  executes stored commands as the user running LIMCARS, so a dashboard reachable
+  from your LAN without a password is a remote code execution path for anyone on
+  your network -- the guest on the wifi, the smart fridge. Binding loopback first
+  means the safe thing is what you get if you change nothing.
+- 🔒 **Writes fail closed.** With no password configured, any *non-local* write is
+  refused with HTTP 428 and a message saying what to do. Local requests
+  (loopback, including a browser on the same machine) keep working with no setup,
+  because the usual case is you, on the box, configuring your own rig.
+  There is deliberately **no environment variable that turns this off** -- an
+  unauthenticated remote write here is remote code execution, so recipes stop working
+  from other machines until you set a password. The supported way to drive the
+  dashboard from your phone is: set a password (padlock in the header), then bind
+  `LIMCARS_HOST=0.0.0.0` in `data/config.json`.
+- 🔒 **The control plane needs the password too**, from anywhere but loopback:
+  starting or stopping a service, stopping an engine process, and editing the
+  cloud price table. The last one matters because those prices are the baseline
+  every "money saved" figure is measured against -- leaving them open lets
+  anything on the LAN rewrite your savings numbers.
+
 
 ## 🕊️ Data & privacy
 

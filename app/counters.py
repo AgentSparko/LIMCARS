@@ -209,8 +209,15 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
 
     The capability claim is what the engine actually sustained in its best
     60-minute window (tokens + hot-tier $), so a user who installed LIMCARS
-    two hours ago still sees meaningful numbers on day one. Utilisation is
-    the recorded average hour over the recorded span vs that best hour.
+    two hours ago still sees meaningful numbers on day one. Utilisation ships
+    on TWO explicitly named bases, never blended into one number:
+      measured     -> average hour over the hours the dash actually watched
+                      (span_hours, contiguous clusters); default for pct_usage.
+      availability -> average hour over 24 h per recorded day, i.e. the box
+                      treated as always-on on the days it was in service.
+    Both answer real questions; a field without a basis suffix is the measured
+    one, and the bases are published side by side (hours_basis_measured /
+    hours_basis_availability) so every figure can be divided by hand.
 
     LOST POTENTIAL, in the user's own definition, is:
 
@@ -327,6 +334,11 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
                 prev = m
         span_hours = max(1.0, span_hours)
         avg_hour = total_tok / span_hours
+        # availability basis: 24 h per day that actually recorded traffic. Kept
+        # SEPARATE from the measured basis on purpose — conflating them silently
+        # inflates every loss figure (audited PR #12 did exactly that).
+        avail_hours = max(1.0, float(max(len(days), 1)) * 24.0)
+        avg_hour_avail = total_tok / avail_hours
         cand = {
             "engine": eid, "model": model or eid,
             "recorded_days": len(days),
@@ -334,6 +346,13 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             "peak_hour_tokens": round(peak_tok_w),
             "avg_hour_tokens": round(avg_hour),
             "pct_usage": round(100.0 * avg_hour / peak_tok_w, 1) if peak_tok_w else None,
+            # explicit second basis, so nobody has to guess which denominator
+            # a usage number came from
+            "avg_hour_tokens_availability": round(avg_hour_avail),
+            "pct_usage_availability": (round(100.0 * avg_hour_avail / peak_tok_w, 1)
+                                       if peak_tok_w else None),
+            "hours_basis_measured": round(span_hours, 2),
+            "hours_basis_availability": round(avail_hours, 2),
             "total_tokens": round(total_tok),
         }
         if price:
@@ -388,6 +407,11 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             # the truth"), so every figure states its own period
             cand["loss_period_cost"] = round(gap_hour * span_hours, 2)
             cand["loss_week_cost"] = round(gap_hour * 24.0 * 7.0, 2)
+            # same gap on the availability basis, named as such: this is the
+            # "the box could have served all night" question, and it is allowed
+            # to differ from loss_period_cost — which is measured watching
+            gap_avail = max(0.0, peak_cost_w - tot_cost / avail_hours)
+            cand["loss_availability_cost"] = round(gap_avail * avail_hours, 2)
             # PROJECTIONS carry their assumption in the name. 'ceiling' is the
             # machine never stopping (the honest meaning of best hour x 8760 —
             # it is a physical ceiling, not a plan). 'duty' prices the same hour
@@ -400,15 +424,33 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
             # that subtraction are named in the payload so the number can be
             # checked by hand.
             cand["capacity_year_cost"] = cand["ceiling_year_cost"]
-            # the money the dash REGISTERED as saved, from the same hot-tier
-            # figures the "Daily money saved" chart shows (tot_cost over the
-            # days actually recorded) — not a pace invented here
+            # Two different "saved" figures, deliberately named, because
+            # conflating them is how the headline silently drifts.
+            #   saved_period_cost -- what the dash actually REGISTERED: the raw
+            #     sum over the days that recorded traffic. Nothing projected.
+            #   saved_year_cost   -- that same pace ANNUALISED
+            #     (tot_cost / rec_days * 365). It IS a pace, and it is what gets
+            #     subtracted from capacity_year_cost below, so both sides of that
+            #     subtraction are per-year and therefore comparable. The comment
+            #     that used to sit here claimed the opposite -- that this was the
+            #     registered sum and not a projection -- which was false: the
+            #     field is fine, the label was not.
             cand["saved_period_cost"] = round(tot_cost, 2)
             cand["saved_year_cost"] = cand["proj_year_cost"]
             cand["saved_month_cost"] = cand["proj_month_cost"]
             cand["capacity_month_cost"] = round(peak_cost_w * 24 * 30.4, 2)
             cand["loss_year_cost"] = round(
                 max(0.0, cand["capacity_year_cost"] - cand["saved_year_cost"]), 2)
+            # The plain-language reading of "lost potential": a year of the best
+            # recorded hour minus the money ACTUALLY registered as saved. Shipped
+            # alongside loss_year_cost rather than replacing it -- published
+            # numbers must not move -- because they answer different questions:
+            # this asks "what did I leave on the table given what I really ran",
+            # that one compares a year of capacity with a year of recorded pace.
+            # With many recording days they converge; with two or three they do
+            # not, and only the labelled pair is honest about why.
+            cand["loss_capacity_minus_registered_cost"] = round(
+                max(0.0, cand["capacity_year_cost"] - cand["saved_period_cost"]), 2)
             cand["loss_month_cost"] = round(
                 max(0.0, cand["capacity_month_cost"] - cand["saved_month_cost"]), 2)
             cand["duty_hours_per_day"] = duty
@@ -427,9 +469,12 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
                        "best_year_cost", "proj_day_cost",
                        "proj_month_cost", "proj_year_cost", "loss_year_cost",
                        "loss_month_cost", "loss_period_cost", "loss_hour_cost",
-                       "loss_week_cost", "ceiling_year_cost",
+                       "loss_week_cost", "loss_availability_cost", "ceiling_year_cost",
+                       "pct_usage_availability", "avg_hour_tokens_availability",
+                       "hours_basis_measured", "hours_basis_availability",
                        "capacity_year_cost", "capacity_month_cost",
                        "saved_period_cost", "saved_year_cost",
+                       "loss_capacity_minus_registered_cost",
                        "saved_month_cost",
                        "duty_day_cost",
                        "duty_month_cost", "duty_year_cost"):
