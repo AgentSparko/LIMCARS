@@ -320,6 +320,71 @@ WantedBy=timers.target
 """
 
 
+def run_tier(db: str, minute_days: float, history_years: float,
+             allow_live: bool, quiet: bool) -> int:
+    """Fold the ladder on a closed database — the one-shot migration for installs that have
+    been running since before the ladder existed.
+
+    Deliberately calls the SAME functions the app calls nightly (app/tiers.py), never a second
+    implementation: two copies of "what is safe to drop" is how an operator loses a year of
+    revenue data. Refuses to run while the server holds the file, because a fold racing a
+    writer would report on a moving target.
+    """
+    holder = server_holds(db)
+    if holder and not allow_live:
+        raise SystemExit(f"LIMCARS is using this database ({holder}). Stop it first, or pass "
+                         "--allow-live if you are certain.")
+    sys.path.insert(0, REPO)
+    from app import tiers                          # noqa: PLC0415 - repo-relative import
+    from app.store import Store                    # noqa: PLC0415
+
+    def reader_total(minute_days_eff: float) -> dict:
+        """Money/tokens as the DASHBOARD sees them, not as one table sees them.
+
+        After a legitimate fold, the raw minute table is supposed to be smaller — comparing raw
+        sums before/after would report that as lost money and block the very migration this
+        exists for. So the gate asks the same reader the UI asks.
+        """
+        s = Store(db, persist_seconds=172800, minute_days=minute_days_eff,
+                  history_years=history_years)
+        try:
+            engines = [r[0] for r in s._con.execute(
+                "SELECT DISTINCT engine FROM counter_buckets")]
+            out: dict[str, float] = {}
+            for k in ("prompt", "cached", "gen", "reqs", "iters", "cost_hot"):
+                out[k] = round(sum(
+                    float((s.counter_totals(e, None) or {}).get(k) or 0) for e in engines), 8)
+            out["engines"] = len(engines)
+            return out
+        finally:
+            s._con.close()
+
+    before = reader_total(1e6)          # nothing folded yet: the minutes are the whole truth
+    con = sqlite3.connect(db, timeout=120)
+    try:
+        tiers.ensure_schema(con)
+        rep = tiers.enforce_retention(con, minute_days=float(minute_days),
+                                      history_years=float(history_years))
+        con.commit()
+    finally:
+        con.close()
+    after = reader_total(minute_days)   # same numbers, now served from several rungs
+    if not quiet:
+        print(f"ladder: folded {rep.get('hours')} hours / {rep.get('days')} days, "
+              f"trimmed {rep.get('pruned_buckets')} minutes "
+              f"({rep.get('buckets_older_than_horizon')} were older than the horizon), "
+              f"{rep.get('pruned_hours')} hourly rows aged out")
+        if rep.get("blocked"):
+            print(f"  BLOCKED: {rep['blocked']} — {rep.get('gate')}")
+        print(f"  reader before: {before}")
+        print(f"  reader after : {after}")
+    if {k: v for k, v in before.items() if k != "engines"} != \
+       {k: v for k, v in after.items() if k != "engines"}:
+        print("  REFUSING to continue: the fold changed a money figure", file=sys.stderr)
+        return 4
+    return 0
+
+
 def timer_path(name: str) -> str:
     return os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
                         "systemd", "user", name)
@@ -362,6 +427,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="back up, VACUUM, gate, report")
     ap.add_argument("--migrate", action="store_true",
                     help="one-shot for a large existing install (same engine as --apply)")
+    ap.add_argument("--tier", action="store_true",
+                    help="fold aged minutes into the hourly/daily ladder first (app/tiers.py, "
+                         "the same code the app runs nightly), then compact. For installs that "
+                         "have been running since before the ladder existed.")
+    ap.add_argument("--minute-days", type=float, default=None,
+                    help="raw minute buckets to keep (default 30, or the app's setting)")
+    ap.add_argument("--history-years", type=float, default=None,
+                    help="hourly rows to keep; daily totals are always kept (default 1)")
     ap.add_argument("--install-timer", action="store_true")
     ap.add_argument("--uninstall-timer", action="store_true")
     ap.add_argument("--allow-live", action="store_true",
@@ -385,6 +458,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(rep, indent=1))
         return 0
     apply = a.apply or a.migrate
+    if a.tier:
+        rc = run_tier(a.db, 30.0 if a.minute_days is None else a.minute_days,
+                      1.0 if a.history_years is None else a.history_years,
+                      a.allow_live, a.quiet)
+        if rc:
+            return rc
     return run(a.db, apply=apply, keep_backup=not a.delete_backup,
                allow_live=a.allow_live, quiet=a.quiet)
 

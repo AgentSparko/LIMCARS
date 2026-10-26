@@ -20,9 +20,13 @@ SERIES_MAX = {"prefill_tps_avg": 12000.0, "prefill_tps_now": 12000.0}
 
 
 class Store:
-    def __init__(self, path: str, persist_seconds: float = 3600):
+    def __init__(self, path: str, persist_seconds: float = 3600,
+                 minute_days: float = 30.0, history_years: float = 1.0):
         self.path = path
         self.persist_s = persist_seconds
+        # how long each rung of the ladder is kept; see app/tiers.py
+        self.minute_days = max(1.0, float(minute_days))
+        self.history_years = min(20.0, max(0.5, float(history_years)))
         self._lock = threading.Lock()
         self._con = sqlite3.connect(path, check_same_thread=False)
         self._con.execute("PRAGMA journal_mode=WAL")
@@ -73,6 +77,9 @@ class Store:
             except Exception:  # duplicate column on existing DBs
                 pass
         self._con.commit()
+        # the aggregate ladder (hourly + daily), so history survives minute pruning
+        from . import tiers as _tiers
+        _tiers.ensure_schema(self._con)
 
     def save_engine_samples(self, engine: str, rows: list[tuple[float, dict]]) -> None:
         with self._lock:
@@ -168,11 +175,18 @@ class Store:
                  b.get("price_cw"), b.get("price_cr"), b.get("price_crhot"),
                  b.get("priced_at"), b.get("price_src")))
             self._con.commit()
-        # 366-day retention, old-LIMCARS parity
+        # retention ladder: fold into hours/days, prove the aggregates, then trim minutes.
+        # Never deletes minutes the ladder cannot reproduce (see tiers.enforce_retention).
+        # Guarded by a one-row probe: this runs on every bucket write, and rebuilding the
+        # whole ladder per minute to discover that nothing has aged out is wasted work.
+        from . import tiers
         with self._lock:
-            self._con.execute("DELETE FROM counter_buckets WHERE ts < ?",
-                              (int(time.time()) - 366 * 86400,))
-            self._con.commit()
+            horizon = tiers.horizon_ts(time.time(), self.minute_days)
+            stale = self._con.execute(
+                "SELECT 1 FROM counter_buckets WHERE ts < ? LIMIT 1", (horizon,)).fetchone()
+            if stale:
+                tiers.enforce_retention(self._con, minute_days=self.minute_days,
+                                        history_years=self.history_years)
 
     def set_persist_window(self, seconds: float) -> float:
         """Change the 1 s ring window at runtime and prune immediately, so a
@@ -306,32 +320,77 @@ class Store:
 
     def counter_totals(self, engine: str, since_ts: int | None,
                        real_only: bool = False) -> dict:
-        """real_only=True excludes synthetic=1 seed/gap buckets — REQUIRED for
+        """Totals across BOTH the raw minutes and the aggregate ladder.
+
+        One hour-aligned boundary (tiers.horizon_ts) decides which source owns which range:
+        the ladder below it, the minutes above it — so a window can neither count traffic twice
+        nor lose it in the seam. Both halves are read under one lock, because a sampler that
+        published an hour between two separate locks would be counted by neither side.
+        """
+        from . import tiers
+        now = time.time()
+        horizon = tiers.horizon_ts(now, self.minute_days)      # minutes | hourly
+        hour_cap = tiers.hour_horizon(now, self.history_years)  # hourly | daily
+        with self._lock:
+            a = self._bucket_totals(engine, horizon if since_ts is None
+                                    else max(int(since_ts), horizon), real_only)
+            # the hourly leg is floored at hour_cap: if history_years was just raised, old hour
+            # rows may still exist alongside the day rows that already summarise them, and both
+            # legs answering the same range would double count it
+            h_since = hour_cap if since_ts is None else max(int(since_ts), hour_cap)
+            b = tiers.hour_totals(self._con, engine, h_since, horizon, real_only)
+            c = tiers.day_totals(self._con, engine, since_ts, hour_cap, real_only)
+        return tiers.merge(a, b, c)
+
+    def _bucket_totals(self, engine: str, since_ts: int | None,
+                       real_only: bool = False) -> dict:
+        """Raw-minute totals; caller must hold self._lock (it is not reentrant).
+
+        real_only=True excludes synthetic=1 seed/gap buckets — REQUIRED for
         any rate anchor (audit: the lifetime÷tracked fallback once turned a
         seed row into a fantasy $/yr). Panel totals keep them: the seed is
-        honest engine-lifetime history, not measured traffic."""
+        honest engine-lifetime history, not measured traffic.
+        """
         q = ("SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
              " COALESCE(SUM(gen),0), COALESCE(SUM(reqs),0), COALESCE(SUM(iters),0),"
-             " MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0),"
-             " COALESCE(SUM(spec_n),0), MIN(ts), MAX(ts),"
+             # spec, peak and floor are summarised for MEASURED minutes only, exactly as the fold
+             # does (tiers._bucket_select). The ladder must reproduce what this reader would have
+             # computed from the raw rows, so both sides need one predicate: summing these over
+             # synthetic seed rows made the spec-accept rate and the best-hour capacity figure
+             # change the moment a bucket aged into the hourly tier (measured: 312 -> 294).
+             " MIN(CASE WHEN COALESCE(synthetic,0)=0 THEN dec_min END),"
+             " MAX(CASE WHEN COALESCE(synthetic,0)=0 THEN dec_peak END),"
+             " COALESCE(SUM(CASE WHEN COALESCE(synthetic,0)=0 THEN spec_sum END),0),"
+             " COALESCE(SUM(CASE WHEN COALESCE(synthetic,0)=0 THEN spec_n END),0),"
+             " MIN(ts), MAX(ts),"
              # money earned at the time, and how much of the range lacks it.
              # Splitting the unpriced rows out (rather than treating NULL as 0)
              # is what lets the reader say "this total is part as-earned, part
              # re-priced today" instead of silently mixing the two.
+             # cost_hot is summed over every row (the fold keeps a synth_cost_hot twin for it);
+             # cost_base / cost_nocache and the priced-vs-unpriced accounting are MEASURED-only,
+             # because the fold has no synthetic twin for them — the two sides must agree or a
+             # figure changes when a row ages out of the minute table.
              " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN cost_hot END),0),"
-             " COALESCE(SUM(CASE WHEN cost_base IS NOT NULL THEN cost_base END),0),"
-             " COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL THEN cost_nocache END),0),"
-             " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN 1 ELSE 0 END),0),"
-             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN 1 ELSE 0 END),0),"
-             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN prompt END),0),"
-             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN cached END),0),"
-             " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN gen END),0)"
+             " COALESCE(SUM(CASE WHEN cost_base IS NOT NULL AND COALESCE(synthetic,0)=0"
+             " THEN cost_base END),0),"
+             " COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL AND COALESCE(synthetic,0)=0"
+             " THEN cost_nocache END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL AND COALESCE(synthetic,0)=0"
+             " THEN 1 ELSE 0 END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL AND COALESCE(synthetic,0)=0"
+             " THEN 1 ELSE 0 END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL AND COALESCE(synthetic,0)=0"
+             " THEN prompt END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL AND COALESCE(synthetic,0)=0"
+             " THEN cached END),0),"
+             " COALESCE(SUM(CASE WHEN cost_hot IS NULL AND COALESCE(synthetic,0)=0"
+             " THEN gen END),0)"
              " FROM counter_buckets"
              " WHERE engine=?" + (" AND ts>=?" if since_ts is not None else "")
              + (" AND COALESCE(synthetic,0)=0" if real_only else ""))
         params = [engine] + ([since_ts] if since_ts is not None else [])
-        with self._lock:
-            r = self._con.execute(q, params).fetchone()
+        r = self._con.execute(q, params).fetchone()
         if not r or r[9] is None:
             return {"empty": True}
         (prompt, cached, gen, reqs, iters, dmin, dpeak, ssum, sn, first, last,
@@ -340,6 +399,7 @@ class Store:
                 "reqs": reqs, "iters": iters,
                 "dec_min": dmin, "dec_peak": dpeak,
                 "spec": (ssum / sn) if sn else None,
+                "spec_sum": ssum, "spec_n": sn,
                 "first_ts": first, "last_ts": last,
                 "cost_hot": chot, "cost_base": cbase, "cost_nocache": cnocache,
                 "money_rows": n_priced, "money_legacy_rows": n_legacy,
@@ -355,13 +415,23 @@ class Store:
                 (engine, int(time.time() - seconds))).fetchall()
 
     def minute_rows(self, engine: str) -> list[tuple]:
-        """(ts, prompt, cached, gen) for every non-synthetic minute bucket of
-        one engine, oldest first. Feeds the lost-potential best-hour scan."""
+        """(ts, prompt, cached, gen, busy_minutes) for measured history, oldest first.
+
+        Feeds the lost-potential best-hour scan and the occupancy figure. Recent rows are true
+        minutes (busy_minutes 1); rows below the ladder horizon come from the hourly tier,
+        where minute identity is gone but the MEASURED busy-minute count was kept, so
+        "hours a day this box produced tokens" stays measured rather than becoming an
+        assumption about a working day.
+        """
+        from . import tiers
+        horizon = tiers.horizon_ts(time.time(), self.minute_days)
         with self._lock:
-            return self._con.execute(
+            rows = [(t, p, c, g, 1) for t, p, c, g in self._con.execute(
                 "SELECT ts, prompt, cached, gen FROM counter_buckets"
-                " WHERE engine=? AND COALESCE(synthetic,0)=0 ORDER BY ts",
-                (engine,)).fetchall()
+                " WHERE engine=? AND COALESCE(synthetic,0)=0 AND ts>=? ORDER BY ts",
+                (engine, horizon)).fetchall()]
+            rows += tiers.tier_minute_rows(self._con, engine, horizon)
+        return rows
 
     def daily_bucket_totals(self, engine: str, since_ts: int) -> list[tuple]:
         """(utc_day, prompt, cached, gen, cost_hot, cost_base, cost_nocache,
@@ -377,8 +447,11 @@ class Store:
         still unpriced, so the caller never has to present a re-priced figure
         as if it were historical.
         """
+        from . import tiers
+        horizon = tiers.horizon_ts(time.time(), self.minute_days)
+        since = int(since_ts)
         with self._lock:
-            return self._con.execute(
+            brows = self._con.execute(
                 "SELECT ts/86400, COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
                 " COALESCE(SUM(gen),0),"
                 " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN cost_hot END),0),"
@@ -391,8 +464,18 @@ class Store:
                 " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN gen END),0)"
                 " FROM counter_buckets"
                 " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
-                " GROUP BY ts/86400 ORDER BY ts/86400",
-                (engine, int(since_ts))).fetchall()
+                " GROUP BY ts/86400",
+                (engine, max(since, horizon))).fetchall()
+            # the ladder side ALWAYS stops at the horizon: conditioning this on `since` lets a
+            # window that starts below the horizon pull today's day row from the tier *and* the
+            # minutes, which is the double count this seam exists to prevent
+            trows = tiers.tier_daily(self._con, engine, since, horizon)
+        days: dict[int, list] = {}
+        for r in list(brows) + list(trows):
+            acc = days.setdefault(int(r[0]), [0.0] * 11)
+            for i in range(11):
+                acc[i] += float(r[i + 1] or 0)
+        return [(d, *v) for d, v in sorted(days.items())]
 
     def series_tail(self, engine: str, key: str, seconds: float,
                     stride_s: int = 60) -> list[tuple]:
@@ -415,6 +498,34 @@ class Store:
                                              and isinstance(v, (int, float))
                                              and v > cap)]
         return out
+
+    def bucket_row_count(self) -> int:
+        """Raw-minute population: 1 row per engine-minute, ~14 KB per day, forever bounded."""
+        with self._lock:
+            return self._con.execute("SELECT COUNT(*) FROM counter_buckets").fetchone()[0]
+
+    def ladder_counts(self) -> dict:
+        """How full each rung of the ladder is — what an operator checks after an upgrade.
+
+        `horizon_ts` is the hour-aligned seam: rows below it live only in the aggregates, above
+        it in the raw minutes. If `oldest_bucket_ts` ever sits below the horizon, minutes were
+        deleted the ladder could not reproduce, and this is where you would see it.
+        """
+        from . import tiers
+        with self._lock:
+            return {"minute_rows": self._con.execute(
+                        "SELECT COUNT(*) FROM counter_buckets").fetchone()[0],
+                    "hour_rows": self._con.execute(
+                        "SELECT COUNT(*) FROM counter_hour").fetchone()[0],
+                    "day_rows": self._con.execute(
+                        "SELECT COUNT(*) FROM counter_day").fetchone()[0],
+                    "oldest_bucket_ts": self._con.execute(
+                        "SELECT MIN(ts) FROM counter_buckets").fetchone()[0],
+                    "oldest_hour_ts": self._con.execute(
+                        "SELECT MIN(hour) FROM counter_hour").fetchone()[0],
+                    "horizon_ts": tiers.horizon_ts(time.time(), self.minute_days),
+                    "minute_days": self.minute_days,
+                    "history_years": self.history_years}
 
     def last_active_hour(self, engine: str) -> dict:
         """Totals of the most recent 60-min span that actually has REAL
@@ -440,7 +551,18 @@ class Store:
         # in deliberately, so an engine whose cached counter is NOT a subset of
         # prompt still counts as active. Displayed totals are always p + g.
         if not n or (prompt + cached + gen) <= 0:
-            return {"empty": True}
+            # nothing recent in the minutes: fall back to the newest MEASURED hour in the
+            # ladder, so a box restarted after a long pause still has a rate to project from
+            # instead of silently losing the cost headline
+            with self._lock:
+                h = self._con.execute(
+                    "SELECT hour, real_prompt, real_cached, real_gen, real_rows"
+                    " FROM counter_hour WHERE engine=? AND COALESCE(real_rows,0) > 0"
+                    " ORDER BY hour DESC LIMIT 1", (engine,)).fetchone()
+            if not h or (h[1] + h[2] + h[3]) <= 0:
+                return {"empty": True}
+            return {"empty": False, "prompt": h[1], "cached": h[2], "gen": h[3],
+                    "buckets": h[4]}
         return {"empty": False, "prompt": prompt, "cached": cached, "gen": gen,
                 "buckets": n}
 

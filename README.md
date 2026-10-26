@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 192 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 208 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -259,6 +259,52 @@ python3 scripts/limcars_tidy.py --install-timer      # daily user timer (04:30, 
 It keeps a `*.pretidy-<stamp>` backup, refuses to run against an open database unless
 `--allow-live`, refuses when the disk lacks headroom, and **aborts and restores** if any
 headline figure moves: a reclaim that changed a token total is a bug, not a saving.
+
+## 📆 Six years of history, in about 48 MB
+
+The whole database used to be 1-second rings, and the money table was deleted at 366 days —
+the expensive data was the data nobody renders, and the cheap data you actually want for six
+years was the one being thrown away. Now the data is a **ladder**, and each rung keeps only
+what the dashboard reads from it:
+
+| Rung | Granularity | Kept | Measured cost |
+|---|---|---|---|
+| `engine_samples` / `hw_samples` | 1 s | `persist_seconds` (default 48 h) | ~242 MB/day — charts never zoom past 1 h, so nothing older needs it |
+| `counter_buckets` | 1 min | `minute_bucket_days` (default **30 d**) | ~14 KB/day |
+| `counter_hour` | 1 h | `history_years` (default **1 y**, set it to 6) | ~12 KB/day |
+| `counter_day` | 1 day | **forever** | ~40 B/day |
+
+Six years at that ladder measured **≈48 MB**, against 818 MB for two days of the old layout.
+
+Change the horizon in `data/config.json` and restart:
+
+```json
+{ "history_years": 6, "minute_bucket_days": 30 }
+```
+
+**A rung is never deleted until the rung that replaces it has been proven equal.** Before any
+trim, the minute rows are folded into hours, then each hour is checked row-for-row — tokens,
+requests, iterations, money as earned, and its row count — against the aggregate that claims to
+summarise it. If a single hour disagrees, the prune is *blocked* and the minutes stay, with the
+reason reported. Averages are never averaged: peaks travel as `MAX`, floors as `MIN`, and a ratio
+like speculative-accept rate travels as its numerator and denominator and is re-derived on read,
+because averaging percentages is how dashboards quietly go wrong. Occupancy stays measured too —
+an aggregated hour carries how many of its minutes actually produced a token.
+
+Verified against a copy of a live 44-day database: 519 minute rows (69.5 M prompt tokens) folded
+away, and the dashboard's own reader returned `prompt 3,054,645,010 · cached 2,720,126,615 ·
+gen 27,960,289 · reqs 28,965 · $1.296333` **identical before and after**, now served from three
+rungs instead of one. Check it yourself at `/api/storage` → `ladder`, or migrate an old install
+with:
+
+```bash
+python3 scripts/limcars_tidy.py --tier --history-years 6
+```
+
+In plain words: the dashboard keeps a 1-second memory for two days, a minute-by-minute memory
+for a month, an hourly memory for as long as you ask (six years costs about 48 MB), and a daily
+memory forever — and it is not allowed to forget anything until it has proven it can remember it
+another way.
 
 ## 💵 Money is recorded as it was earned
 

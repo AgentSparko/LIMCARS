@@ -90,7 +90,9 @@ class Limcars:
         self.cfg = cfg
         self.broker: Broker = Broker()
         from .store import Store
-        self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)))
+        self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)),
+                           minute_days=float(cfg.get("minute_bucket_days", 30)),
+                           history_years=float(cfg.get("history_years", 1)))
         from .sampler import EngineManager
         self.engines = EngineManager(cfg, self.broker, self.store)
         from .hw import HwSampler
@@ -582,7 +584,14 @@ class Handler(BaseHTTPRequestHandler):
             want_tables = (qs.get("tables") or ["0"])[0] in ("1", "true", "yes")
             return self._json({"ok": True,
                                "maintenance": app.maintenance.snapshot(),
-                               "db": app.store.storage_stats(tables=want_tables)})
+                               "db": app.store.storage_stats(tables=want_tables),
+                               # the ladder: how full each rung is, and where the seams are.
+                               # An operator verifying an upgrade reads this next to the money.
+                               "ladder": app.store.ladder_counts(),
+                               "windows": {
+                                   "persist_seconds": app.cfg.get("persist_seconds", 172800),
+                                   "minute_bucket_days": app.cfg.get("minute_bucket_days", 30),
+                                   "history_years": app.cfg.get("history_years", 1)}})
         if path == "/api/auth/status":
             return self._json({"enabled": app.auth.enabled,
                                "locked_for_you": round(app.auth.locked_for(self._client_ip()), 1)})

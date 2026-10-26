@@ -22,9 +22,13 @@ bought, instead of making them run a script to find out.
 from __future__ import annotations
 
 import os
+import logging
 import shutil
 import threading
 import time
+
+
+log = logging.getLogger("limcars.maintenance")
 
 
 class Maintenance(threading.Thread):
@@ -88,6 +92,20 @@ class Maintenance(threading.Thread):
             if lock is not None and lock.locked():
                 lock.release()
         return out
+
+    def _rollup(self) -> None:
+        """Fold aged minutes into the hourly/daily ladder without deleting anything.
+
+        The store folds on bucket writes, but a machine that goes quiet for weeks still needs
+        its aggregates current — that is what makes the next prune verifiable, and what keeps
+        long-history reads complete while the rings stay a day deep.
+        """
+        from . import tiers
+        try:
+            with self.store._lock:
+                tiers.rollup_all(self.store._con)
+        except Exception as exc:                       # noqa: BLE001 - never fatal
+            log.warning("ladder rollup failed: %r", exc)
 
     def run_once(self, force: bool = False) -> dict:
         """Compact if (and only if) there is something worth reclaiming.
@@ -153,6 +171,8 @@ class Maintenance(threading.Thread):
             self.status["note"] = f"boot pass failed: {exc}"
         while not self._stop.wait(self.interval):
             try:
+                # fold first, then reclaim: the ladder is what makes the rings disposable
+                self._rollup()
                 self.run_once()
             except Exception as exc:
                 self.status["note"] = f"scheduled pass failed: {exc}"

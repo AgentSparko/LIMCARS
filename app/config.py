@@ -42,6 +42,11 @@ DEFAULTS = {
     # is retained 366 d and is three orders of magnitude smaller. Editable in
     # Settings (5 min .. 7 d); 48 h keeps two days of forensic detail.
     "persist_seconds": 172800,
+    # ladder retention (app/tiers.py): raw minute buckets are kept this long, the hourly tier
+    # covers history_years, daily totals are kept forever. Minutes cost ~14 KB/day, so a long
+    # minute window is affordable — it is the 1 s rings that are 242 MB/day.
+    "minute_bucket_days": 30,
+    "history_years": 1,
     "window_s": 30.0,        # window for p50 / avg derived stats
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [

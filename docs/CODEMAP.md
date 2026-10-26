@@ -68,8 +68,10 @@ apart like that.)
 | Table | Grain | Retention | Measured |
 |---|---|---|---|
 | `engine_samples` | **1 s** | `persist_seconds` default **172800 (48 h)** | 191,649 rows / 3.2 d at the old 7 d default, avg blob 1,694 B |
+| `counter_hour` | **1 h** | `history_years` default **1 y** | folded from minutes by `tiers.rollup_hours`; `hour` is **epoch seconds**; measured/synthetic kept in separate columns |
+| `counter_day` | **1 day** | **forever** | derived from hours by `tiers.rollup_days`; `day` is an **epoch-day index** — the two units are not interchangeable |
 | `hw_samples` | **1 s** | same | 215,215 rows, avg blob 550 B |
-| `counter_buckets` | 1 h | 366 d | 15,001 rows — year views read this: 26 days in **3.7 ms** |
+| `counter_buckets` | **1 min** | `minute_bucket_days` default **30 d** (then folded into `counter_hour`) | ~14 KB/day; the money source — `ts` is epoch seconds, PRIMARY KEY (engine, ts) |
 | `counter_raw` | last absolute counters | never | 1 row; why restarts don't swallow tokens |
 | `events` | event log | 30 d | includes `pricing_changed` audit |
 

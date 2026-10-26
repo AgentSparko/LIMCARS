@@ -171,6 +171,8 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
     out_days: dict[int, dict] = {}
     models: dict[str, str] = {}
     active_minutes: set[int] = set()
+    tier_minutes = 0          # busy minutes carried by aggregated hours
+    tier_days: set[int] = set()
     tot_cost = tot_tok = tot_cached = 0.0
     priced_rows = unpriced_rows = 0      # how much of this window is as-earned
     for eng in engines:
@@ -186,10 +188,17 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
         # machine occupancy for this window, straight from the minute rows:
         # hours a day the box was actually producing tokens (the stat the user
         # asked to see next to the money line — measured, never assumed)
-        for ts, p_, c_, g_ in store.minute_rows(eid):
+        for ts, p_, c_, g_, busy in store.minute_rows(eid):
             # an active minute is one where the box produced a token: prompt
             # already contains the cached share, so p + g is the honest test
-            if ts >= since and (p_ or 0) + (g_ or 0) > 0:
+            if ts < since or (p_ or 0) + (g_ or 0) <= 0:
+                continue
+            if busy > 1:
+                # an aggregated hour: minute identity is gone but the measured busy-minute
+                # count was kept, so duty hours stay measured at any history depth
+                tier_minutes += int(busy)
+                tier_days.add(ts // 86400)     # epoch day; 86400 not a module constant here
+            else:
                 active_minutes.add(ts // 60)
         for day, p_, c_, g_, hot_d, base_d, nc_d, npr, nlg, lp_, lc_, lg_ in \
                 store.daily_bucket_totals(eid, since):
@@ -219,16 +228,17 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             tot_cost += cost
             tot_tok += (p_ or 0) + (g_ or 0)
             tot_cached += (c_ or 0)
-    act_days = len({m // 1440 for m in active_minutes})
+    active_total = len(active_minutes) + tier_minutes
+    act_days = len({m // 1440 for m in active_minutes} | tier_days)
     return {"days": [{"day": d, "engines": e} for d, e in sorted(out_days.items())],
             "models": models, "days_n": days,
             # average hours a day the box was measured producing tokens, over
             # the days that actually had traffic (measured, not assumed)
-            "active_minutes": len(active_minutes),
+            "active_minutes": active_total,
             "active_days": act_days,
             "avg_active_hours_per_day": (
-                round(len(active_minutes) / 60.0 / max(act_days, 1), 2)
-                if active_minutes else None),
+                round(active_total / 60.0 / max(act_days, 1), 2)
+                if active_total else None),
             "totals": {"cost": round(tot_cost, 4), "tokens": tot_tok,
                        # "of which served from prefix cache" — a subset of the
                        # prompt tokens, never an addend of the total
@@ -297,9 +307,20 @@ def lost_potential(store, engines: list[dict], pricing_cfg,
     reason = "no_data"
     for eng in serving:
         eid, model = eng["id"], eng.get("model")
-        rows = [(ts, p or 0.0, c or 0.0, g or 0.0)
-                for ts, p, c, g in store.minute_rows(eid)
-                if (p or 0) + (g or 0) + (c or 0) > 0]
+        rows = []
+        for ts, p, c, g, busy in store.minute_rows(eid):
+            if (p or 0) + (g or 0) + (c or 0) <= 0:
+                continue
+            if busy > 1:
+                # an aggregated hour: spread its measured tokens across `busy` minute slots
+                # inside that hour, so the hour total the scan selects stays exact while the
+                # within-hour shape is approximated (minute identity is gone by design)
+                n = min(int(busy), 60)
+                for i in range(n):
+                    rows.append((ts + i * 60, (p or 0.0) / n,
+                                 (c or 0.0) / n, (g or 0.0) / n))
+            else:
+                rows.append((ts, p or 0.0, c or 0.0, g or 0.0))
         if not rows:
             continue
         price = pricing_mod.effective_price(model, pricing_cfg) or {}
