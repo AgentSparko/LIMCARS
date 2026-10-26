@@ -20,6 +20,7 @@ wasn't seen by a recent scan as engine/GPU-holder.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import signal
@@ -27,6 +28,10 @@ import subprocess
 import threading
 import time
 import urllib.request
+
+import psutil
+
+from . import procs
 
 MIN_GPU_MIB = 1024          # "over 1 GB of GPU memory" per spec
 _SCAN_TTL = 5.0
@@ -41,9 +46,12 @@ ARGV_FLAG = {  # flags only the engine server itself passes to itself
     "--model": ("vLLM", "SGLang", "TGI"),
 }
 _SOCK_RE = re.compile(r"pid=(\d+)")
+_net_owner: dict[str, int] = {}   # synthetic socket token -> pid (no /proc)
 
 
 def _cmdline(pid: int) -> str:
+    if not procs.LINUX_PROC:
+        return " ".join(procs.argv(pid)).strip()
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             return f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
@@ -73,8 +81,21 @@ def _gpu_holders() -> dict[int, int]:
 
 
 def _listen_sockets() -> list[tuple[int, str]]:
-    """[(port, inode)] for all LISTEN tcp + tcp6 sockets."""
+    """[(port, inode)] for all LISTEN tcp + tcp6 sockets. Without /proc the
+    "inode" is a synthetic "pid:port" token owned by the listening pid."""
     out = []
+    if not procs.LINUX_PROC:
+        _net_owner.clear()
+        try:
+            conns = psutil.net_connections(kind="tcp")
+        except (psutil.Error, OSError):
+            return out
+        for c in conns:
+            if c.status == psutil.CONN_LISTEN and c.laddr:
+                tok = f"{c.pid or 0}:{c.laddr.port}"
+                _net_owner[tok] = c.pid or 0
+                out.append((c.laddr.port, tok))
+        return out
     for f in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
             with open(f, encoding="ascii", errors="replace") as fh:
@@ -92,6 +113,8 @@ def _listen_sockets() -> list[tuple[int, str]]:
 
 
 def _pid_inodes(pid: int) -> set[str]:
+    if not procs.LINUX_PROC:
+        return {t for t, p in _net_owner.items() if p == pid}
     inodes: set[str] = set()
     fd_dir = f"/proc/{pid}/fd"
     try:
@@ -107,17 +130,37 @@ def _pid_inodes(pid: int) -> set[str]:
     return inodes
 
 
+def _ancestor_chain(pid: int) -> list[int]:
+    """Parent pids, nearest first."""
+    try:
+        return [p.pid for p in psutil.Process(pid).parents()]
+    except psutil.Error:
+        return []
+
+
+def _win_root(pid: int, is_engine, servers: set[int]) -> int:
+    """Owning launcher of a worker: the topmost engine ancestor, stepping over
+    unclassified helpers, but never past a process that is itself a verified
+    OpenAI API server (an independent engine, not a worker)."""
+    top = pid
+    for a in _ancestor_chain(pid):
+        if top in servers:
+            break
+        if is_engine(a):
+            top = a
+        elif a in servers:   # an unclassified API server is a boundary too
+            break
+    return top
+
+
 def _classify(pid: int) -> str | None:
     """Engine name if this pid's argv IS an engine server, else None."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read().split(b"\0")
-    except OSError:
-        return None
-    toks = [t.decode("utf-8", "replace") for t in raw if t]
+    toks = procs.argv(pid)
     if not toks:
         return None
-    base = os.path.basename(toks[0]).lower()
+    base = (ntpath if procs.IS_WIN else os.path).basename(toks[0]).lower()
+    if procs.IS_WIN and base.endswith(".exe"):   # llama-server.exe, vllm.exe …
+        base = base[:-4]
     if base in ARGV_EXACT:
         return ARGV_EXACT[base]
     if base.startswith("vllm::"):          # renamed procs: VLLM::EngineCore/Worker
@@ -164,6 +207,7 @@ class LiveEngines:
         self._lock = threading.Lock()
         self._cache: tuple[float, list[dict]] = (0.0, [])
         self._last_by_pid: dict = {}
+        self._win_servers: set[int] = set()
 
     def scan(self, force: bool = False) -> list[dict]:
         with self._lock:
@@ -178,10 +222,7 @@ class LiveEngines:
 
             # argv-classified engine processes
             classified: dict[int, str] = {}
-            for entry in os.listdir("/proc"):
-                if not entry.isdigit():
-                    continue
-                pid = int(entry)
+            for pid in procs.pids():
                 etype = _classify(pid)
                 if etype:
                     classified[pid] = etype
@@ -228,15 +269,8 @@ class LiveEngines:
                     found_port = None
                     walk, depth = pid, 0
                     while walk and depth < 6 and found_port is None:
-                        try:
-                            with open(f"/proc/{walk}/status", encoding="ascii",
-                                      errors="replace") as fh:
-                                ppid = 0
-                                for ln in fh:
-                                    if ln.startswith("PPid:"):
-                                        ppid = int(ln.split()[1])
-                                        break
-                        except OSError:
+                        ppid = procs.ppid(walk)
+                        if ppid is None:
                             break
                         acmd = _cmdline(ppid)
                         m = re.search(r"--port[= ](\d{2,5})", acmd)
@@ -284,17 +318,34 @@ class LiveEngines:
             # One engine is often several processes (vllm serve API proc +
             # EngineCore + GPU Worker, all in one process group). Merge rows
             # sharing a pgid into a single engine card.
+            # Windows has no process groups: a non-listening worker joins the
+            # engine row it descends from; anything serving its own port stays
+            # a separate card. Launcher rows sort first so they own the card.
+            win_top: dict[int, int] = {}
+            if not procs.HAS_PGRP:
+                row_pids = {r["pid"] for r in out if r["pid"] is not None}
+                orphan_ports = {r["ports"][0] for r in out if r["pid"] is None}
+                self._win_servers = {r["pid"] for r in out
+                                     if r["pid"] is not None and r["serving_ports"]}
+                self._win_servers |= {p for t, p in _net_owner.items()
+                                      if p and int(t.rsplit(":", 1)[1]) in orphan_ports}
+                for p in row_pids:
+                    win_top[p] = _win_root(p, row_pids.__contains__, self._win_servers)
+                out.sort(key=lambda r: r["pid"] is not None and win_top[r["pid"]] != r["pid"])
             by_pgid: dict[int, dict] = {}
             merged: list[dict] = []
             for r in out:
                 if r["pid"] is None:
                     merged.append(r)
                     continue
-                try:
-                    pg = os.getpgid(r["pid"])
-                except (ProcessLookupError, PermissionError):
-                    merged.append(r)
-                    continue
+                if not procs.HAS_PGRP:
+                    pg = win_top[r["pid"]]
+                else:
+                    try:
+                        pg = os.getpgid(r["pid"])
+                    except (ProcessLookupError, PermissionError):
+                        merged.append(r)
+                        continue
                 prev = by_pgid.get(pg)
                 if prev is None:
                     by_pgid[pg] = r
@@ -325,14 +376,21 @@ class LiveEngines:
             return {"ok": False,
                     "error": "engine runs outside this dashboard's reach (root/container) — stop it there"}
         pid = int(pid)
-        if pid == os.getpid() or pid < 512:
+        if pid == os.getpid() or pid < (8 if procs.IS_WIN else 512):
             return {"ok": False, "error": "refused: system/dashboard pid"}
-        try:
-            pgid = os.getpgid(pid)
-            if pgid == os.getpgid(0):
-                return {"ok": False, "error": "refused: dashboard's own process group"}
-        except ProcessLookupError:
-            return {"ok": False, "error": "no such process"}
+        pgid = None
+        if procs.HAS_PGRP:
+            try:
+                pgid = os.getpgid(pid)
+                if pgid == os.getpgid(0):
+                    return {"ok": False, "error": "refused: dashboard's own process group"}
+            except ProcessLookupError:
+                return {"ok": False, "error": "no such process"}
+        else:
+            if not procs.alive(pid):
+                return {"ok": False, "error": "no such process"}
+            if pid in procs.ancestors(os.getpid()):
+                return {"ok": False, "error": "refused: dashboard's own process tree"}
         seen = self._last_by_pid.get(pid)
         if not seen or time.time() - seen[0] > 120:
             return {"ok": False, "error": "pid not seen in recent engine scan — refresh and retry"}
@@ -344,6 +402,26 @@ class LiveEngines:
         still_engine = bool(_classify(pid)) or holders.get(pid, 0) >= MIN_GPU_MIB
         if not still_engine:
             return {"ok": False, "error": "pid is no longer an engine/GPU holder — refusing"}
+        if pgid is None:
+            # a worker: stop the card it belongs to *right now* — a fresh scan
+            # re-derives engine rows and API-server boundaries, never one of ours
+            mine = procs.ancestors(os.getpid())
+            card = next((r for r in self.scan(force=True)
+                         if r["pid"] == pid or pid in (r.get("pids_extra") or ())), None)
+            if card and card["pid"] != pid and card["pid"] not in mine:
+                with self._lock:
+                    holders = _gpu_holders()
+                root = card["pid"]
+                if bool(_classify(root)) or holders.get(root, 0) >= MIN_GPU_MIB:
+                    pid = root
+            try:
+                procs.kill_tree(pid)
+            except PermissionError:
+                return {"ok": False,
+                        "error": "process belongs to another user/admin — stop it where it was started"}
+            self._last_by_pid.pop(pid, None)
+            self.scan(force=True)
+            return {"ok": True, "killed_pid": pid}
         try:
             os.killpg(pgid, signal.SIGTERM)
         except PermissionError:
@@ -352,9 +430,9 @@ class LiveEngines:
         except ProcessLookupError:
             return {"ok": False, "error": "process vanished"}
         deadline = time.time() + 10
-        while time.time() < deadline and os.path.isdir(f"/proc/{pid}"):
+        while time.time() < deadline and procs.alive(pid):
             time.sleep(0.25)
-        if os.path.isdir(f"/proc/{pid}"):
+        if procs.alive(pid):
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except ProcessLookupError:

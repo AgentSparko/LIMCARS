@@ -26,6 +26,8 @@ import threading
 import time
 import uuid
 
+from . import procs
+
 
 class Recipes:
     MAX_CMD = 8000
@@ -61,7 +63,7 @@ class Recipes:
 
     @staticmethod
     def _alive(pid) -> bool:
-        return bool(pid) and os.path.isdir(f"/proc/{int(pid)}")
+        return procs.alive(pid)
 
     def list(self) -> list[dict]:
         out = []
@@ -147,11 +149,20 @@ class Recipes:
                 log = open(log_path, "ab")  # noqa: SIM115 — stays open for the proc
                 log.write(f"\n===== start {time.strftime('%F %T')} :: {r['cmd']}\n".encode())
                 log.flush()
-                # shell=True is deliberate: recipes ARE user-authored shell lines
-                proc = subprocess.Popen(  # noqa: S602
-                    r["cmd"], shell=True,  # noqa: S602
-                    stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                    start_new_session=True, cwd=os.path.expanduser("~"))
+                if procs.IS_WIN:
+                    # Windows recipes are PowerShell lines; own process group
+                    # so the dashboard's console Ctrl+C doesn't reach them
+                    proc = subprocess.Popen(  # noqa: S603
+                        ["powershell", "-NoProfile", "-Command", r["cmd"]],
+                        stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                        cwd=os.path.expanduser("~"))
+                else:
+                    # shell=True is deliberate: recipes ARE user-authored shell lines
+                    proc = subprocess.Popen(  # noqa: S602
+                        r["cmd"], shell=True,  # noqa: S602
+                        stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                        start_new_session=True, cwd=os.path.expanduser("~"))
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)[:300]}
             r["pid"] = proc.pid
@@ -170,6 +181,9 @@ class Recipes:
                 self._save()
                 return {"ok": True, "note": "was not running"}
             try:
+                if not procs.HAS_PGRP:
+                    procs.kill_tree(pid)
+                    raise ProcessLookupError
                 pgid = os.getpgid(pid)
                 os.killpg(pgid, signal.SIGTERM)
                 deadline = time.time() + 10
@@ -181,7 +195,7 @@ class Recipes:
             except ProcessLookupError:
                 pass
             except PermissionError as exc:
-                return {"ok": False, "error": f"killpg: {exc}"}
+                return {"ok": False, "error": f"stop: {exc}"}
             r["pid"] = None
             r["last_stop_at"] = time.time()
             self._save()
