@@ -1,0 +1,36 @@
+# Hand-authored, NOT recorded: no llama.cpp engine is running on this box, so
+# these series were written from the upstream registry in tools/server/
+# server-task.cpp plus tools/server/README.md and tests/unit/test_metrics.py on
+# master (checked 2026-10-26). Only metrics llama.cpp actually emits appear
+# here; llamacpp:kv_cache_usage_ratio and llamacpp:requests_completed are absent
+# because they do not exist upstream. Do not present this file as a real scrape.
+# TYPE llamacpp:requests_processing gauge
+llamacpp:requests_processing 2
+# TYPE llamacpp:requests_deferred gauge
+llamacpp:requests_deferred 0
+# TYPE llamacpp:n_tokens_max gauge
+llamacpp:n_tokens_max 8192
+# TYPE llamacpp:n_busy_slots_per_decode gauge
+llamacpp:n_busy_slots_per_decode 1.5
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 15400
+# TYPE llamacpp:prompt_tokens_cached_total counter
+llamacpp:prompt_tokens_cached_total 9000
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 3120
+# TYPE llamacpp:prompt_seconds_total counter
+llamacpp:prompt_seconds_total 1.842
+# TYPE llamacpp:tokens_predicted_seconds_total counter
+llamacpp:tokens_predicted_seconds_total 41.227
+# TYPE llamacpp:prompt_tokens_seconds gauge
+llamacpp:prompt_tokens_seconds 8360.5
+# TYPE llamacpp:predicted_tokens_seconds gauge
+llamacpp:predicted_tokens_seconds 75.7
+# TYPE llamacpp:n_decode_total counter
+llamacpp:n_decode_total 2910
+# TYPE llamacpp:spec_decode_num_draft_tokens_total counter
+llamacpp:spec_decode_num_draft_tokens_total 6100
+# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter
+llamacpp:spec_decode_num_accepted_tokens_total 4420
+# TYPE llamacpp:spec_decode_num_drafts_total counter
+llamacpp:spec_decode_num_drafts_total 1830

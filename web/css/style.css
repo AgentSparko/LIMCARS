@@ -62,9 +62,20 @@ header.top .brand .tagline { color: var(--muted, #8b93a7); font-weight: 400; fon
 }
 /* a phone genuinely needs two rows — that is the only place wrapping returns */
 @media (max-width: 860px) { header.top { flex-wrap: wrap; } }
-header.top .nav { display: flex; gap: 12px; margin-left: 8px; }
-header.top .nav a { color: var(--muted); font-size: 13px; }
-header.top .nav a.on { color: var(--text); font-weight: 600; }
+/* display controls: inline on desktop (display:contents keeps the row exactly
+   as before); folded behind one ⚙️ button on phones */
+.hdr-tools { display: contents; }
+.hdr-tools > * { flex: none; }
+#btn-tools { display: none; }
+@media (max-width: 860px) {
+  #btn-tools { display: inline-flex; }
+  .hdr-tools { display: none; }
+  .hdr-tools.open {
+    display: flex; flex-wrap: wrap; gap: 8px; position: absolute; right: 12px; top: calc(100% + 4px);
+    padding: 10px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0, 0, 0, .35); z-index: 30;
+  }
+}
 header.top .spacer { flex: 1; }
 .pill {
   font: 600 11px/1 var(--font); padding: 5px 9px; border-radius: 20px;
@@ -80,7 +91,6 @@ select, .btn {
   border-radius: 8px; padding: 5px 10px; font: 500 12px var(--font); cursor: pointer;
 }
 .btn:hover, .pill:hover { border-color: #33466244; border-color: #334662; }
-.btn.danger:hover { border-color: var(--rose); color: var(--rose); }
 
 h2.section { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 26px 0 10px; }
 
@@ -160,6 +170,23 @@ html[data-theme="light"] .feed .row { border-bottom-color: #e3e8f2; }
 }
 .palette-pop button:hover { transform: scale(1.15); }
 .palette-pop button.sel { border-color: var(--text); }
+/* engine switcher (header pill) */
+.eng-caret { color: var(--muted); margin-left: -2px; }
+.engine-pop {
+  position: fixed; z-index: 40; background: var(--panel); min-width: 260px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .35); padding: 6px;
+  display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow: auto;
+}
+.engine-pop[hidden] { display: none !important; }
+.engine-pop button {
+  display: flex; align-items: center; gap: 8px; text-align: left; width: 100%;
+  background: none; border: 1px solid transparent; border-radius: 8px; padding: 7px 9px;
+  color: var(--text); font: 500 12px var(--font); cursor: pointer;
+}
+.engine-pop button:hover, .engine-pop button:focus-visible { background: var(--panel-2); border-color: var(--line); }
+.engine-pop button[aria-selected="true"] { border-color: var(--accent-border); }
+.engine-pop .eng-url { color: var(--muted); font: 11px var(--mono); margin-left: auto; padding-left: 12px; }
 .feed .t { color: var(--muted); }
 .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
 @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
@@ -168,11 +195,21 @@ html[data-theme="light"] .feed .row { border-bottom-color: #e3e8f2; }
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
 .card h3 { margin: 0 0 4px; font-size: 15px; }
-.card .desc { color: var(--muted); font-size: 12.5px; min-height: 34px; }
 .card .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.card .kv { font: 12px/1.8 var(--mono); color: var(--muted); }
-.card .kv b { color: var(--text); font-weight: 600; }
 .mono { font-family: var(--mono); }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
-footer.foot { color: var(--muted); font-size: 11px; margin-top: 32px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; gap: 16px; }
+
+/* keyboard focus: visible ring for keyboard users only */
+:where(button, select, input, textarea, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* honour the OS "reduce motion" setting */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important;
+  }
+  .palette-pop button:hover { transform: none; }
+}

@@ -1,0 +1,45 @@
+# LIMCARS test fixture — HAND-AUTHORED, not a live capture.
+# SGLang was not installed on the audit box, so these samples were written from
+# the metric family names in app/dialects.py SGLANG plus SGLang's documented
+# sglang:* naming. They therefore verify *internal* consistency (the dialect
+# parses, label-matches and invariants hold) but cannot prove upstream truth the
+# way tests/fixtures/vllm_metrics.txt does. Replace with a recorded capture from
+# a real SGLang build as soon as one is available.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs 3
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs 1
+# TYPE sglang:token_usage gauge
+sglang:token_usage 0.42
+# TYPE sglang:prompt_tokens_total counter
+sglang:prompt_tokens_total 1250000
+# TYPE sglang:generation_tokens_total counter
+sglang:generation_tokens_total 240000
+# prefill_tokens is label-matched on mode="prefill*" — the trailing * is a
+# prefix match, so this fixture also pins that behaviour, not just the name.
+# TYPE sglang:realtime_tokens_total counter
+sglang:realtime_tokens_total{mode="prefill"} 1250000
+sglang:realtime_tokens_total{mode="decode"} 240000
+# TYPE sglang:cached_tokens_total counter
+sglang:cached_tokens_total 800000
+# TYPE sglang:time_to_first_token_seconds histogram
+sglang:time_to_first_token_seconds_bucket{le="0.1"} 40
+sglang:time_to_first_token_seconds_bucket{le="0.5"} 90
+sglang:time_to_first_token_seconds_bucket{le="+Inf"} 100
+sglang:time_to_first_token_seconds_sum 22.5
+sglang:time_to_first_token_seconds_count 100
+# TYPE sglang:inter_token_latency_seconds histogram
+sglang:inter_token_latency_seconds_bucket{le="0.01"} 5000
+sglang:inter_token_latency_seconds_bucket{le="+Inf"} 5000
+sglang:inter_token_latency_seconds_sum 30.0
+sglang:inter_token_latency_seconds_count 5000
+# TYPE sglang:e2e_request_latency_seconds histogram
+sglang:e2e_request_latency_seconds_bucket{le="1"} 20
+sglang:e2e_request_latency_seconds_bucket{le="+Inf"} 100
+sglang:e2e_request_latency_seconds_sum 610.0
+sglang:e2e_request_latency_seconds_count 100
+# TYPE sglang:queue_time_seconds histogram
+sglang:queue_time_seconds_bucket{le="0.1"} 60
+sglang:queue_time_seconds_bucket{le="+Inf"} 100
+sglang:queue_time_seconds_sum 12.0
+sglang:queue_time_seconds_count 100
