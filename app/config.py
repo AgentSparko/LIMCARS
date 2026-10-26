@@ -11,7 +11,10 @@ WEB = ROOT / "web"
 
 DEFAULTS = {
     "port": 8951,
-    "host": "0.0.0.0",
+    # Loopback by default: a dashboard whose recipes are shell lines run by
+    # subprocess must not be reachable by the whole LAN unless the operator
+    # asks. Expose via data/config.json "host" or LIMCARS_HOST=0.0.0.0.
+    "host": "127.0.0.1",
     "live_hz": 2.0,          # engine sampler ticks per second (1-4)
     "hw_hz": 1.0,            # hardware sampler ticks per second
     "ring_seconds": 3900,    # in-memory ring depth (65 min — supports the 1 h window)

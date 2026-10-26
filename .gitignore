@@ -5,3 +5,8 @@ data/recipe-logs/
 __pycache__/
 .pytest_cache/
 data/auth.json
+*.pyc
+.pytest_cache/
+
+# runtime state written by the server in-place
+data/

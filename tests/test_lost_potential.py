@@ -276,3 +276,91 @@ def test_empty_store():
     assert lost_potential(st, [{"id": "x", "model": "X", "alive": True}],
                           PRICE)["ok"] is False
     assert lost_potential(st, [], PRICE)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Dual-basis honesty (added after an agent PR silently re-priced loss_period_cost
+# by swapping the measured denominator for recorded_days x 24). These tests are
+# the regression lock: the measured basis must never move, and the availability
+# basis must exist under its own name rather than masquerading as the default.
+# ---------------------------------------------------------------------------
+
+def test_the_two_utilisation_bases_ship_separately(tmp_path):
+    """One busy stretch inside a single day: measured span is 1.5 h, the
+    availability basis is 24 h. Publishing only one of them is the bug."""
+    st = Store(str(tmp_path / "t.db"))
+    for m in range(30):
+        _m(st, "e1", m, p=1e6)
+    for m in range(30, 90):
+        _m(st, "e1", m, p=3e6)
+    r = lost_potential(st, LIVE, PRICE)
+    assert r["hours_basis_measured"] == 1.5
+    assert r["hours_basis_availability"] == 24.0
+    assert r["avg_hour_tokens"] == round(210e6 / 1.5)
+    assert r["avg_hour_tokens_availability"] == round(210e6 / 24.0)
+    # measured stays the headline basis: 77.8%, not the 4.9% a 24 h divisor gives
+    assert abs(r["pct_usage"] - round(100.0 * (210e6 / 1.5) / 180e6, 1)) < 0.05
+    assert abs(r["pct_usage_availability"] - round(100.0 * (210e6 / 24.0) / 180e6, 1)) < 0.05
+    assert r["pct_usage"] > 10 * r["pct_usage_availability"]
+
+
+def test_loss_period_cost_is_priced_over_watching_not_recorded_days(tmp_path):
+    """Two far-apart days: the dash watched 2 h, the days span 48 h. 'Money lost
+    over the period watched' must use the 2 h it watched (user rule: measured,
+    never assumed); the 48 h figure exists, but under its own name."""
+    st = Store(str(tmp_path / "t.db"))
+    _hour(st, "e1", start=0, p=3e6)          # day 0: 3M/min for an hour
+    _hour(st, "e1", start=4320, p=1e6)       # day 3: 1M/min for an hour
+    r = lost_potential(st, LIVE, PRICE)
+    assert r["ok"], r
+    assert r["recorded_days"] == 2
+    assert r["hours_basis_measured"] == 2.0          # watched, not 48
+    assert r["hours_basis_availability"] == 48.0
+    # measured loss is exactly the hourly gap x the hours WATCHED (2), never x 48
+    assert abs(r["loss_period_cost"]
+               - r["loss_hour_cost"] * r["hours_basis_measured"]) < 0.05
+    assert abs(r["loss_period_cost"]
+               - r["loss_hour_cost"] * r["hours_basis_availability"]) > 1.0
+    # the availability figure answers a different question and is larger
+    assert r["loss_availability_cost"] > r["loss_period_cost"]
+
+
+def test_the_two_bases_can_disagree_completely(tmp_path):
+    """The sharpest case: two IDENTICAL hours on two days. Measured basis says the
+    machine performed at its demonstrated rate the whole time it was watched, so
+    nothing was lost while watched. Availability basis says the idle 46 h of those
+    days were unpaid capacity. Both are true; blending them is the bug an agent PR
+    shipped, so this pins that they stay separate fields."""
+    st = Store(str(tmp_path / "t.db"))
+    _hour(st, "e1", start=0, p=3e6)
+    _hour(st, "e1", start=4320, p=3e6)
+    r = lost_potential(st, LIVE, PRICE)
+    assert r["loss_period_cost"] == 0.0              # watched hours == best hour
+    assert r["loss_availability_cost"] > 0.0         # 46 unpaid hours exist
+    assert r["pct_usage"] == 100.0
+    assert r["pct_usage_availability"] < 10.0
+
+
+def test_usage_percent_is_not_saved_over_capacity(tmp_path):
+    """An agent PR asserted usage% == 100 x saved/capacity and 'fixed' the code to
+    match. It is not an identity: capacity subtracts the duty term and saved is a
+    recorded bill, so the two only look close at ordinary duty cycles. Pinning the
+    divergence here so nobody re-adopts that invariant."""
+    st = Store(str(tmp_path / "t.db"))
+    for m in range(60):                              # uniform cost per token
+        _m(st, "e1", m, p=2e6, g=1e6)
+    for m in range(60, 120):
+        _m(st, "e1", m, p=2e6, g=1e6)
+    r = lost_potential(st, LIVE, PRICE)
+    ratio = 100.0 * r["saved_year_cost"] / r["capacity_year_cost"]
+    assert r["pct_usage"] == 100.0                   # avg hour == peak hour
+    assert ratio < 20.0                              # ... while the money ratio is nowhere near
+    # and changing the cache mix (cost per token) moves the money side only
+    st2 = Store(str(tmp_path / "n.db"))
+    for m in range(60):
+        _m(st2, "e1", m, p=1e6, c=3e6, g=1e6)        # cache-served hour
+    for m in range(60, 120):
+        _m(st2, "e1", m, p=4e6, c=0.0, g=1e6)        # fully-priced hour
+    n = lost_potential(st2, LIVE, PRICE)
+    assert n["pct_usage"] != 100.0
+    assert abs(n["pct_usage"] - 100.0 * n["saved_year_cost"] / n["capacity_year_cost"]) > 1.0

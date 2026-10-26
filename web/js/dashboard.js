@@ -262,7 +262,13 @@ function buildCharts() {
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
 }
 
-const escH = s => String(s || '').replace(/[<>"'\\]/g, c =>
+// Single pass over ALL six specials, '&' included. '&' was missing from the
+// character class, so the '&' entry in this map was unreachable: a bare '&' in
+// engine-reported text (session titles, model names) passed through raw and let
+// an attacker-supplied entity like &lt; decode into '<' on screen. Tag/attribute
+// breakout was never possible here — < > " ' are escaped and no sink puts this
+// into a URL — but escaping must be complete to be a contract, not a vibe.
+const escH = s => String(s || '').replace(/[&<>"'\\]/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\\': '&#92;' }[c]));
 
 // Client-context category colors are THEME-REACTIVE: stored as base hues,

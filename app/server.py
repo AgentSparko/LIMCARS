@@ -179,12 +179,46 @@ class Handler(BaseHTTPRequestHandler):
         """Gate recipe add/edit/delete: password + escalating per-IP lockout.
         Localhost is exempt (the box itself is the admin domain). Sends the
         401/423 response itself; returns True when the request may proceed."""
-        if self._is_local() or not self.app.auth.enabled:
+        if self._is_local():
             return True
+        if not self.app.auth.enabled:
+            # Fail CLOSED. Recipe text reaches subprocess(shell=True), so an
+            # unset password used to mean any LAN host could run commands as
+            # the dashboard user while the UI merely warned about it.
+            self._json({"ok": False,
+                        "error": "a password is required before remote writes; "
+                                "set one in Settings or work on the box itself"},
+                       code=428)
+            return False
         ip = self._client_ip()
         pw = self._pw_from_headers()
         # single atomic gate (lockout check + verify + ladder in one lock hold)
         ok, rem = self.app.auth.attempt(ip, pw)
+        if ok:
+            return True
+        if rem > 0:
+            self._json({"ok": False, "error": "locked",
+                        "retry_after": round(rem, 1)}, code=423)
+        else:
+            self._json({"ok": False, "error": "wrong password"}, code=401)
+        return False
+
+    def _require_control(self) -> bool:
+        """Gate destructive engine/service verbs (stop engine, toggle service).
+
+        Stopping the running engine is not code execution, but on a box where a
+        26 GB KV pool takes minutes to warm it is an outage one <img src> away,
+        so it gets the same treatment as recipe writes: localhost is the admin
+        domain, remote callers prove the password. Sends its own 401/423/428.
+        """
+        if self._is_local():
+            return True
+        if not self.app.auth.enabled:
+            self._json({"ok": False,
+                        "error": "a password is required before remote engine or "
+                                "service control; set one in Settings"}, code=428)
+            return False
+        ok, rem = self.app.auth.attempt(self._client_ip(), self._pw_from_headers())
         if ok:
             return True
         if rem > 0:
@@ -199,8 +233,15 @@ class Handler(BaseHTTPRequestHandler):
         Same password + lockout ladder as recipe edits; localhost exempt.
         The vendored UI can't set headers from an iframe URL, so ?pw= is
         accepted too and the parent dashboard forwards it."""
-        if self._is_local() or not self.app.auth.enabled:
+        if self._is_local():
             return True
+        if not self.app.auth.enabled:
+            # Transcripts are private content: no password configured must not
+            # mean "readable from anywhere on the LAN".
+            self._json({"ok": False,
+                        "error": "a password is required before reading traces "
+                                "remotely; set one in Settings"}, code=428)
+            return False
         ip = self._client_ip()
         pw = self._pw_from_headers((qs.get("pw") or [""])[0])
         ok, rem = self.app.auth.attempt(ip, pw)
@@ -319,6 +360,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
         m = re.fullmatch(r"/api/services/([\w-]+)/(start|stop)", u.path)
         if m:
+            if not self._require_control():
+                return
             out = self.app.services.action(m.group(1), m.group(2))
             return self._json(out)
         m = re.fullmatch(r"/api/recipes/?", u.path)
@@ -341,6 +384,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(getattr(self.app.recipes, act)(rid))
         m = re.fullmatch(r"/api/engines-live/(\d+)/stop", u.path)
         if m:
+            if not self._require_control():
+                return
             return self._json(self.app.live_engines.stop(int(m.group(1))))
         m = re.fullmatch(r"/api/probe/?", u.path)
         if m:
@@ -420,10 +465,25 @@ class Handler(BaseHTTPRequestHandler):
                 lo, hi = (1.0, 86400.0) if k == "window_s" else (0.05, 20.0)
                 if not lo <= v <= hi:
                     return self._err(400, f"{k} must be within {lo}..{hi}")
+        # The key whitelist is enforced above, so this cannot reach arbitrary
+        # config. It can still reach pricing -- and pricing is what turns tokens
+        # into the headline "money saved". A LAN peer re-rating the cloud
+        # baseline makes the dashboard report a fabricated saving with no trail,
+        # which breaks the one promise this product makes. Money integrity, not
+        # just authentication: it needs the write password and an audit line.
+        if "pricing" in body and not self._require_write():
+            return
         app = self.app
         if "live_hz" in body:
             body["live_hz"] = min(4.0, max(1.0, float(body["live_hz"])))
         app.cfg.update(body)
+        if "pricing" in body:
+            try:
+                self.app.store.save_event("pricing_changed", {
+                    "by": "local" if self._is_local() else "remote",
+                    "ip": self._client_ip(), "pricing": body["pricing"]})
+            except Exception:  # noqa: BLE001 -- an audit line must not break a save
+                pass
         # persist to data/config.json (merge)
         from . import config as cfg_mod
         f = cfg_mod.DATA / "config.json"
