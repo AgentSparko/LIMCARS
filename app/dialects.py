@@ -25,6 +25,10 @@ Map value forms (per logical):
     "metric_name"
     ["metric_name", "alt_name"]                 first non-null wins
     ["metric_name", {"mode": "prefill*"}]       label match; trailing * = prefix
+    {"sum": [spec, spec, ...]}                   first spec required, the rest
+                                                 added when present (llama.cpp
+                                                 splits prompt into processed +
+                                                 cached)
 
 Metric-name sources ported from TandemDash-Fork proxy/adapters/ (vllm, sglang,
 exl3, tensorfold), whose family names were verified against each upstream's
@@ -44,6 +48,11 @@ def _get(series: dict, spec, kind: str):
     """
     if spec is None:
         return None
+    if isinstance(spec, dict):
+        parts = [_get(series, p, kind) for p in spec["sum"]]
+        if parts[0] is None:
+            return None
+        return sum(p for p in parts if p is not None)
     if isinstance(spec, str):
         name, match, alts = spec, None, []
     else:
@@ -149,18 +158,63 @@ SGLANG = {
     },
 }
 
-# llama.cpp server metrics
+# llama.cpp server metrics (llama-server --metrics; ggml-org/llama.cpp
+# tools/server/server-task.cpp to_metrics()). Upstream facts this map relies on:
+# - prompt_tokens_total counts PROCESSED prompt tokens only; cache reuse is the
+#   separate prompt_tokens_cached_total. LIMCARS' prompt_tokens must include
+#   cached (cached is a subset), so prompt = processed + cached.
+# - tokens_predicted_total is the real name (predicted_tokens_total never
+#   existed upstream; kept as an alt so nothing that read it changes) and it,
+#   like the spec-decode counters, is charged when a request's slot is
+#   released — so decode speed is paired with tokens_predicted_seconds_total
+#   ("gen_completion_charged"), never a per-tick difference.
+# - prompt_seconds_total pairs exactly with the processed count for prefill.
+# - n_decode_total counts prompt batches AND generation steps, so it cannot
+#   tell prefill from decode and is deliberately NOT mapped to iterations.
+# Verified against upstream master on 2026-10-26, not guessed: the registry in
+# tools/server/server-task.cpp emits prompt_tokens_total, prompt_tokens_cached_total,
+# tokens_predicted_total, prompt_seconds_total, tokens_predicted_seconds_total,
+# n_decode_total and the spec_decode_* family; tools/server/README.md and
+# tests/unit/test_metrics.py additionally document requests_processing,
+# requests_deferred, n_busy_slots_per_decode, n_tokens_max, prompt_tokens_seconds
+# and predicted_tokens_seconds.
+#
+# Two names this map previously carried are NOT llama.cpp metrics at all:
+#   llamacpp:kv_cache_usage_ratio  -- vLLM's name (kv_cache_usage_perc) with the
+#       llama.cpp prefix bolted on. A repo-wide search finds it only in
+#       tools/server/bench/bench.py and a disabled workflow, never in the server.
+#   llamacpp:requests_completed    -- zero hits repo-wide.
+# Mapping a metric the engine never emits is not a harmless gap: the gauge reads
+# None forever and the UI shows a dash the operator learns to ignore, or the
+# lookup resolves to a sibling and reports someone else's number. Both are worse
+# than admitting the engine does not measure it, so those entries are dropped and
+# llama.cpp shows "–" for KV% and request count until upstream adds them.
+# "predicted_tokens_total" was likewise removed: the real name is
+# tokens_predicted_total, and keeping the reversed alias only hides a rename.
+
+_LCPP_PROMPT = {"sum": ["llamacpp:prompt_tokens_total", "llamacpp:prompt_tokens_cached_total"]}
 LLAMACPP = {
     "kind": "llamacpp",
     "prefix": "llamacpp:",
+    "gen_completion_charged": True,
     "gauge": {
         "running": "llamacpp:requests_processing",
         "waiting": "llamacpp:requests_deferred",
+        # no KV occupancy metric upstream -- see provenance note above
     },
     "counter": {
-        "prompt_tokens": "llamacpp:prompt_tokens_total",
-        "gen_tokens": "llamacpp:predicted_tokens_total",
-        "req_success": "llamacpp:requests_completed",
+        "prompt_tokens": _LCPP_PROMPT,
+        "cached_tokens": "llamacpp:prompt_tokens_cached_total",
+        "prefix_hits": "llamacpp:prompt_tokens_cached_total",
+        "prefix_queries": _LCPP_PROMPT,
+        "prefill_compute_tokens": "llamacpp:prompt_tokens_total",
+        "prefill_seconds": "llamacpp:prompt_seconds_total",
+        "gen_tokens": "llamacpp:tokens_predicted_total",
+        "decode_seconds": "llamacpp:tokens_predicted_seconds_total",
+        # no request counter upstream -- see provenance note above
+        "draft_tokens": "llamacpp:spec_decode_num_draft_tokens_total",
+        "accepted_tokens": "llamacpp:spec_decode_num_accepted_tokens_total",
+        "drafts": "llamacpp:spec_decode_num_drafts_total",
     },
     "hist": {},
 }
@@ -181,9 +235,12 @@ LLAMACPP = {
 # would subtract a lookup count from a token count and inflate prefill speed.
 # The token-count equivalent is `qse_prompt_tokens_cached_total` ("prompt
 # tokens restored from the state store"), so THAT is prefix_hits.
-# Consequence: `prefix_queries` has no single-counter counterpart (the engine
-# splits lookups into hits+misses), so cache_hit_pct reads None ("–") rather
-# than a fabricated ratio — the module's standing rule.
+# prefix_queries is qse_prompt_tokens_total (cached included): upstream
+# server/METRICS.md defines the hit rate as exactly cached/prompt tokens.
+# cached_tokens (savings split) is the same token count; contract 0.1.0 builds
+# lack it and fall back to qse_prefill_tokens_reused_total ("prompt tokens
+# restored from a snapshot"). Names verified against 0xBakeer/TandemLLM
+# server/metrics.py + server/METRICS.md on 2026-10-26.
 _TANDEM_MAP = {
     "gauge": {
         "running": ["tandemllm:requests_inflight", "qwen38:requests_inflight",
@@ -202,9 +259,13 @@ _TANDEM_MAP = {
         # this is the sampler's engine-native live-prefill path
         "prefill_tokens": ["qse_prefill_tokens_forwarded_total"],
         # TOKENS restored from cache — see the trap note above
-        "prefix_hits": ["qse_prompt_tokens_cached_total"],
+        "prefix_hits": ["qse_prompt_tokens_cached_total", "qse_prefill_tokens_reused_total"],
+        "prefix_queries": ["qse_prompt_tokens_total"],
+        "cached_tokens": ["qse_prompt_tokens_cached_total", "qse_prefill_tokens_reused_total"],
+        "proc_start": ["qse_engine_start_time_seconds"],
         "draft_tokens": ["qse_spec_decode_num_draft_tokens_total"],
         "accepted_tokens": ["qse_spec_decode_num_accepted_tokens_total"],
+        "drafts": ["qse_spec_decode_num_drafts_total"],
     },
     "hist": {
         "ttft": ["qse_time_to_first_token_seconds"],
@@ -268,7 +329,46 @@ TENSORFOLD = {
     },
 }
 
-DIALECTS = {d["kind"]: d for d in (VLLM, SGLANG, LLAMACPP, TANDEMLLM, EXL3, TENSORFOLD)}
+# Atlas (github.com/Atlas-Inf/atlas, crates/spark-server/src/metrics.rs).
+# Exposes no waiting/KV/e2e/itl/prefill/cached signals — those read None ("–").
+# Spec decode: atlas_spec_decode_verify_total{k, outcome} counts VERIFY STEPS,
+# outcome in accept|reject (K=2) or accept_all|accept_partial (dflash/mtp).
+# Acceptance = steps with any accepted draft / all verify steps — the same rule
+# Atlas's own TUI uses (outcome contains "accept"). It is step-level, so no
+# accepted-length or drafts-per-step figure is derived from it.
+ATLAS = {
+    "kind": "atlas",
+    "prefix": "atlas_",
+    "gauge": {
+        "running": "atlas_requests_active",
+    },
+    "counter": {
+        "prompt_tokens": "atlas_prompt_tokens_total",
+        "gen_tokens": "atlas_generation_tokens_total",
+        "req_success": "atlas_requests_total",   # real: registered in metrics.rs
+        # no proc_start. crates/spark-server/src/metrics.rs (master, checked
+        # 2026-10-26) registers exactly:
+        #   atlas_requests_active, atlas_requests_total, atlas_prompt_tokens_total,
+        #   atlas_generation_tokens_total, atlas_decoded_tokens_total,
+        #   atlas_spec_decode_verify_total, atlas_time_to_first_token_seconds,
+        #   atlas_tool_calls_total, atlas_loop_detector_verdicts_total,
+        #   atlas_http_bytes_in_total, atlas_http_bytes_out_total
+        # process_start_time_seconds is not among them: it is Python's
+        # prometheus_client process-collector name, and it also breaks this
+        # dialect's own "atlas_" prefix convention. Left unmapped so uptime shows
+        # "–" instead of a value no engine produced -- the same defect class as
+        # llamacpp:kv_cache_usage_ratio and the Atlas MTP acceptance figure.
+        # verify STEPS, not tokens: kept apart from accepted/draft_tokens so the
+        # token-level spec_accept_pct stays None ("–") for Atlas
+        "spec_steps_ok": ["atlas_spec_decode_verify_total", {"outcome": "accept*"}],
+        "spec_steps": "atlas_spec_decode_verify_total",
+    },
+    "hist": {
+        "ttft": "atlas_time_to_first_token_seconds",
+    },
+}
+
+DIALECTS = {d["kind"]: d for d in (VLLM, SGLANG, LLAMACPP, TANDEMLLM, EXL3, TENSORFOLD, ATLAS)}
 
 
 def detect(body: str) -> str | None:
@@ -292,6 +392,10 @@ def detect(body: str) -> str | None:
     # exactly as before, so adding this cannot reclassify another engine.
     if "\nqse_requests_running" in probe or "\nqse_generation_tokens_total" in probe:
         return "tandemllm"
+    # Atlas: checked after every existing family, on its own two core names only
+    if ("\natlas_requests_" in probe or "\natlas_generation_tokens_total" in probe
+            or probe.startswith("# HELP atlas_")):
+        return "atlas"
     return None
 
 

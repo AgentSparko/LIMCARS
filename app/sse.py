@@ -14,7 +14,6 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
-import time
 from collections import deque
 
 
@@ -25,14 +24,12 @@ class Topic:
         self._ring: deque[tuple[int, str]] = deque(maxlen=replay)
         self._subs: list[queue.Queue] = []
         self._lock = threading.Lock()
-        self.last_ts = 0.0
 
     def publish(self, data: str) -> int:
         sid = next(self._seq)
         with self._lock:
             self._ring.append((sid, data))
             subs = list(self._subs)
-            self.last_ts = time.time()
         for q in subs:
             try:
                 q.put_nowait((sid, data))
@@ -83,7 +80,3 @@ class Broker:
 
     def publish(self, name: str, data: str) -> int:
         return self.topic(name).publish(data)
-
-    def idle_seconds(self, name: str) -> float:
-        t = self._topics.get(name)
-        return time.time() - t.last_ts if t and t.last_ts else 1e9

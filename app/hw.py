@@ -1,5 +1,8 @@
 """Hardware sampler — 1 Hz system + GB10 GPU telemetry, in-process rings.
 
+Discrete-GPU boxes (memory.total reported) also get vram_used/total_gb and,
+with 2+ cards, per-card gpuN_* keys; see _gpu_row.
+
 Notes specific to DGX Spark (GB10, unified memory):
   * nvidia-smi memory.used/total read [N/A] on GB10 — we do NOT fake it;
     unified memory shows up in system memavail instead.
@@ -12,6 +15,7 @@ keep history even with no browser attached (the old bug class).
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -23,29 +27,84 @@ import psutil  # only non-stdlib import in the whole backend
 from .rings import Ring
 
 
-def _nvidia_query() -> dict:
-    if not shutil.which("nvidia-smi"):
-        return {}
-    try:
-        out = subprocess.run(  # noqa: S603 — fixed argv
-            ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,power.draw,"
-             "clocks.current.sm,clocks.max.sm",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=0.9).stdout.strip()
-    except Exception:  # noqa: BLE001
-        return {}
-    parts = [p.strip() for p in out.split(",")]
-    if len(parts) < 5:
+_NV_FIELDS = ("index,utilization.gpu,temperature.gpu,power.draw,power.limit,"
+              "clocks.current.sm,clocks.max.sm,memory.used,memory.total,name")
+
+
+def _parse_nvidia(out: str) -> list[dict]:
+    """One dict per GPU from `nvidia-smi --query-gpu=_NV_FIELDS` CSV.
+    [N/A] reads as None (GB10 reports no memory.* — unified memory)."""
+    gpus = []
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",", 9)]
+        if len(parts) < 10:
+            continue
+
+        def f(i):
+            try:
+                return float(parts[i])
+            except ValueError:
+                return None
+        clock = f(5) if f(5) not in (None, 0) else f(6)  # current SM, else max SM
+        mem_used, mem_total = f(7), f(8)
+        gpus.append({
+            "index": int(f(0)) if f(0) is not None else len(gpus), "name": parts[9],
+            "util": f(1), "temp_c": f(2), "power_w": f(3), "power_limit_w": f(4),
+            "clock_mhz": clock,
+            "mem_used_gb": round(mem_used / 1024, 2) if mem_used is not None and mem_total else None,
+            "mem_total_gb": round(mem_total / 1024, 2) if mem_total else None,
+        })
+    return gpus
+
+
+def _gpu_row(gpus: list[dict]) -> dict:
+    """Flatten per-GPU readings into the hw row. Legacy gpu_* keys keep their
+    single-GPU meaning; with several cards they become box totals (power),
+    worst case (temp) and means (util, clock). gpuN_* keys carry each card."""
+    if not gpus:
         return {}
 
-    def f(i):
-        try:
-            return float(parts[i])
-        except ValueError:
-            return None
-    clock = f(3) if f(3) not in (None, 0) else f(4)  # current SM, else max SM
-    return {"gpu_util": f(0), "gpu_temp_c": f(1), "gpu_power_w": f(2),
-            "gpu_clock_mhz": clock}
+    def vals(k):
+        return [g[k] for g in gpus if g[k] is not None]
+
+    def mean(v):
+        return round(sum(v) / len(v), 1) if v else None
+    if len(gpus) == 1:
+        g = gpus[0]
+        row = {"gpu_util": g["util"], "gpu_temp_c": g["temp_c"], "gpu_power_w": g["power_w"],
+               "gpu_clock_mhz": g["clock_mhz"]}
+    else:
+        p = vals("power_w")
+        row = {"gpu_util": mean(vals("util")), "gpu_temp_c": max(vals("temp_c"), default=None),
+               "gpu_power_w": round(sum(p), 1) if p else None,
+               "gpu_clock_mhz": mean(vals("clock_mhz"))}
+    row["gpu_count"] = len(gpus)
+    lim = vals("power_limit_w")
+    row["gpu_power_limit_w"] = round(sum(lim), 1) if len(lim) == len(gpus) else None
+    # discrete VRAM only when every card reports it; unified (GB10) stays absent
+    if all(g["mem_total_gb"] and g["mem_used_gb"] is not None for g in gpus):
+        row["vram_used_gb"] = round(sum(vals("mem_used_gb")), 2)
+        row["vram_total_gb"] = round(sum(vals("mem_total_gb")), 2)
+    if len(gpus) > 1:
+        for i, g in enumerate(gpus):
+            for k in ("util", "temp_c", "power_w", "clock_mhz", "mem_used_gb", "mem_total_gb"):
+                if g[k] is not None:
+                    row[f"gpu{i}_{k}"] = g[k]
+            if g["mem_total_gb"] and g["mem_used_gb"] is not None:
+                row[f"gpu{i}_mem_pct"] = round(100 * g["mem_used_gb"] / g["mem_total_gb"], 1)
+    return row
+
+
+def _nvidia_query() -> list[dict]:
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        out = subprocess.run(  # noqa: S603 — fixed argv
+            ["nvidia-smi", "--query-gpu=" + _NV_FIELDS, "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=0.9).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    return _parse_nvidia(out)
 
 
 def _hwmon_temp() -> dict:
@@ -72,6 +131,22 @@ def _hwmon_temp() -> dict:
     return temps
 
 
+_BASE_KEYS = ("cpu_pct", "cpu_temp_c", "load1", "load5", "mem_used_gb", "mem_total_gb",
+              "mem_avail_gb", "swap_used_gb", "gpu_util", "gpu_temp_c",
+              "gpu_power_w", "gpu_clock_mhz", "disk_r_mbs", "disk_w_mbs",
+              "net_r_mbs", "net_w_mbs")
+
+
+def series_keys(last: dict) -> tuple:
+    """Charted keys: the fixed set plus whatever gpu*/vram* keys this box has."""
+    # gpu_count is a card count, not a time series. The prefix match below sweeps
+    # up any gpu*/vram* key this box reports, and gpu_count starts with "gpu", so
+    # every hardware panel grew a flat line that reads like a stalled GPU.
+    return _BASE_KEYS + tuple(k for k in last
+                              if k.startswith(("gpu", "vram"))
+                              and k not in _BASE_KEYS and k != "gpu_count")
+
+
 class HwSampler(threading.Thread):
     daemon = True
 
@@ -83,6 +158,7 @@ class HwSampler(threading.Thread):
         self._stop = threading.Event()
         self._last_net = None
         self._persist_acc: list[tuple[float, dict]] = []
+        self.gpus: list[dict] = []   # static identity per card: index, name, vram
         psutil.cpu_percent(interval=None)  # prime
         psutil.net_io_counters()
 
@@ -91,11 +167,8 @@ class HwSampler(threading.Thread):
 
     def snapshot(self, seconds: float | None = None) -> dict:
         rows = self.ring.all() if seconds is None else self.ring.window(seconds)
-        keys = ("cpu_pct", "cpu_temp_c", "load1", "load5", "mem_used_gb", "mem_total_gb",
-                "mem_avail_gb", "swap_used_gb", "gpu_util", "gpu_temp_c",
-                "gpu_power_w", "gpu_clock_mhz", "disk_r_mbs", "disk_w_mbs",
-                "net_r_mbs", "net_w_mbs")
-        return {"hz": self.hz, "latest": self.ring.last(),
+        keys = series_keys(self.ring.last() or {})
+        return {"hz": self.hz, "latest": self.ring.last(), "gpus": self.gpus,
                 "series": {k: [[t, r.get(k)] for t, r in rows] for k in keys}}
 
     def run(self) -> None:
@@ -150,7 +223,10 @@ class HwSampler(threading.Thread):
                     row["net_w_mbs"] = round(nw / dt / 2**20, 2)
         self._last_net = (now, dio, nio)
 
-        row.update(_nvidia_query())
+        gpus = _nvidia_query()
+        self.gpus = [{"index": g["index"], "name": g["name"], "vram_gb": g["mem_total_gb"]}
+                     for g in gpus]
+        row.update(_gpu_row(gpus))
         temps = _hwmon_temp()
         # normalized keys the Classic dash sidebar charts expect
         cpu_t = next((v for k, v in temps.items() if "acpitz" in k or "cpu" in k.lower()), None)
@@ -160,7 +236,6 @@ class HwSampler(threading.Thread):
             row[f"temp_{k}"] = round(v, 1)
 
         self.ring.append(row, now)
-        import json
         self.broker.publish("hw", json.dumps({"t": now, **row}))
         if self.store:
             self._persist_acc.append((now, row))

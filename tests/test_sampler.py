@@ -71,3 +71,61 @@ def test_prefill_never_publishes_an_implausible_speed():
     now = time.time()
     _seed_prefill(s, now, prompt=1_000_000, hits=0, pf_secs=1.0, base_age=40.0)
     assert s._prefill_rate(now) is None      # refused, not clamped and shown
+
+
+# --- llama.cpp: completion-charged counters are paired, never per-tick ------
+
+def _mk_lcpp():
+    cfg = {"live_hz": 2.0, "window_s": 30.0, "ring_seconds": 900}
+    return EngineSampler(cfg, {"id": "l", "url": "http://x", "kind": "llamacpp"}, Broker(), store=None)
+
+
+def test_llamacpp_prefill_pairs_processed_tokens_with_prompt_seconds():
+    s = _mk_lcpp()
+    now = time.time()
+    s._win_delta("prefill_compute_tokens", 3000, 0, now - 5, 1.0)
+    s._win_delta("prefill_seconds", 2.0, 0, now - 5, 1.0)
+    assert s._prefill_rate(now) == 1500.0      # no prefill_time hist needed
+
+
+def test_llamacpp_decode_paired_with_compute_seconds():
+    s = _mk_lcpp()
+    now = time.time()
+    s._win_delta("gen_tokens", 500, 0, now - 1, 0.5)    # one completion burst
+    s._win_delta("decode_seconds", 10.0, 0, now - 1, 0.5)
+    assert s._paired_rate("gen_tokens", "decode_seconds") == 50.0
+    assert s._paired_rate("gen_tokens", "missing") is None
+
+
+class _SavedStore:
+    def __init__(self, saved):
+        self.saved = saved
+
+    def get_counter_raw(self, _id):
+        return self.saved
+
+
+def test_restart_restores_baseline_when_a_signal_was_dropped():
+    """A baseline written while llama.cpp still mapped `iterations` must still
+    restore once that mapping is gone — or downtime traffic is swallowed."""
+    s = _mk_lcpp()
+    now = time.time()
+    s.store = _SavedStore((now - 120, {"prompt_tokens": 1000, "gen_tokens": 1500,
+                                       "cached_tokens": 0, "req_success": 0,
+                                       "iterations": 1800}))
+    s._rate_minute(now, {"prompt_tokens": 1000, "gen_tokens": 1700, "cached_tokens": 0})
+    assert s._rate_prev["gen_tokens"] == 1500 and s._rate_prev["iterations"] == 0
+    assert s._rate_prev_t == now - 120
+
+
+def test_restart_still_rejects_a_live_counter_that_went_backwards():
+    s = _mk_lcpp()
+    now = time.time()
+    s.store = _SavedStore((now - 120, {"prompt_tokens": 5000, "gen_tokens": 1500}))
+
+    class _Empty(_SavedStore):
+        def counter_totals(self, *_a):
+            return {"empty": False}
+    s.store = _Empty(s.store.saved)
+    s._rate_minute(now, {"prompt_tokens": 1000, "gen_tokens": 1700})
+    assert s._rate_prev_t == now and s._rate_prev["prompt_tokens"] == 1000

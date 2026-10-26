@@ -11,7 +11,6 @@ in a 48 h ring; the chart shows the last 30 min.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import time

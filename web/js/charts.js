@@ -85,7 +85,11 @@ export class LineChart {
     });
     this._svg.addEventListener('mouseleave', () => { this.hoverX = null; this._dirty = true; tip.style.display = 'none'; });
     _charts.add(this);
-    new ResizeObserver(() => { this._dirty = true; }).observe(host);
+    this._ro = new ResizeObserver(() => { this._dirty = true; });
+    this._ro.observe(host);
+  }
+  destroy() {   // detached cards must stop being redrawn and observed
+    _charts.delete(this); this._ro.disconnect(); tip.style.display = 'none';
   }
   setWindow(sec) { this.win = sec; this._dirty = true; }
   setAutoY(on) {
