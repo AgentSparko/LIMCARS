@@ -26,6 +26,7 @@ class Store:
         self.persist_s = persist_seconds
         # how long each rung of the ladder is kept; see app/tiers.py
         self.minute_days = max(1.0, float(minute_days))
+        self._ladder_checked = False    # see _ensure_ladder: fold before trusting the ladder
         self.history_years = min(20.0, max(0.5, float(history_years)))
         self._lock = threading.Lock()
         self._con = sqlite3.connect(path, check_same_thread=False)
@@ -318,6 +319,33 @@ class Store:
                 "SELECT t, raw FROM counter_raw WHERE engine=?", (engine,)).fetchone()
         return (r[0], json.loads(r[1])) if r else None
 
+    def _ensure_ladder(self, horizon: int) -> None:
+        """Build the aggregate rungs before any reader is allowed to trust them.
+
+        The reader partitions history at the horizon: rows below it are answered by the ladder,
+        not by the minutes. On a process that has folded nothing yet — first boot after an
+        upgrade, or the seconds before the sampler writes its first bucket — the ladder is empty
+        and every aged row would be silently dropped from the money totals (observed live: the
+        headline fell 2.3% on restart, 68.9 M prompt tokens missing). One cheap probe makes the
+        read self-healing instead of trusting that some scheduler ran.
+
+        Caller must hold self._lock.
+        """
+        from . import tiers
+        try:
+            if self._ladder_checked:
+                return
+            self._ladder_checked = True
+            empty = self._con.execute("SELECT COUNT(*) FROM counter_hour").fetchone()[0] == 0
+            if not empty:
+                return
+            aged = self._con.execute("SELECT 1 FROM counter_buckets WHERE ts < ? LIMIT 1",
+                                     (horizon,)).fetchone()
+            if aged:
+                tiers.rollup_all(self._con)
+        except Exception:                                   # noqa: BLE001 - a read must not die
+            pass
+
     def counter_totals(self, engine: str, since_ts: int | None,
                        real_only: bool = False) -> dict:
         """Totals across BOTH the raw minutes and the aggregate ladder.
@@ -332,6 +360,7 @@ class Store:
         horizon = tiers.horizon_ts(now, self.minute_days)      # minutes | hourly
         hour_cap = tiers.hour_horizon(now, self.history_years)  # hourly | daily
         with self._lock:
+            self._ensure_ladder(horizon)
             a = self._bucket_totals(engine, horizon if since_ts is None
                                     else max(int(since_ts), horizon), real_only)
             # the hourly leg is floored at hour_cap: if history_years was just raised, old hour
@@ -451,6 +480,7 @@ class Store:
         horizon = tiers.horizon_ts(time.time(), self.minute_days)
         since = int(since_ts)
         with self._lock:
+            self._ensure_ladder(horizon)
             brows = self._con.execute(
                 "SELECT ts/86400, COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
                 " COALESCE(SUM(gen),0),"

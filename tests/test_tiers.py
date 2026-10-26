@@ -285,6 +285,33 @@ def test_history_years_setting_bounds_the_hour_tier(store):
         "the daily rung must hold what the hourly rung gave up"
 
 
+def test_a_reader_never_trusts_an_unbuilt_ladder(tmp_path):
+    """The first read after an upgrade must not under-report.
+
+    The reader answers rows below the horizon from the aggregate rungs. If nothing has folded
+    them yet (fresh process, scheduler never ran), trusting an empty ladder silently drops every
+    aged row out of the money totals — measured live on the operator's dashboard: the headline
+    fell 2.3% (68.9 M prompt tokens) immediately after restarting with the ladder installed.
+    """
+    path = str(tmp_path / "unbuilt.db")
+    s1 = Store(path, persist_seconds=3600, minute_days=3650, history_years=6)
+    _seed(s1, [40, 60, 90], per_hour=4)
+    whole = s1._con.execute(
+        "SELECT COALESCE(SUM(prompt),0) FROM counter_buckets WHERE engine='e1'").fetchone()[0]
+    assert whole > 0
+    # the state a brand-new process sees: minutes exist, the ladder has never been built
+    s1._con.execute("DELETE FROM counter_hour")
+    s1._con.execute("DELETE FROM counter_day")
+    s1._con.commit()
+    s2 = Store(path, persist_seconds=3600, minute_days=30, history_years=6)
+    assert s2._con.execute("SELECT COUNT(*) FROM counter_hour").fetchone()[0] == 0
+    got = s2.counter_totals("e1", None)
+    assert got["prompt"] == pytest.approx(whole, rel=1e-9), \
+        "an unbuilt ladder must not silently subtract history from the money"
+    assert s2._con.execute("SELECT COUNT(*) FROM counter_hour").fetchone()[0] > 0, \
+        "the read should have healed the ladder itself"
+
+
 def test_hour_totals_real_only_excludes_seed(store):
     now = int(time.time())
     base = (now - 60 * DAY) // HOUR * HOUR
