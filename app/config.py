@@ -46,7 +46,7 @@ def load() -> dict:
     f = DATA / "config.json"
     if f.exists():
         try:
-            cfg.update(json.loads(f.read_text()))
+            cfg.update(json.loads(f.read_text(encoding="utf-8")))
         except Exception as exc:  # noqa: BLE001 — bad config must not brick boot
             print(f"[config] ignoring {f}: {exc}")
     if v := os.environ.get("LIMCARS_PORT"):

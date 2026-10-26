@@ -28,8 +28,24 @@ def _launch_cmd(port: int | None) -> str | None:
     """Full launch 'recipe' = the serving process command line, read from
     /proc (same-user). Match: mentions vllm AND the engine's --port."""
     import glob
+
+    from . import procs
     best = None
-    for cl in glob.glob("/proc/[0-9]*/cmdline"):
+    if not procs.LINUX_PROC:
+        # sorted(): psutil's pid order is arbitrary, and the port-less path kept
+        # overwriting `best`, so "the launch recipe" was last-seen-wins.
+        for pid in sorted(procs.pids()):
+            parts = procs.argv(pid)
+            if not parts or "vllm" not in " ".join(parts[:3]):
+                continue
+            joined = " ".join(parts)
+            if port and f"--port {port}" not in joined and f"--port={port}" not in joined:
+                continue
+            best = joined
+            break                      # first match in pid order, not last-seen
+        return best
+    for cl in sorted(glob.glob("/proc/[0-9]*/cmdline"),
+                     key=lambda p: int(p.split("/")[2])):   # pid order, not glob order
         try:
             raw = open(cl, "rb").read()
         except OSError:
@@ -43,8 +59,7 @@ def _launch_cmd(port: int | None) -> str | None:
         if port and f"--port {port}" not in joined and f"--port={port}" not in joined:
             continue
         best = joined
-        if port:
-            break
+        break                          # first match in pid order, not last-seen
     return best
 
 

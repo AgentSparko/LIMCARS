@@ -189,7 +189,7 @@ class HwSampler(threading.Thread):
         du = shutil.disk_usage("/")
         try:
             load1, load5, _ = os.getloadavg()
-        except OSError:
+        except (OSError, AttributeError):   # Windows has no load average: "–"
             load1 = load5 = None
         dio = psutil.disk_io_counters()
         nio = psutil.net_io_counters()

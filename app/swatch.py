@@ -80,7 +80,7 @@ def batches() -> dict:
                 mf = p / "manifest.json"
                 try:
                     if mf.exists():
-                        man = json.loads(mf.read_text())
+                        man = json.loads(mf.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     man = None
                 logs = [f.name for f in p.iterdir() if f.is_file() and _TASK_RE.match(f.name)]
@@ -110,7 +110,7 @@ def manifest(bid: str):
     if not d:
         return None
     try:
-        return json.loads((d / "live" / bid / "manifest.json").read_text())
+        return json.loads((d / "live" / bid / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 

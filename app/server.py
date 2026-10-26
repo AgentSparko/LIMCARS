@@ -19,6 +19,7 @@ import json
 import hmac
 import logging
 import mimetypes
+import os
 import posixpath
 import re
 import threading
@@ -65,7 +66,7 @@ class _Settings:
         self.lock = threading.Lock()
         self.data = dict(SETTINGS_DEFAULTS)
         try:
-            self.data.update(json.loads(self.path.read_text()))
+            self.data.update(json.loads(self.path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -78,7 +79,7 @@ class _Settings:
             self.data.update(patch)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=1))
+            tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
             tmp.replace(self.path)
 
 
@@ -123,6 +124,13 @@ _TOPIC_RE = re.compile(r"[A-Za-z0-9:_-]{1,64}")
 # static text assets are gzipped once per (mtime, size) and served to any
 # client that accepts it; the bytes the browser decodes are unchanged
 _GZIP_MIN = 1024
+if os.name == "nt":
+    # Windows answers guess_type from the registry, which often maps .js to
+    # text/plain — browsers then refuse to run the dashboard's ES modules
+    for _ext, _t in ((".js", "text/javascript"), (".css", "text/css"),
+                     (".html", "text/html"), (".svg", "image/svg+xml"),
+                     (".json", "application/json")):
+        mimetypes.add_type(_t, _ext)
 _GZIP_TYPES = ("text/", "application/javascript", "application/json", "image/svg+xml")
 _gzip_cache: dict[str, tuple[tuple[int, int], bytes]] = {}
 
@@ -525,11 +533,11 @@ class Handler(BaseHTTPRequestHandler):
         disk = {}
         if f.exists():
             try:
-                disk = json.loads(f.read_text())
+                disk = json.loads(f.read_text(encoding="utf-8"))
             except ValueError:
                 disk = {}
         disk.update({k: v for k, v in body.items() if k in self._CONFIG_ALLOWED})
-        f.write_text(json.dumps(disk, indent=2))
+        f.write_text(json.dumps(disk, indent=2), encoding="utf-8")
         self._json({"ok": True, "config": {k: app.cfg.get(k) for k in body}})
 
     # ---------------- API ----------------
@@ -862,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(403, "forbidden")
         f = (config.WEB / safe).resolve()
         # audit: normpath alone still followed a symlink placed under web/
-        if not str(f).startswith(str(config.WEB.resolve()) + "/"):
+        if not f.is_relative_to(config.WEB.resolve()):
             return self._err(403, "forbidden")
         if not f.is_file():
             return self._err(404, "not found")
