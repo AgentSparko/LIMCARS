@@ -417,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._settings_patch()
         return self._err(404, "not found")
 
-    _CONFIG_ALLOWED = {"pricing", "window_s", "live_hz", "hw_hz"}
+    _CONFIG_ALLOWED = {"pricing", "window_s", "live_hz", "hw_hz", "persist_seconds"}
     SETTING_DEFAULTS = SETTINGS_DEFAULTS
 
     def _body_json(self) -> dict | None:
@@ -456,13 +456,20 @@ class Handler(BaseHTTPRequestHandler):
                     isinstance(v, bool) or not isinstance(v, (int, float))
                     for v in pv.values()):
                 return self._err(400, "pricing must be a dict of numbers")
-        for k in ("window_s", "live_hz", "hw_hz"):
+        for k in ("window_s", "live_hz", "hw_hz", "persist_seconds"):
             if k in body:
                 try:
                     v = float(body[k])
                 except (TypeError, ValueError):
                     return self._err(400, f"{k} must be a number")
-                lo, hi = (1.0, 86400.0) if k == "window_s" else (0.05, 20.0)
+                if k == "window_s":
+                    lo, hi = 1.0, 86400.0
+                elif k == "persist_seconds":
+                    # 5 min .. 7 d. Unbounded here is how a dashboard becomes
+                    # a multi-GB sqlite file the operator did not ask for.
+                    lo, hi = 300.0, 604800.0
+                else:
+                    lo, hi = 0.05, 20.0
                 if not lo <= v <= hi:
                     return self._err(400, f"{k} must be within {lo}..{hi}")
         # The key whitelist is enforced above, so this cannot reach arbitrary
@@ -484,6 +491,9 @@ class Handler(BaseHTTPRequestHandler):
                     "ip": self._client_ip(), "pricing": body["pricing"]})
             except Exception:  # noqa: BLE001 -- an audit line must not break a save
                 pass
+        if "persist_seconds" in body:
+            # take effect now, not at next restart
+            app.store.set_persist_window(float(body["persist_seconds"]))
         # persist to data/config.json (merge)
         from . import config as cfg_mod
         f = cfg_mod.DATA / "config.json"

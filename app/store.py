@@ -80,10 +80,19 @@ class Store:
                               (time.time() - 30 * 86400,))
             self._con.commit()
 
+    # the only (table, column) pairs this class will ever delete on
+    _PRUNEABLE = frozenset({("engine_samples", "t"), ("hw_samples", "t")})
+
     def _prune(self, table: str, col: str) -> None:
+        # The statement is built by f-string because SQLite cannot bind
+        # identifiers. That is only safe while both names are literals, so pin
+        # them: a future caller that threads a request value through here must
+        # fail loudly here rather than become injection at runtime.
+        if (table, col) not in self._PRUNEABLE:
+            raise ValueError(f"refusing to prune {table}.{col}")
         cutoff = time.time() - self.persist_s
         with self._lock:
-            self._con.execute(f"DELETE FROM {table} WHERE {col} < ?", (cutoff,))  # noqa: S608 — fixed names
+            self._con.execute(f"DELETE FROM {table} WHERE {col} < ?", (cutoff,))  # noqa: S608 — pinned above
             self._con.commit()
 
     def save_counter_bucket(self, engine: str, ts: int, b: dict) -> None:
@@ -116,6 +125,42 @@ class Store:
             self._con.execute("DELETE FROM counter_buckets WHERE ts < ?",
                               (int(time.time()) - 366 * 86400,))
             self._con.commit()
+
+    def set_persist_window(self, seconds: float) -> float:
+        """Change the 1 s ring window at runtime and prune immediately, so a
+        shrink takes effect without a restart (a restart would still leave the
+        old rows until the next write). Clamped to the Settings range.
+        """
+        self.persist_s = min(604800.0, max(300.0, float(seconds)))
+        self._prune("engine_samples", "t")
+        self._prune("hw_samples", "t")
+        return self.persist_s
+
+    def compact(self, reclaim_ratio: float = 0.10) -> dict:
+        """Return pages to the filesystem after pruning.
+
+        DELETE does not shrink the file: freed pages sit on the freelist and
+        the DB stays at its high-water mark forever, which is why a 3-day
+        history file measured 615 MB with every page live. VACUUM is a full
+        rewrite (I/O proportional to live data), so it only runs when the
+        freelist actually holds something worth taking back.
+        """
+        with self._lock:
+            pages = self._con.execute("PRAGMA page_count").fetchone()[0]
+            free = self._con.execute("PRAGMA freelist_count").fetchone()[0]
+            page_size = self._con.execute("PRAGMA page_size").fetchone()[0]
+            out = {"pages": pages, "free_pages": free, "page_size": page_size,
+                   "bytes_before": (pages * page_size) if pages else 0,
+                   "vacuumed": False}
+            if not pages or free < pages * reclaim_ratio:
+                return out
+            self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._con.execute("VACUUM")
+            after = self._con.execute("PRAGMA page_count").fetchone()[0]
+            out["vacuumed"] = True
+            out["pages"] = after
+            out["bytes_after"] = after * page_size
+            return out
 
     def save_counter_raw(self, engine: str, t: float, raw: dict) -> None:
         """Last-seen ABSOLUTE engine counters. Survives limcars restarts so
