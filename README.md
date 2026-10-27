@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 165 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 255 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -132,6 +132,7 @@ Handy environment variables:
 | `LIMCARS_PORT` | `8951` | dashboard port |
 | `LIMCARS_DB` | `data/limcars.db` | history database path |
 | `LIMCARS_TOKEN` | unset | shared token required by the read/trace endpoints (`app/config.py`); the password in the header is the usual way to get the same protection -- this exists so a headless box can be gated before anyone opens the UI |
+| `LIMCARS_DATA` | `<repo>/data` | directory holding every runtime state file -- `config.json`, `auth.json`, `recipes.json`, `pricing.json`, the ssh control dir and the default database. Relocate it in one knob (a read-only or shared-state install, or a test suite that must not touch the live dashboard's files) |
 
 ## 🔁 Autorun — survive reboots, forget about it
 
@@ -213,6 +214,168 @@ agent does well. 🤖
 Everything stays on your box. `data/` (history, settings, recipes, password
 hash, logs) is gitignored and never leaves the machine. LIMCARS makes no
 outbound requests except to the inference engines you point it at. 🏠
+
+## 💾 Storage, retention and self-tidy
+
+**What is kept, and for how long.**
+
+| data | resolution | retention | default |
+|---|---|---|---|
+| engine samples | per tick (`live_hz`, 2.0/s) | `persist_seconds` | 48 h |
+| hardware samples | per tick (`hw_hz`, 1.0/s) | `persist_seconds` | 48 h |
+| counter buckets (the money history) | per busy minute, per engine | 366 d | — |
+
+Pruning runs on every write, so the 1-second rings stay a ring and never a year of them. The
+charts cap at one hour and the money math reads the buckets, so nothing is lost from the
+live views — the rings are recent drill-down detail.
+
+**The database tidies itself.** SQLite never returns deleted pages to the filesystem: after a
+prune they sit on the freelist and the file keeps its high-water mark forever. A live install
+measured 818 MB with 322 MB (39%) of it dead pages. So the app reclaims it on its own — once
+a few seconds after boot, which is the moment right after an update, and then daily:
+
+| knob (in `data/config.json`) | default | meaning |
+|---|---|---|
+| `auto_compact` | `true` | master switch for the self-tidy thread |
+| `compact_delay_s` | `45` | grace period after boot before the first pass |
+| `compact_interval_s` | `86400` | how often it re-checks |
+| `compact_reclaim_ratio` | `0.10` | only rewrite the file if the freelist is at least this share of it |
+| `compact_min_bytes` | `20971520` | ignore small databases — nothing to win |
+| `compact_disk_headroom` | `1.2` | refuse to start unless free disk ≥ this × the file |
+
+`GET /api/storage` shows what it decided (`runs`, `last_vacuum`, `freed_bytes_total`, a plain
+`note` explaining any refusal) plus file size, freelist pages and row counts. `?tables=1`
+adds per-table bytes; it walks every page, so leave it off the polling path.
+
+**Prefer a cron/systemd timer?** The same engine is a script, so the nightly job and a
+one-shot migration can never drift apart:
+
+```bash
+python3 scripts/limcars_tidy.py --check              # dry run: measures, writes nothing
+python3 scripts/limcars_tidy.py --apply              # backup -> gate -> VACUUM -> verify
+python3 scripts/limcars_tidy.py --install-timer      # daily user timer (04:30, randomised)
+```
+
+It keeps a `*.pretidy-<stamp>` backup, refuses to run against an open database unless
+`--allow-live`, refuses when the disk lacks headroom, and **aborts and restores** if any
+headline figure moves: a reclaim that changed a token total is a bug, not a saving.
+
+## 📆 Six years of history, in about 48 MB
+
+The whole database used to be 1-second rings, and the money table was deleted at 366 days —
+the expensive data was the data nobody renders, and the cheap data you actually want for six
+years was the one being thrown away. Now the data is a **ladder**, and each rung keeps only
+what the dashboard reads from it:
+
+| Rung | Granularity | Kept | Measured cost |
+|---|---|---|---|
+| `engine_samples` / `hw_samples` | 1 s | `persist_seconds` (default 48 h) | ~242 MB/day — charts never zoom past 1 h, so nothing older needs it |
+| `counter_buckets` | 1 min | `minute_bucket_days` (default **30 d**) | ~14 KB/day |
+| `counter_hour` | 1 h | `history_years` (default **1 y**, set it to 6) | ~12 KB/day |
+| `counter_day` | 1 day | **forever** | ~40 B/day |
+
+Six years at that ladder measured **≈48 MB**, against 818 MB for two days of the old layout.
+
+Change the horizon in `data/config.json` and restart:
+
+```json
+{ "history_years": 6, "minute_bucket_days": 30 }
+```
+
+**A rung is never deleted until the rung that replaces it has been proven equal.** Before any
+trim, the minute rows are folded into hours, then each hour is checked row-for-row — tokens,
+requests, iterations, money as earned, and its row count — against the aggregate that claims to
+summarise it. If a single hour disagrees, the prune is *blocked* and the minutes stay, with the
+reason reported. Averages are never averaged: peaks travel as `MAX`, floors as `MIN`, and a ratio
+like speculative-accept rate travels as its numerator and denominator and is re-derived on read,
+because averaging percentages is how dashboards quietly go wrong. Occupancy stays measured too —
+an aggregated hour carries how many of its minutes actually produced a token.
+
+Verified against a copy of a live 44-day database: 519 minute rows (69.5 M prompt tokens) folded
+away, and the dashboard's own reader returned `prompt 3,054,645,010 · cached 2,720,126,615 ·
+gen 27,960,289 · reqs 28,965 · $1.296333` **identical before and after**, now served from three
+rungs instead of one. Check it yourself at `/api/storage` → `ladder`, or migrate an old install
+with:
+
+```bash
+python3 scripts/limcars_tidy.py --tier --history-years 6
+```
+
+In plain words: the dashboard keeps a 1-second memory for two days, a minute-by-minute memory
+for a month, an hourly memory for as long as you ask (six years costs about 48 MB), and a daily
+memory forever — and it is not allowed to forget anything until it has proven it can remember it
+another way.
+
+## 🔬 One hour of samples, and the stats the dashboard actually shows
+
+The two ring tables (`engine_samples`, `hw_samples`) were 94% of the database — 540 MB for 48
+hours. The fix came from measuring two things rather than guessing: **what is in a row**, and
+**which field any reader names**.
+
+*What is in a row.* An engine row carried 65 fields. A copy of the projected-savings bubble
+(`savings`) was 24.4% of the bytes and no DB reader ever looked at it — the bubbles read it off
+the live SSE row. 29 latency twins (`itl_*`, `queue_time_*`, `prefill_time_*`, `decode_time_*`)
+added 34.8% with no consumer at all.
+
+*What can be rendered.* The charts' largest window is 3600 s, sparklines stride at 60/120 s, and
+the browser reads exactly two things out of SQLite rings: `t` and `cache_hit_pct` (the
+prefix-cache bubble's 7-day lifetime sparkline). Everything else it gets from memory. So:
+
+| tier | kept | why |
+|---|---|---|
+| ring samples (1 s) | **1 hour** | the largest window any chart can plot |
+| `spark_stats` | 6 h @ 60 s (`savings_month`), 24 h @ 120 s (`savings_year`), 8 d @ 60 s (`cache_hit_pct`) | the three series displayed past the hour — ~200 points each |
+| minute buckets | 30 d | money, duty hours |
+| hourly / daily totals | 6 y / forever | see next section |
+
+**Measured: 540 MB → 10.3 MB.** The whole 7-day lifetime sparkline costs 11 KB; it used to cost
+~500 MB of 1-second samples. Tunables in `data/config.json`: `persist_seconds` (ring horizon), `ring_full_seconds` (how long a
+sample keeps second detail), `spark_hours` (how long the sparkline stats survive — keep it ≥ 8 days
+or a visible curve ages out early; `/api/storage` reports `rings.spark_stats.short`).
+
+Storage is a **deny-list, decided by a gate**. `tests/test_render_contract.py` derives the render
+contract from the app itself — `sampler.SERIES_KEYS`, `hw.series_keys()` (whose `_BASE_KEYS`
+charts `load1`, `swap_used_gb`, `disk_r_mbs`, names a JS grep never finds), the dynamically
+concatenated `ttft`/`e2e` families, and every identifier the client source mentions — and asserts
+the deny-lists never touch any of them. An unlisted field is kept, because "my grep didn't find
+it" is not evidence of being unread: that is precisely how the hardware panels once lost their
+load and disk series.
+
+Two scripts make any future storage change provable rather than plausible:
+
+```
+python3 scripts/limcars_contract_snapshot.py before.json      # before the change
+python3 scripts/limcars_contract_diff.py before.json after.json
+```
+
+The diff re-fetches every endpoint the browser calls and asserts: no contract field systematically
+disappeared, physical constants identical per minute, lifetime counters monotonic in time, no
+minute of history lost, sparkline points unchanged, and the money never smaller. It derives its
+contract from the same app-side source, so it cannot drift from what is rendered.
+
+## 💵 Money is recorded as it was earned
+
+Cloud prices move — the price fetcher refreshes `data/pricing.json` and you can edit it by
+hand. Every bucket therefore stores its cost (`cost_hot`, `cost_base`, `cost_nocache`) at the
+moment it is written, together with the rates that produced it (`price_slug`, `price_in`,
+`price_out`, `price_cw`, `price_cr`, `price_crhot`, `priced_at`, `price_src`). The stamp is
+**write-once**: re-saving a minute after a restart, a gap backfill or an import refreshes the
+tokens but can never re-price money that was already earned, so last March's savings stay what
+they were when March happened.
+
+Readers report their basis rather than quietly mixing two:
+
+- `"money_basis": "as_written"` / `"priced": "as_written"` — every row in the range was priced
+  when it occurred.
+- `"mixed"` — some rows predate stamping; those are re-priced at today's rate and the figure
+  says so.
+- `"current"` — the whole range predates stamping (e.g. an imported history), so the money is
+  today's rate, not history.
+
+Buckets whose cost was never known stay `NULL`, never `0.0`: unknown money must not render as
+a free hour. Rates used for *projections* (the capacity claim, the per-hour rate anchor) are
+deliberately today's prices — that is what "what would this cost now" means — while every
+historical total is money as earned.
 
 ## 🤝 Contributing
 

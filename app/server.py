@@ -90,7 +90,11 @@ class Limcars:
         self.cfg = cfg
         self.broker: Broker = Broker()
         from .store import Store
-        self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)))
+        self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)),
+                           minute_days=float(cfg.get("minute_bucket_days", 30)),
+                           history_years=float(cfg.get("history_years", 1)),
+                           ring_full_seconds=float(cfg.get("ring_full_seconds", 3600)),
+                           spark_hours=float(cfg.get("spark_hours", 192)))
         from .sampler import EngineManager
         self.engines = EngineManager(cfg, self.broker, self.store)
         from .hw import HwSampler
@@ -109,9 +113,21 @@ class Limcars:
         from .clients import ClientSampler
         self.clients = ClientSampler(self.broker)
         self.clients.start()
-        self.settings = _Settings(cfg.get("settings_path", "data/settings.json"))
+        # was "data/settings.json" (relative): a process booted from anywhere but
+        # the repo root silently read/wrote a different file, and one booted IN the
+        # repo shared the live dashboard's settings. Resolve it through the data dir.
+        self.settings = _Settings(cfg.get("settings_path")
+                                  or str(config.DATA / "settings.json"))
         from .auth import AuthGate
         self.auth = AuthGate(cfg.get("auth_path") or str(config.DATA / "auth.json"))
+        # Reclaim the history database ourselves. Users update by pulling and
+        # restarting; the installs that never installed a tidy timer are the ones
+        # still holding a high-water-mark file full of freelist pages, so the
+        # first pass runs a few seconds after boot (right after an update) and
+        # then daily. Never deletes rows — only returns pages to the filesystem.
+        from .maintenance import Maintenance
+        self.maintenance = Maintenance(cfg, self.store)
+        self.maintenance.start()
 
     def settings_all(self) -> dict:
         return self.settings.all()
@@ -144,6 +160,33 @@ def _gzipped(f: Path, data: bytes) -> bytes:
     gz = gzip.compress(data, 9, mtime=0)
     _gzip_cache[str(f)] = (key, gz)
     return gz
+
+
+def _window_seconds(qs: dict, cfg: dict, cap_extra: float = 300.0,
+                    default: float | None = None) -> float:
+    """Parse `?seconds=` defensively and cap it at what the store could ever hold.
+
+    Uncapped, one query string asks SQLite for every sample it has — `WHERE t >= <year 1970>` —
+    and `store.history()` runs that under the store lock the sampler writes through, so a single
+    request from any LAN host stalls sampling and can OOM the reader on a big database. The
+    cap is the retention window plus slack: rows older than it do not exist, so the answer is
+    identical either way. This was audited on /api/snapshot long ago; /api/history grew the same
+    hole (and a second scan of spark_stats with it) and had no guard, which is why the parsing
+    lives here now instead of being written twice.
+    """
+    import math
+    cap = float(cfg.get("persist_seconds", 3600)) + cap_extra
+    raw = (qs.get("seconds") or [None])[0]
+    if raw is None:
+        # keep whatever default the route historically had rather than inventing a new one here
+        return cap if default is None else min(default, cap)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("seconds must be a number")
+    if not math.isfinite(v) or v <= 0:
+        raise ValueError("seconds must be a positive finite number")
+    return min(v, cap)
 
 
 def _sse_format(topic: str, sid: int, data: str) -> bytes:
@@ -563,6 +606,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             return self._json({"ok": True, "version": VERSION,
                                "uptime_s": round(time.time() - _START_T, 1)})
+        if path == "/api/storage":
+            # read-only introspection: file size, freelist, what the self-tidy thread
+            # decided last time. ?tables=1 adds dbstat (walks every page, so it is
+            # opt-in and never on a polling path).
+            want_tables = (qs.get("tables") or ["0"])[0] in ("1", "true", "yes")
+            return self._json({"ok": True,
+                               "maintenance": app.maintenance.snapshot(),
+                               "db": app.store.storage_stats(tables=want_tables),
+                               # the ladder: how full each rung is, and where the seams are.
+                               # An operator verifying an upgrade reads this next to the money.
+                               "ladder": app.store.ladder_counts(),
+                               "rings": app.store.ring_stats(),
+                               "windows": {
+                                   "persist_seconds": app.cfg.get("persist_seconds", 172800),
+                                   "minute_bucket_days": app.cfg.get("minute_bucket_days", 30),
+                                   "history_years": app.cfg.get("history_years", 1)}})
         if path == "/api/auth/status":
             return self._json({"enabled": app.auth.enabled,
                                "locked_for_you": round(app.auth.locked_for(self._client_ip()), 1)})
@@ -596,7 +655,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/history":
             eng = (qs.get("engine") or [None])[0]
-            secs = float((qs.get("seconds") or ["900"])[0])
+            try:
+                secs = _window_seconds(qs, self.app.cfg, default=900.0)
+            except ValueError as exc:
+                return self._err(400, str(exc))
             if eng:
                 return self._json({"ok": True, "rows": app.store.history("engine_samples", eng, secs)})
             return self._json({"ok": True, "rows": app.store.history("hw_samples", None, secs)})
@@ -820,7 +882,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(r) if r is not None else self._err(404, "no batch")
         m = re.fullmatch(r"/subagent-watch/main-transcript/([\w.-]+)/([\w.-]+)/?", path)
         if m:
-            limit = int((qs.get("limit") or ["200"])[0])
+            try:
+                limit = int((qs.get("limit") or ["200"])[0])
+            except (TypeError, ValueError):
+                return self._err(400, "limit must be an integer")
             r = swatch.main_transcript(m.group(1), m.group(2), limit)
             return self._json(r) if r else self._err(404, "no session")
         m = re.fullmatch(r"/subagent-watch/transcript/([\w.-]+)/([\w.-]+)/?", path)

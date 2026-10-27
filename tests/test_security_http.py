@@ -222,6 +222,11 @@ def live():
     data = tempfile.mkdtemp(prefix="limcars-sectest-")
     port = 8990 + os.getpid() % 90
     env = dict(os.environ, LIMCARS_PORT=str(port), LIMCARS_HOST="0.0.0.0",
+               # NOT just the database: this fixture boots with cwd=<repo>, so
+               # config.json, auth.json and recipes.json would otherwise be the
+               # real files next to the running dashboard. A test here once
+               # POSTed /api/auth/set and put a live password on production.
+               LIMCARS_DATA=data,
                LIMCARS_DB=os.path.join(data, "h.db"))
     proc = subprocess.Popen([sys.executable, "-m", "app"], cwd=root, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -256,6 +261,31 @@ def _req(port, host, method, path, body=None):
     data = r.read()[:300].decode("utf-8", "replace")
     c.close()
     return r.status, data
+
+
+def test_one_query_string_cannot_ask_for_every_sample_ever_stored():
+    """`?seconds=` reaches `store.history()`/`snapshot()` unfiltered otherwise, and those read
+    under the store lock the sampler writes through: one LAN request with seconds=1e18 was a
+    sampler stall and an OOM on a big database. The cap is retention + slack, so the answer a
+    user gets is unchanged — only the cost is bounded."""
+    from app.server import _window_seconds
+    cfg = {"persist_seconds": 3600}
+    assert _window_seconds({"seconds": ["1e18"]}, cfg) == 3900.0
+    assert _window_seconds({"seconds": ["900"]}, cfg) == 900.0        # a real window passes through
+    assert _window_seconds({}, cfg) == 3900.0                          # default = everything we keep
+    for bad in ("abc", "-5", "0", "nan", "inf"):
+        with pytest.raises(ValueError):
+            _window_seconds({"seconds": [bad]}, cfg)
+
+
+def test_the_ring_endpoint_refuses_garbage_instead_of_500ing(live):
+    """Both ring readers used to call float()/int() on query values inline, so a browser
+    extension or a scanner sending ?seconds=abc produced a traceback and a 500 instead of a 400."""
+    for path in ("/api/history?seconds=abc", "/api/history?seconds=-1", "/api/savings-history?days=x"):
+        code, body = _req(live, "127.0.0.1", "GET", path)
+        assert code in (200, 400), f"{path} -> {code} {body!r} (expected 400, never 500)"
+    code, _ = _req(live, "127.0.0.1", "GET", "/api/history?seconds=1e18")
+    assert code == 200, "a huge window must be clamped, not refused"
 
 
 def test_remote_writes_are_refused_over_a_real_socket(live):

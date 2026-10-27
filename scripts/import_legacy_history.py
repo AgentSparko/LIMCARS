@@ -91,7 +91,7 @@ def main() -> int:
     cfg_p = os.path.join(os.path.dirname(os.path.abspath(a.target)), "config.json")
     if os.path.exists(cfg_p):
         import json
-        valid = [e.get("id") for e in json.load(open(cfg_p)).get("engines", [])]
+        valid = [e.get("id") for e in json.load(open(cfg_p, encoding="utf-8")).get("engines", [])]
         if valid and a.engine not in valid:
             print(f"ERROR: --engine '{a.engine}' is not served by this dashboard "
                   f"(config.json ids: {valid}). Fix --engine or add the engine.",

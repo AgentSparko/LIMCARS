@@ -221,10 +221,10 @@ def test_synthetic_seed_never_eats_a_real_minute(tmp_path):
     st = Store(str(tmp_path / "t.db"))
     _m(st, "e1", 30, p=1e6)                       # a real minute of traffic
     _m(st, "e1", 30, p=99e9, synthetic=1)         # a restart seed lands on it
-    assert st.minute_rows("e1") == [(BASE + 30 * 60, 1e6, 0.0, 0.0)]
+    assert st.minute_rows("e1") == [(BASE + 30 * 60, 1e6, 0.0, 0.0, 1)]
     _m(st, "e2", 30, p=99e9, synthetic=1)         # seed first, then real data
     _m(st, "e2", 30, p=7e6)
-    assert st.minute_rows("e2") == [(BASE + 30 * 60, 7e6, 0.0, 0.0)]
+    assert st.minute_rows("e2") == [(BASE + 30 * 60, 7e6, 0.0, 0.0, 1)]
 
 
 def test_projections_carry_the_duty_cycle_assumption(tmp_path):
