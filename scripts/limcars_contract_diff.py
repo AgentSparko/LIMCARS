@@ -24,16 +24,26 @@ SNAP = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.hermes/cache
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/.hermes/cache/scratch/contract-after.json")
 ENG = "flashnext"
 
-SERIES_KEYS = ["prefill_tps_now", "decode_tps_now", "prefill_tps_1h", "decode_tps_1h",
-               "gen_tps_1h", "iters_1s", "iters_1h", "preempts_1h", "kv_pct", "kv_tokens",
-               "queue_depth", "draft_accept_pct", "ttft_p50_1h_ms", "ttft_avg_1h_ms",
-               "e2e_p50_1h_ms", "e2e_avg_1h_ms", "ttft_n_1h", "e2e_n_1h",
-               "cost_hot", "cost_cold", "cost_base", "cost_nocache", "cost_real", "money_hot"]
-HW_PREFIX = ("cpu_pct", "gpu", "mem_used_gb", "mem_total_gb", "watt", "temp", "fan",
-             "energy_", "clock_", "mem_clock", "sm_clock")
+# The render contract is derived from the app, never hand-written: a list copied here drifts,
+# and a drift in this direction silently blesses a stripped field (or flags a kept one).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app import hw as _hw                      # noqa: E402
+from app import sampler as _sampler            # noqa: E402
+
+_CONTRACT = set(_sampler.SERIES_KEYS) | set(getattr(_sampler, "SERIES_KEYS", ()))
+_CONTRACT |= set(_hw.series_keys({"gpu0_util": 1.0, "gpu0_temp_c": 1.0,
+                                  "gpu0_power_w": 1.0, "gpu0_clock_mhz": 1.0,
+                                  "vram_used_gb": 1.0}))
+# dynamically-built names (histMs/histBasis concat "ttft"/"e2e" with these) never appear as
+# literals anywhere, so a scan cannot see them and they must be declared
+for _fam in ("ttft", "e2e"):        # histMs/histBasis build ONLY these two families
+    for _suf in ("_p50_ms", "_avg_ms", "_n", "_p50_1h_ms", "_avg_1h_ms", "_n_1h", "_med_1h",
+                 "_life_avg_ms", "_avg_1h_ms"):
+        _CONTRACT.add(_fam + _suf)
+SERIES_KEYS = sorted(_CONTRACT)
 
 # snapshot key -> endpoint (the flat keys are what the capture script stored)
-PATHS = {
+PATHS = {                                   # the ring endpoints the browser backfills from
     "chart_engine_1h": f"/api/history?engine={ENG}&seconds=3600",
     "chart_engine_15m": f"/api/history?engine={ENG}&seconds=900",
     "chart_hw_1h": "/api/history?seconds=3600",
@@ -48,7 +58,7 @@ def get(path):
 
 
 def in_contract(k):
-    return k in SERIES_KEYS or str(k).startswith(HW_PREFIX)
+    return k in _CONTRACT
 
 
 def rows_of(payload):
@@ -62,9 +72,14 @@ def rows_of(payload):
 # only fields that cannot move within a minute: lifetime counters and physical constants.
 # "_1h" fields are rolling windows recomputed per sample (e2e_n_1h going 7 -> 8 is one request
 # landing between two samples of the same minute), and *_used_gb is a snapshot — those drift.
-STABLE = {"prompt_total", "requests_total", "gen_total", "cost_hot", "cost_cold", "cost_base",
-          "cost_nocache", "cost_real", "money_hot", "mem_total_gb", "gpu_count",
-          "gpu_power_limit_w", "disk_total_gb", "disk_used_gb"}
+# Fields that cannot move at all inside a minute: physical constants of the box.
+STABLE = {"mem_total_gb", "gpu_count", "gpu_power_limit_w", "disk_total_gb", "disk_used_gb"}
+# Fields that only ever go up: lifetime counters and priced totals. They are NOT constant within a
+# minute (the engine is answering requests), so identity is the wrong test -- the right one is
+# that the two samples are ordered the same way in time and in value. A storage change that
+# rewrote history breaks this; sampling can never trip it.
+CUMULATIVE = {"prompt_total", "requests_total", "gen_total", "cost_hot", "cost_cold", "cost_base",
+              "cost_nocache", "cost_real", "money_hot"}
 
 
 def _minute_first(rows):
@@ -91,23 +106,47 @@ def check(name, before_rows, after_rows, snap_ts):
         print(f"    {name:26s} (nothing in snapshot to compare)")
         return 0
     keys = sorted({k for r in before_rows for k in r if k != "t" and in_contract(k)})
-    stable = [k for k in keys if k in STABLE]
+    stable = [k for k in keys if k in STABLE or k in CUMULATIVE]
     live = [k for k in keys if k not in stable]
+    drift = {k: 0.0 for k in live}
     ref, cur = _minute_first(before_rows), _minute_first(after_rows)
     common = sorted(set(ref) & set(cur))
-    missing_field = []
+    # Systematic absence is the regression; per-row absence is just which sample the endpoint
+    # happened to hand back (speculative-decoding fields only exist on rows that stepped, etc.).
+    # So a field is "missing" only when the snapshot showed it often and every row served now
+    # lacks it -- that is a stripped field, and nothing else can produce it.
+    freq_now = {}
+    for r in after_rows:
+        for k in r:
+            if k != "t" and k in _CONTRACT:
+                freq_now[k] = freq_now.get(k, 0) + 1
+    n_after = max(1, len([r for r in after_rows if int(r["t"]) <= snap_ts]))
+    absent = sorted(k for k in keys
+                    if sum(1 for r in ref.values() if r.get(k) is not None) >= max(3, len(ref) // 5)
+                    and freq_now.get(k, 0) == 0)
     mismatches = []
-    drift = {k: 0.0 for k in live}
-    for m in common:
-        r, base = cur[m], ref[m]
+    for m, r in cur.items():
+        base = ref.get(m)
+        if base is None:
+            continue
         for k in keys:
-            if k not in r:
-                missing_field.append((m, k))
+            if k in absent:
                 continue
-            if k in stable and r.get(k) != base.get(k):
-                mismatches.append((m, k, base.get(k), r.get(k)))
-            elif k in live and isinstance(r.get(k), (int, float)) and isinstance(base.get(k), (int, float)):
+            if k not in r and base.get(k) is not None and freq_now.get(k, 0) == 0:
+                mismatches.append((m, k, base.get(k), None))
+                continue
+            if k in CUMULATIVE:
+                a, b = r.get(k), base.get(k)
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
+                        and (r["t"] - base["t"]) * (a - b) < 0:
+                    mismatches.append((m, k + " (went backwards in time)", b, a))
+            elif k in stable:
+                if r.get(k) != base.get(k):
+                    mismatches.append((m, k, base.get(k), r.get(k)))
+            elif isinstance(r.get(k), (int, float)) and isinstance(base.get(k), (int, float)):
                 drift[k] = max(drift[k], abs(r[k] - base[k]))
+    missing_field = [(m, k) for m, k in ((0, k) for k in absent)]
+
     # coverage inside the window both fetches could have answered
     lo, hi = max(min(ref), min(cur)), min(max(ref), max(cur))
     expected = {m for m in ref if lo <= m <= hi}
@@ -115,12 +154,12 @@ def check(name, before_rows, after_rows, snap_ts):
     worst = max(((k, v) for k, v in drift.items() if v), key=lambda kv: kv[1], default=None)
     bad = len(mismatches) + len(missing_field) + len(lost)
     print(f"{'OK ' if not bad else 'BAD'} {name:26s} minutes {len(common):>4}  stable {len(stable):>2} "
-          f"mismatch {len(mismatches):>3}  missing_field {len(missing_field):>3}  lost {len(lost):>3}"
+          f"mismatch {len(mismatches):>3}  stripped {len(absent):>3}  lost {len(lost):>3}"
           + (f"  | drift max {worst[0]}={worst[1]:.2f}" if worst else ""))
     for m in mismatches[:3]:
         print(f"      STABLE MISMATCH {m}")
-    for m in missing_field[:3]:
-        print(f"      MISSING FIELD {m}")
+    for k in absent[:6]:
+        print(f"      STRIPPED FIELD {k}: shown by the snapshot, absent from every row served now")
     if lost[:3]:
         print(f"      lost minutes {[l % 1440 for l in lost[:3]]}")
     return bad

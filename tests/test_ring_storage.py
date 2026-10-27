@@ -61,16 +61,37 @@ def test_dynamically_keyed_fields_are_kept(store):
 
 
 def test_hardware_sensor_spam_is_not_stored(store):
+    """Only what no reader names. load/load5/swap/disk/net look like spam to a grep over the JS,
+    but hw.series_keys() charts them from _BASE_KEYS — an earlier grep-based verdict here deleted
+    working panel series, which is why tests/test_render_contract.py now decides this list."""
     row = {"cpu_pct": 1.5, "mem_total_gb": 120.0, "gpu0_util": 88.0,
-           "load1": 1.74, "load5": 1.2, "swap_used_gb": 0.0,
+           "load1": 1.74, "load5": 1.2, "swap_used_gb": 0.0, "net_r_mbs": 1.2,
            "temp_acpitz_temp3": 44.0, "temp_mt7925_phy0_temp1": 41.0}
     store.save_hw_samples([(T0, row)])
     stored = json.loads(store._con.execute(
         "SELECT data FROM hw_samples WHERE t=?", (T0,)).fetchone()[0])
     assert {"cpu_pct", "mem_total_gb", "gpu0_util"} <= set(stored)
-    for gone in ("load1", "load5", "swap_used_gb", "temp_acpitz_temp3",
-                 "temp_mt7925_phy0_temp1"):
+    for charted in ("load1", "load5", "swap_used_gb", "net_r_mbs"):
+        assert charted in stored, f"{charted} is charted by hw._BASE_KEYS and must be stored"
+    for gone in ("temp_acpitz_temp3", "temp_mt7925_phy0_temp1"):
         assert gone not in stored
+
+
+def test_every_deny_listed_field_is_actually_gone(store):
+    """The lists are the policy, so the policy is what gets checked -- field by field. A name that
+    silently stops being stripped (a rename, a refactor of _lean) is unread data being stored."""
+    fat = {k: {"nested": {"deep": [1, 2, 3] * 20}} for k in Store._DROP_ENGINE}
+    fat["prefill_tps_now"] = 1.0
+    store.save_engine_samples("e1", [(T0, fat)])
+    stored = json.loads(store._con.execute(
+        "SELECT data FROM engine_samples WHERE t=?", (T0,)).fetchone()[0])
+    assert set(stored) == {"prefill_tps_now"}, sorted(set(stored) - {"prefill_tps_now"})
+    junk = {k: 44.0 for k in Store._DROP_HW}
+    junk["cpu_pct"] = 1.0
+    store.save_hw_samples([(T0, junk)])
+    stored = json.loads(store._con.execute(
+        "SELECT data FROM hw_samples WHERE t=?", (T0,)).fetchone()[0])
+    assert set(stored) == {"cpu_pct"}, sorted(set(stored) - {"cpu_pct"})
 
 
 def test_a_stored_row_fits_the_byte_budget(store):

@@ -40,8 +40,14 @@ DEFAULTS = {
     # row per engine, so 7 d was roughly 1 GB/engine of data the UI never
     # renders -- charts above 1 h come from the hourly counter_buckets, which
     # is retained 366 d and is three orders of magnitude smaller. Editable in
-    # Settings (5 min .. 7 d); 48 h keeps two days of forensic detail.
-    "persist_seconds": 172800,
+    # Settings (5 min .. 7 d).
+    #
+    # One hour, not 48. Measured against every ring reader, nothing older than an hour can be
+    # rendered (largest chart window 3600 s) EXCEPT the two bubble sparklines, which draw ~200
+    # points of a derived stat -- and those points now live in their own table (spark_stats,
+    # kept spark_hours long) at the stride they are displayed at. Raw samples past the hour were
+    # ~1000x more data than the dashboard can show: 48 h of rings was 508 MB, this is ~10 MB.
+    "persist_seconds": 3600,
     # ladder retention (app/tiers.py): raw minute buckets are kept this long, the hourly tier
     # covers history_years, daily totals are kept forever. Minutes cost ~14 KB/day, so a long
     # minute window is affordable — it is the 1 s rings that are 242 MB/day.
@@ -51,6 +57,9 @@ DEFAULTS = {
     # until persist_seconds. The charts' largest window is 3600 s and the sparklines stride at
     # 60/120 s, so a second-resolution row older than this cannot be rendered by anything.
     "ring_full_seconds": 3600,
+    # the rings are a one-hour buffer now: past it the charts cannot render a sample, and the
+    # only thing still displayed is the bubble sparklines' own stats (spark_stats, kept this long)
+    "spark_hours": 26,
     "window_s": 30.0,        # window for p50 / avg derived stats
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [

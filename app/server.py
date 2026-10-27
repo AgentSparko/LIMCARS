@@ -93,7 +93,8 @@ class Limcars:
         self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)),
                            minute_days=float(cfg.get("minute_bucket_days", 30)),
                            history_years=float(cfg.get("history_years", 1)),
-                           ring_full_seconds=float(cfg.get("ring_full_seconds", 3600)))
+                           ring_full_seconds=float(cfg.get("ring_full_seconds", 3600)),
+                           spark_hours=float(cfg.get("spark_hours", 26)))
         from .sampler import EngineManager
         self.engines = EngineManager(cfg, self.broker, self.store)
         from .hw import HwSampler

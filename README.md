@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 223 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 239 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -306,38 +306,51 @@ for a month, an hourly memory for as long as you ask (six years costs about 48 M
 memory forever — and it is not allowed to forget anything until it has proven it can remember it
 another way.
 
-## 🔬 The rings: one second where it is seen, one minute where it is not
+## 🔬 One hour of samples, and the stats the dashboard actually shows
 
-The two ring tables (`engine_samples`, `hw_samples`) were 94% of the database file — 540 MB for
-48 hours of samples. Two measurements decided what they should hold, instead of a guess:
+The two ring tables (`engine_samples`, `hw_samples`) were 94% of the database — 540 MB for 48
+hours. The fix came from measuring two things rather than guessing: **what is in a row**, and
+**which field any reader names**.
 
-* **what is in a row.** An engine row carried 65 fields. The nested `savings` projection blob
-  was 24.4% of the bytes and nothing read it from the database (it is recomputed live every
-  second); 29 latency twins (`itl_*`, `queue_time_*`, `prefill_time_*`, `decode_time_*`) were
-  another 34.8% with no reader at all. Half the hardware row was sensor spam (`load1/5`,
-  `swap_used_gb`, `temp_acpitz_*`, `temp_mt7925_*`, disk/net throughput) no card ever asked for.
-  Unread fields are stripped **at the storage boundary only** — the row the browser receives
-  over SSE still carries everything, which is what keeps the savings cards alive.
-* **what can be rendered.** The largest chart window is 3600 s, sparklines stride at 60/120 s,
-  and the 7-day backfill is capped at 800 points. A second-resolution sample older than one
-  hour cannot become a pixel, so past the full-resolution hour the rings keep **one sample per
-  minute** — with a proof around the delete: the set of minutes before must equal the set after,
-  or the transaction rolls back.
+*What is in a row.* An engine row carried 65 fields. A copy of the projected-savings bubble
+(`savings`) was 24.4% of the bytes and no DB reader ever looked at it — the bubbles read it off
+the live SSE row. 29 latency twins (`itl_*`, `queue_time_*`, `prefill_time_*`, `decode_time_*`)
+added 34.8% with no consumer at all.
 
-Result: **540 MB → 25 MB**, engine rows 2,175 B → 1,213 B (65 fields → 42), same dashboard.
-Tune the boundary with `ring_full_seconds` (default 3600) in `data/config.json`.
+*What can be rendered.* The charts' largest window is 3600 s, sparklines stride at 60/120 s, and
+the browser reads exactly two things out of SQLite rings: `t` and `cache_hit_pct` (the
+prefix-cache bubble's 7-day lifetime sparkline). Everything else it gets from memory. So:
 
-Re-prove it after any storage change:
+| tier | kept | why |
+|---|---|---|
+| ring samples (1 s) | **1 hour** | the largest window any chart can plot |
+| `spark_stats` | 6 h @ 60 s (`savings_month`), 24 h @ 120 s (`savings_year`), 8 d @ 60 s (`cache_hit_pct`) | the three series displayed past the hour — ~200 points each |
+| minute buckets | 30 d | money, duty hours |
+| hourly / daily totals | 6 y / forever | see next section |
+
+**Measured: 540 MB → 10.3 MB.** The whole 7-day lifetime sparkline costs 11 KB; it used to cost
+~500 MB of 1-second samples. Tunables in `data/config.json`: `persist_seconds` (ring horizon),
+`ring_full_seconds`, `spark_hours`.
+
+Storage is a **deny-list, decided by a gate**. `tests/test_render_contract.py` derives the render
+contract from the app itself — `sampler.SERIES_KEYS`, `hw.series_keys()` (whose `_BASE_KEYS`
+charts `load1`, `swap_used_gb`, `disk_r_mbs`, names a JS grep never finds), the dynamically
+concatenated `ttft`/`e2e` families, and every identifier the client source mentions — and asserts
+the deny-lists never touch any of them. An unlisted field is kept, because "my grep didn't find
+it" is not evidence of being unread: that is precisely how the hardware panels once lost their
+load and disk series.
+
+Two scripts make any future storage change provable rather than plausible:
 
 ```
-python3 scripts/limcars_contract_diff.py <before.json> <after.json>
+python3 scripts/limcars_contract_snapshot.py before.json      # before the change
+python3 scripts/limcars_contract_diff.py before.json after.json
 ```
 
-It re-fetches every endpoint the browser reads and asserts three things: no field inside the
-render contract disappeared, cumulative fields are byte-identical for any minute the snapshot
-also served, and no minute of history was dropped. Money is checked one-directionally — a token
-counter may only ever grow. (`ttft_*` / `e2e_*_1h_ms` are concatenated at runtime inside
-`histMs`, so a literal grep finds no consumer and would delete a working chart; they stay.)
+The diff re-fetches every endpoint the browser calls and asserts: no contract field systematically
+disappeared, physical constants identical per minute, lifetime counters monotonic in time, no
+minute of history lost, sparkline points unchanged, and the money never smaller. It derives its
+contract from the same app-side source, so it cannot drift from what is rendered.
 
 ## 💵 Money is recorded as it was earned
 

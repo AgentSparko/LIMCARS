@@ -18,11 +18,28 @@ import time
 # those today, so the charts must not resurrect them from old rows either.
 SERIES_MAX = {"prefill_tps_avg": 12000.0, "prefill_tps_now": 12000.0}
 
+# The three series the dashboard draws out of the rings over a window LONGER than the rings
+# themselves, each with the stride it is displayed at and how long it must be kept:
+#   savings_month / savings_year  — the bubble sparklines (counters.py, 6 h @ 60 s, 24 h @ 120 s)
+#   cache_hit_pct                 — the prefix-cache bubble's lifetime sparkline, which asks
+#                                   /api/history for up to 7 days of rows (dashboard.js
+#                                   fetchCacheLife) and reads nothing else out of them but t + this
+# A sparkline is ~200 points of a derived stat. Past the ring horizon we store THAT, which is what
+# lets the rings be a one-hour buffer without anything on screen noticing. Keys live here so the
+# stride/retention a series needs is one fact, not a guess repeated in two places.
+SPARK_SERIES = {
+    "savings_month": (60, 26 * 3600.0),
+    "savings_year": (120, 26 * 3600.0),
+    "cache_hit_pct": (60, 8 * 86400.0),
+}
+SPARK_STRIDE = {k: s for k, (s, _) in SPARK_SERIES.items()}
+SPARK_KEEP = {k: keep for k, (_, keep) in SPARK_SERIES.items()}
+
 
 class Store:
     def __init__(self, path: str, persist_seconds: float = 3600,
                  minute_days: float = 30.0, history_years: float = 1.0,
-                 ring_full_seconds: float = 3600.0):
+                 ring_full_seconds: float = 3600.0, spark_hours: float = 192.0):
         self.path = path
         self.persist_s = persist_seconds
         # how long each rung of the ladder is kept; see app/tiers.py
@@ -33,6 +50,17 @@ class Store:
         # at 800 points, so a 1 s sample older than this can never be rendered. Beyond it we
         # keep one row per minute (thinned by thin_rings, which refuses to lose a minute).
         self.ring_full_s = min(86400.0, max(60.0, float(ring_full_seconds)))
+        # How long the sparkline stats outlive the samples that produced them. Every series is
+        # kept min(its own reach, this) -- the default covers the deepest reach (the 7-day
+        # prefix-cache lifetime sparkline), and lowering it shortens every bubble on purpose.
+        self.spark_s = max(3600.0, min(30 * 86400.0, float(spark_hours) * 3600.0))
+        # a series whose reach the ceiling cannot cover is a bug in SPARK_SERIES, not a knob
+        deepest = max(keep for _s, keep in SPARK_SERIES.values())
+        if self.spark_s < deepest:
+            import logging
+            logging.getLogger("limcars").warning(
+                "spark_hours=%.0fh is below the deepest sparkline reach (%.0fh); those points "
+                "will age out early", self.spark_s / 3600, deepest / 3600)
         self.history_years = min(20.0, max(0.5, float(history_years)))
         self._lock = threading.Lock()
         self._con = sqlite3.connect(path, check_same_thread=False)
@@ -55,6 +83,9 @@ class Store:
             CREATE INDEX IF NOT EXISTS ix_cb_ts ON counter_buckets(ts);
             CREATE TABLE IF NOT EXISTS counter_raw(
               engine TEXT PRIMARY KEY, t REAL, raw TEXT);
+            CREATE TABLE IF NOT EXISTS spark_stats(
+              engine TEXT, key TEXT, t INTEGER, v REAL,
+              PRIMARY KEY(engine, key, t));
         """)
         # audit M1/M2: seed & gap-backfill buckets are flagged synthetic so
         # the active-hour anchor never treats an engine-lifetime dump as
@@ -87,14 +118,77 @@ class Store:
         # the aggregate ladder (hourly + daily), so history survives minute pruning
         from . import tiers as _tiers
         _tiers.ensure_schema(self._con)
+        # harvest the sparkline points before anything can be pruned (see backfill_spark_stats)
+        try:
+            self.backfill_spark_stats()
+        except sqlite3.Error:                          # pragma: no cover - never block a boot
+            pass
 
     def save_engine_samples(self, engine: str, rows: list[tuple[float, dict]]) -> None:
         with self._lock:
             self._con.executemany(
                 "INSERT INTO engine_samples(t, engine, data) VALUES (?,?,?)",
                 [(t, engine, json.dumps(self._lean(r, self._DROP_ENGINE))) for t, r in rows])
+            self._capture_spark_stats(engine, rows)
             self._con.commit()
         self._prune("engine_samples", "t")
+
+    def _capture_spark_stats(self, engine: str, rows: list[tuple[float, dict]]) -> None:
+        """Copy out the two numbers the bubble sparklines draw, on the way in.
+
+        Caller must hold self._lock. The predicate is deliberately identical to the one
+        series_tail() used when it read these values straight out of the ring JSON
+        (`CAST(t AS INTEGER) % stride = 0`, non-null, cap-checked): a point that the sparkline
+        would have plotted is a point that gets stored, so the picture does not change when the
+        samples behind it are dropped.
+        """
+        if not rows:
+            return
+        pairs = []
+        for t, row in rows:
+            ti = int(t)
+            for key, (stride, _keep) in SPARK_SERIES.items():
+                if ti % stride:
+                    continue
+                v = row.get(key)
+                if v is None:
+                    continue
+                cap = SERIES_MAX.get(key)
+                if cap is not None and isinstance(v, (int, float)) and v > cap:
+                    continue
+                pairs.append((engine, key, ti, float(v)))
+        if pairs:
+            self._con.executemany(
+                "INSERT OR REPLACE INTO spark_stats(engine,key,t,v) VALUES (?,?,?,?)", pairs)
+
+    def backfill_spark_stats(self) -> dict:
+        """Harvest the sparkline points from rows that are about to outlive their usefulness.
+
+        Runs at construction, before the first prune can take anything: the ring rows already in
+        the file are the exact rows series_tail() was reading, so harvesting them keeps the
+        month/year bubbles' history continuous across the upgrade instead of erasing 23 hours of
+        a sparkline the operator has always seen.
+        """
+        out: dict = {}
+        with self._lock:
+            for key, (stride, _keep) in SPARK_SERIES.items():
+                cur = self._con.execute(
+                    "INSERT OR REPLACE INTO spark_stats(engine,key,t,v)"
+                    " SELECT engine, ?, CAST(t AS INTEGER), json_extract(data, ?)"
+                    " FROM engine_samples WHERE CAST(t AS INTEGER) % ? = 0"
+                    f" AND json_extract(data, '$.{key}') IS NOT NULL",
+                    (key, f"$.{key}", int(stride)))
+                out[key] = max(0, cur.rowcount or 0)
+            # each series is kept exactly as long as its own sparkline reaches, and not one hour
+            # longer — the year bubble needs 26 h, the prefix-cache lifetime spark needs 8 days
+            now = time.time()
+            # each series is kept exactly as long as its own sparkline reaches, capped by the
+            # operator's spark_hours knob (lower it and every bubble shows a shorter history)
+            for key, (_stride, keep) in SPARK_SERIES.items():
+                self._con.execute("DELETE FROM spark_stats WHERE key=? AND t < ?",
+                                  (key, now - min(keep, self.spark_s)))
+            self._con.commit()
+        return out
 
     def save_hw_samples(self, rows: list[tuple[float, dict]]) -> None:
         with self._lock:
@@ -138,11 +232,15 @@ class Store:
         "decode_time_p50_ms", "decode_time_avg_ms", "decode_time_n",
         "decode_time_p50_1h_ms", "decode_time_avg_1h_ms", "decode_time_n_1h",
     })
-    # hardware sensors the dashboard never asks for (gpu*/vram* are auto-charted and stay)
+    # Hardware sensors no reader names. The authority for what may NOT go here is
+    # `hw._BASE_KEYS` — the hardware panels' own chart list — plus the auto-charted gpu*/vram*
+    # prefixes and anything the client source mentions by name. `tests/test_render_contract.py`
+    # asserts this set is disjoint from all three, because a grep over the JS does NOT find
+    # load1/swap_used_gb/disk_r_mbs (they reach the browser through series_keys(), built in
+    # Python) and an earlier grep-based verdict here silently deleted working panel series.
     _DROP_HW = frozenset({
         "temp_acpitz_temp1", "temp_acpitz_temp3", "temp_acpitz_temp4",
         "temp_acpitz_temp6", "temp_acpitz_temp7", "temp_mt7925_phy0_temp1",
-        "load1", "load5", "mem_avail_gb", "swap_used_gb", "disk_r_mbs", "disk_w_mbs",
     })
 
     @staticmethod
@@ -274,13 +372,17 @@ class Store:
         """What the rings cost and how much of them is resolution nothing can render."""
         now = time.time()
         with self._lock:
-            out = {"ring_full_s": self.ring_full_s, "persist_s": self.persist_s}
+            out: dict = {"ring_full_s": self.ring_full_s, "persist_s": self.persist_s}
             for table in ("engine_samples", "hw_samples"):
                 n, by, old = self._con.execute(
                     f"SELECT COUNT(*), COALESCE(SUM(LENGTH(data)),0),"
                     f" COALESCE(SUM(CASE WHEN t < ? THEN 1 ELSE 0 END),0) FROM {table}",
                     (now - self.ring_full_s,)).fetchone()
                 out[table] = {"rows": n, "bytes": by, "rows_above_full_resolution": old}
+            n, by = self._con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(v)),0) FROM spark_stats").fetchone()
+            out["spark_stats"] = {"rows": n, "bytes": by, "kept_s": self.spark_s,
+                                  "keys": sorted(SPARK_SERIES)}
             return out
 
     def set_persist_window(self, seconds: float) -> float:
@@ -609,6 +711,15 @@ class Store:
         lock per poll was needlessly heavy (audit F4)."""
         cutoff = time.time() - seconds
         cap = SERIES_MAX.get(key)
+        # The bubble sparklines are served from their own table: what they show is ~200 points
+        # of a derived stat, and storing that instead of the 2 Hz samples behind it is what lets
+        # the rings be a one-hour buffer. Same values, same stride predicate, 1/1000th the size.
+        if key in SPARK_STRIDE and stride_s % SPARK_STRIDE[key] == 0:
+            with self._lock:
+                return [(float(t), v) for t, v in self._con.execute(
+                    "SELECT t, v FROM spark_stats WHERE engine=? AND key=? AND t>=?"
+                    " AND t % ? = 0 ORDER BY t",
+                    (engine, key, int(cutoff), int(stride_s)))]
         with self._lock:
             cur = self._con.execute(
                 "SELECT t, json_extract(data, ?) FROM engine_samples"
@@ -706,7 +817,16 @@ class Store:
                 "buckets": n}
 
     def history(self, table: str, engine: str | None, seconds: float) -> list[dict]:
-        cutoff = time.time() - seconds
+        """Ring rows for a window — with anything past the buffer answered from the stats table.
+
+        The rings are a one-hour buffer. `fetchCacheLife()` in the dashboard asks this endpoint for
+        up to seven days and reads nothing out of the rows but `t` and `cache_hit_pct`, so past the
+        horizon the rows are rebuilt from `spark_stats`: one row per recorded point, same values,
+        same stride the sparkline draws. That is what keeps the prefix-cache bubble's lifetime
+        sparkline whole while the raw samples stay short.
+        """
+        now = time.time()
+        cutoff = now - seconds
         with self._lock:
             if engine:
                 cur = self._con.execute(
@@ -716,7 +836,23 @@ class Store:
                 cur = self._con.execute(
                     "SELECT t, data FROM hw_samples WHERE t>=? ORDER BY t", (cutoff,))
             rows = cur.fetchall()
+            stats = []
+            if engine and seconds > self.ring_full_s:
+                stats = self._con.execute(
+                    "SELECT key, t, v FROM spark_stats WHERE engine=? AND t>=? ORDER BY t",
+                    (engine, int(cutoff))).fetchall()
         out = [{"t": t, **json.loads(d)} for t, d in rows]
+        if stats:
+            have = {int(r["t"]) for r in out}
+            merged: dict[int, dict] = {}
+            for key, t, v in stats:
+                ti = int(t)
+                # only the region the rings no longer cover, and never shadow a real sample
+                if ti >= now - self.ring_full_s or ti in have:
+                    continue
+                merged.setdefault(ti, {"t": float(ti)})[key] = v
+            out.extend(merged.values())
+            out.sort(key=lambda r: r["t"])
         if len(out) > 800:                       # stride downsample for charts
             step = -(-len(out) // 800)
             out = out[::step]
