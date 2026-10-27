@@ -406,6 +406,26 @@ def test_a_straggler_backfill_can_never_shrink_an_hour(tmp_path):
                               " AND ts<?", (h0, h0 + HOUR)).fetchone()[0] >= 1
 
 
+def test_a_strided_refresh_never_folds_a_partial_hour(tmp_path):
+    """`from_ts` is a cost control, not a licence to summarise half an hour.
+
+    The refresh folds the last few hours on every bucket write; with a raw timestamp cutoff
+    inside a GROUP BY hour, the oldest hour in range was rebuilt from only its late minutes and
+    published as the whole hour (observed: 53 rows for a 59-row hour).
+    """
+    store = _mk(tmp_path)
+    now = int(time.time())
+    h0 = (now - 3 * HOUR) // HOUR * HOUR          # the oldest hour the 3 h refresh touches
+    for k in range(59):
+        store.save_counter_bucket("e1", h0 + k * 60, _bkt(1000.0))
+    tiers.rollup_hours(store._con, from_ts=now - 3 * HOUR)
+    row = store._con.execute(
+        "SELECT real_rows, real_prompt FROM counter_hour WHERE engine='e1' AND hour=?",
+        (h0,)).fetchone()
+    assert row is not None and row[0] == 59, f"half an hour was folded: {row}"
+    assert row[1] == pytest.approx(59000.0)
+
+
 def test_hour_totals_real_only_excludes_seed(store):
     now = int(time.time())
     base = (now - 60 * DAY) // HOUR * HOUR

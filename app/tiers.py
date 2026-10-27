@@ -141,6 +141,10 @@ def rollup_hours(con: sqlite3.Connection, from_ts: int | None = None) -> int:
          " FROM counter_buckets")
     params: tuple = ()
     if from_ts is not None:
+        # Floor to an hour boundary. Rows are grouped BY hour, so a mid-hour cutoff would fold
+        # an hour from only its late minutes and — because the fold is a REPLACE — publish a
+        # partial hour as if it were the whole thing (observed: 53 of 59 minutes).
+        from_ts = (int(from_ts) // HOUR) * HOUR
         q += " WHERE ts>=?"
         params = (int(from_ts),)
     q += " GROUP BY engine, ts / 3600"
