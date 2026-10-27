@@ -183,6 +183,35 @@ def test_a_short_ring_window_leaves_no_hole_before_the_stats_take_over(tmp_path)
     assert not missing, f"{len(missing)} minutes served by neither source, e.g. {missing[:5]}"
 
 
+def test_the_boot_harvest_is_incremental_but_never_misses_a_point(tmp_path):
+    """The watermark exists so a 1 GB ring does not get re-scanned at every boot. It must stay
+    invisible to the user: rows written after the last harvest still reach the sparkline."""
+    path = str(tmp_path / "wm.db")
+    store = _store(tmp_path) if False else Store(path, persist_seconds=3600, ring_full_seconds=3600)
+    now = time.time()
+    first = int(now - 40 * 60); first -= first % 60
+    for i in range(20):
+        store.save_engine_samples("e1", [(first + i * 60, {"savings_month": float(i),
+                                                          "cache_hit_pct": 90.0 + i})])
+    after_first = len(store.series_tail("e1", "savings_month", 6 * 3600, 60))
+    store._con.close()
+
+    reopened = Store(path, persist_seconds=3600, ring_full_seconds=3600)   # boot #2: harvest again
+    late = int(now - 5 * 60); late -= late % 60
+    for i in range(6):
+        reopened.save_engine_samples("e1", [(late + i * 60, {"savings_month": 100.0 + i,
+                                                            "cache_hit_pct": 80.0})])
+    pts = dict(reopened.series_tail("e1", "savings_month", 6 * 3600, 60))
+    assert len(pts) == after_first + 6, (len(pts), after_first)   # nothing skipped by the watermark
+    assert pts[int(late)] == 100.0
+    # and a genuinely fresh database still harvests its whole history
+    reopened._con.execute("DELETE FROM spark_stats")
+    reopened._con.commit(); reopened._con.close()
+    third = Store(path, persist_seconds=3600, ring_full_seconds=3600)
+    assert len(third.series_tail("e1", "savings_month", 6 * 3600, 60)) == after_first + 6
+    third._con.close()
+
+
 def test_spark_series_matches_the_consumer(tmp_path):
     """If counters.py ever changes a stride or a key, this table stops matching what is drawn."""
     import inspect

@@ -94,6 +94,38 @@ def test_every_deny_listed_field_is_actually_gone(store):
     assert set(stored) == {"cpu_pct"}, sorted(set(stored) - {"cpu_pct"})
 
 
+def test_ring_stats_is_cached_so_a_poll_never_scans_the_rings_under_the_lock(store):
+    """/api/storage polls this. Recomputing SUM(LENGTH(data)) per poll is a full ring scan while
+    the sampler waits for the same lock — the cached value is the point, so it must be cached."""
+    _tick(store, time.time() - 10)
+    first = store.ring_stats()
+    store.save_hw_samples([(time.time(), {"cpu_pct": 99.0})])          # real data changes...
+    assert store.ring_stats() == first                                   # ...still the cached answer
+    store._ring_stats_cache = None                                      # and fresh after the TTL
+    assert store.ring_stats()["hw_samples"]["rows"] != first["hw_samples"]["rows"]
+
+
+def test_a_text_metric_cannot_cost_the_engine_its_samples(store):
+    """A dialect that publishes cache_hit_pct as "92.8" would raise inside the write path while
+    the store lock was held — losing the whole batch, every batch, for that engine. Dropping the
+    unplottable point is the only acceptable outcome here."""
+    base = T0 - (T0 % 60)
+    store.save_engine_samples("e1", [
+        (base, {"prefill_tps_now": 100.0, "cache_hit_pct": "92.8", "savings_month": None,
+                "savings_year": "n/a"}),
+        (base + 60, {"prefill_tps_now": 110.0, "cache_hit_pct": 91.5, "savings_month": 399.0}),
+    ])
+    assert store._con.execute("SELECT COUNT(*) FROM engine_samples").fetchone()[0] == 2
+    pts = dict(store.series_tail("e1", "savings_month", 10 * 3600, 60))
+    # savings_month is None on the first row -> no point; values are real floats, never strings
+    assert pts == {int(base + 60): 399.0}, pts
+    store._con.execute("INSERT INTO engine_samples(t,engine,data) VALUES (?,?,?)",
+                       (base, "e1", json.dumps({"savings_month": "n/a"})))   # unparseable -> skipped
+    store._con.commit()
+    ch = dict(store.series_tail("e1", "cache_hit_pct", 10 * 3600, 60))
+    assert ch == {int(base): 92.8, int(base + 60): 91.5}, ch
+
+
 def test_a_stored_row_fits_the_byte_budget(store):
     """Budget, not aesthetics: this file is 94% rings, and the row used to carry a duplicated
     projection blob that was 24% of it."""

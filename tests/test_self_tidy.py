@@ -212,3 +212,64 @@ def test_storage_stats_reports_the_dead_space_it_would_reclaim(tmp_path):
     assert s["rows"]["counter_buckets"] == 0
     assert s["tables_bytes"] == {}, "dbstat must stay opt-in (it walks every page)"
     assert st.storage_stats(tables=True)["tables_bytes"], "?tables=1 should report table sizes"
+
+
+# --- the VACUUM guard must fail CLOSED -------------------------------------------------
+# A guard that returns "nothing changed" when it could not read anything is worse than no
+# guard: it lets the rewrite happen and signs it off. These three tests exist so that property
+# cannot regress quietly.
+
+def test_compaction_refuses_when_the_baseline_cannot_be_read(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    st = _fat_store(db)
+    m = Maintenance(CFG, st)
+    monkeypatch.setattr(m, "_invariants", lambda cap: {})       # simulate an unreadable read
+    called = {}
+    monkeypatch.setattr(st, "compact",
+                        lambda **kw: called.setdefault("ran", True) or {"vacuumed": True})
+    rep = m.run_once()
+    assert rep.get("vacuumed") is False and rep.get("skipped") == "invariants-unavailable", rep
+    assert "ran" not in called, "VACUUM ran without ever proving it was safe"
+    assert os.path.getsize(db) > 0
+
+
+def test_compaction_disables_itself_when_the_after_picture_cannot_be_read(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    st = _fat_store(db)
+    m = Maintenance(CFG, st)
+    real = m._invariants
+    calls = {"n": 0}
+
+    def flaky(cap):
+        calls["n"] += 1
+        return real(cap) if calls["n"] == 1 else {}      # before ok, after unreadable
+    monkeypatch.setattr(m, "_invariants", flaky)
+    rep = m.run_once()
+    assert rep.get("invariant_unverified") is True, rep
+    assert m.enabled is False, "an unverified rewrite must not be retried on autopilot"
+    assert m.status.get("warning")
+
+
+def test_the_invariant_probe_gives_up_instead_of_wedging_the_thread(tmp_path):
+    """The probe runs around a VACUUM on the same lock the sampler writes under. Waiting forever
+    there is how the tidy thread becomes a stuck thread (the standalone script had the same bug
+    against an open Cursor), so it is bounded and reports 'unknown' rather than blocking."""
+    import threading
+    db = str(tmp_path / "t.db")
+    st = _fat_store(db)
+    m = Maintenance(dict(CFG, invariant_timeout_s=0.5), st)
+    got = {}
+    st._lock.acquire()                       # the sampler's lock, held by someone else
+    try:
+        t = threading.Thread(target=lambda: got.update(res=m._invariants(int(time.time()))))
+        t0 = time.time()
+        t.start()
+        t.join(timeout=5)
+        waited = time.time() - t0
+    finally:
+        st._lock.release()
+    assert not t.is_alive(), "the invariant probe blocked indefinitely on the store lock"
+    assert waited < 4.0, f"probe waited {waited:.1f}s for a lock somebody else holds"
+    # and "could not look" must be reported as unknown, never as an empty-but-trusting result
+    assert got.get("res") == {}, f"probe reported {got.get('res')!r} while blind"
+

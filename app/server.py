@@ -94,7 +94,7 @@ class Limcars:
                            minute_days=float(cfg.get("minute_bucket_days", 30)),
                            history_years=float(cfg.get("history_years", 1)),
                            ring_full_seconds=float(cfg.get("ring_full_seconds", 3600)),
-                           spark_hours=float(cfg.get("spark_hours", 26)))
+                           spark_hours=float(cfg.get("spark_hours", 192)))
         from .sampler import EngineManager
         self.engines = EngineManager(cfg, self.broker, self.store)
         from .hw import HwSampler
@@ -160,6 +160,33 @@ def _gzipped(f: Path, data: bytes) -> bytes:
     gz = gzip.compress(data, 9, mtime=0)
     _gzip_cache[str(f)] = (key, gz)
     return gz
+
+
+def _window_seconds(qs: dict, cfg: dict, cap_extra: float = 300.0,
+                    default: float | None = None) -> float:
+    """Parse `?seconds=` defensively and cap it at what the store could ever hold.
+
+    Uncapped, one query string asks SQLite for every sample it has — `WHERE t >= <year 1970>` —
+    and `store.history()` runs that under the store lock the sampler writes through, so a single
+    request from any LAN host stalls sampling and can OOM the reader on a big database. The
+    cap is the retention window plus slack: rows older than it do not exist, so the answer is
+    identical either way. This was audited on /api/snapshot long ago; /api/history grew the same
+    hole (and a second scan of spark_stats with it) and had no guard, which is why the parsing
+    lives here now instead of being written twice.
+    """
+    import math
+    cap = float(cfg.get("persist_seconds", 3600)) + cap_extra
+    raw = (qs.get("seconds") or [None])[0]
+    if raw is None:
+        # keep whatever default the route historically had rather than inventing a new one here
+        return cap if default is None else min(default, cap)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("seconds must be a number")
+    if not math.isfinite(v) or v <= 0:
+        raise ValueError("seconds must be a positive finite number")
+    return min(v, cap)
 
 
 def _sse_format(topic: str, sid: int, data: str) -> bytes:
@@ -628,7 +655,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/history":
             eng = (qs.get("engine") or [None])[0]
-            secs = float((qs.get("seconds") or ["900"])[0])
+            try:
+                secs = _window_seconds(qs, self.app.cfg, default=900.0)
+            except ValueError as exc:
+                return self._err(400, str(exc))
             if eng:
                 return self._json({"ok": True, "rows": app.store.history("engine_samples", eng, secs)})
             return self._json({"ok": True, "rows": app.store.history("hw_samples", None, secs)})
@@ -852,7 +882,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(r) if r is not None else self._err(404, "no batch")
         m = re.fullmatch(r"/subagent-watch/main-transcript/([\w.-]+)/([\w.-]+)/?", path)
         if m:
-            limit = int((qs.get("limit") or ["200"])[0])
+            try:
+                limit = int((qs.get("limit") or ["200"])[0])
+            except (TypeError, ValueError):
+                return self._err(400, "limit must be an integer")
             r = swatch.main_transcript(m.group(1), m.group(2), limit)
             return self._json(r) if r else self._err(404, "no session")
         m = re.fullmatch(r"/subagent-watch/transcript/([\w.-]+)/([\w.-]+)/?", path)

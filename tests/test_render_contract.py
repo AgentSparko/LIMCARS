@@ -110,6 +110,18 @@ def test_fields_the_client_names_are_kept(store):
 LIVE_ONLY = {"savings"}
 
 
+def test_only_the_families_the_client_concatenates_are_exempt():
+    """The whole latency-twin deletion rests on one fact: the client builds metric names at
+    runtime for ttft and e2e ONLY (histNum/histMs/histBasis are called with those two). If someone
+    later writes histNum(l, 'itl'), the drop-list becomes wrong and this is where it must fail."""
+    js = (WEB / "js" / "dashboard.js").read_text(encoding="utf-8")
+    used = set(re.findall(r"hist(?:Num|Ms|Basis)\(\s*l\s*,\s*'([a-z_0-9]+)'", js))
+    assert used, "could not find any dynamically-read family — the scan pattern is stale"
+    assert used <= {"ttft", "e2e"}, f"client now reads {sorted(used)} dynamically; _DROP_ENGINE must be re-checked"
+    for fam in used:
+        assert not any(k.startswith(fam) for k in Store._DROP_ENGINE), f"{fam} is read dynamically"
+
+
 def test_the_deny_lists_cannot_touch_a_charted_field():
     """Structural gate: storage may only ever drop what no reader names. Both directions are
     checked, because the two deny-lists were each wrong once (engine twins that were in fact

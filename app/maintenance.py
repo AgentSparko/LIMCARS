@@ -44,6 +44,9 @@ class Maintenance(threading.Thread):
         self.min_bytes = float(cfg.get("compact_min_bytes", 20 << 20))
         # how often to fold the rings down to one row per minute past the full-resolution hour
         self.thin_interval = max(60.0, float(cfg.get("thin_interval_s", 300)))
+        # how long the pre/post compaction invariants will wait for the store lock before
+        # declaring the check unavailable (which then blocks the compaction, never allows it)
+        self.probe_timeout = max(0.5, float(cfg.get("invariant_timeout_s", 20)))
         self._stop = threading.Event()
         self.status: dict = {"enabled": self.enabled, "runs": 0, "last_run": None,
                              "last_vacuum": None, "freed_bytes_total": 0,
@@ -70,9 +73,16 @@ class Maintenance(threading.Thread):
         if con is None:
             return out
         lock = getattr(self.store, "_lock", None)
+        held = False
         try:
             if lock is not None:
-                lock.acquire()
+                # bounded, and ownership tracked: this runs on either side of a VACUUM, and a
+                # blocked acquire here would wedge the tidy thread forever (the same failure the
+                # standalone tidy script had against an open Cursor)
+                held = lock.acquire(timeout=self.probe_timeout)
+                if not held:
+                    self.status["note"] = "invariants skipped: store lock busy"
+                    return {}
             for table, col in (("engine_samples", "t"), ("hw_samples", "t"),
                                ("counter_buckets", "ts")):
                 try:
@@ -91,9 +101,11 @@ class Maintenance(threading.Thread):
             except Exception:  # noqa: BLE001
                 pass
         finally:
-            if lock is not None and lock.locked():
+            if held:
                 lock.release()
-        return out
+        # a read that produced nothing is NOT a clean check — returning {} here used to make the
+        # VACUUM guard pass vacuously, which is the one thing it exists to prevent
+        return out if "prompt" in out and out.get("engine_samples") is not None else {}
 
     def _rollup(self) -> None:
         """Fold aged minutes into the hourly/daily ladder without deleting anything.
@@ -136,9 +148,20 @@ class Maintenance(threading.Thread):
         # discipline as scripts/limcars_tidy.py, which refuses and restores.
         cap = int(time.time())          # one frozen timestamp for both sides of the rewrite
         pre = self._invariants(cap)
+        if not pre:
+            # fail closed: without a "before" picture there is no way to prove the rewrite lost
+            # nothing, so the rewrite does not happen. It will be tried again next pass.
+            self.status["note"] = "compaction skipped: could not read the invariant baseline"
+            return {"vacuumed": False, "skipped": "invariants-unavailable"}
         rep = self.store.compact(reclaim_ratio=self.reclaim_ratio)
         rep = dict(rep or {})
         post = self._invariants(cap)
+        if not post:
+            self.status["warning"] = "post-compaction invariants could not be read"
+            self.status["note"] = "compaction not verified; automatic compaction disabled"
+            self.enabled = False
+            rep["invariant_unverified"] = True
+            return rep
         drift = {k: (pre[k], post[k]) for k in pre if pre[k] != post[k]}
         if drift:
             self.enabled = False                      # do not do it again while confused
@@ -168,6 +191,7 @@ class Maintenance(threading.Thread):
         if self._stop.wait(self.start_delay):
             return
         try:
+            self._rollup()                                  # fold first, at boot too
             self.run_once()
             thinned = (self.store.thin_rings() or {}).get("thinned", 0)
             self.status["last_thin"] = {"thinned": thinned}

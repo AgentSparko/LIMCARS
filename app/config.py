@@ -57,9 +57,12 @@ DEFAULTS = {
     # until persist_seconds. The charts' largest window is 3600 s and the sparklines stride at
     # 60/120 s, so a second-resolution row older than this cannot be rendered by anything.
     "ring_full_seconds": 3600,
-    # the rings are a one-hour buffer now: past it the charts cannot render a sample, and the
-    # only thing still displayed is the bubble sparklines' own stats (spark_stats, kept this long)
-    "spark_hours": 26,
+    # The rings are a one-hour buffer now: past it the charts cannot render a sample, and the
+    # only thing still displayed is the sparklines' own stats (spark_stats). This is the ceiling
+    # on how long those survive. It MUST cover the deepest reach in store.SPARK_SERIES -- the
+    # prefix-cache lifetime sparkline asks for 7 days -- or the dashboard quietly loses a week of
+    # a curve the user can see. Store warns when this is too low; keep it at 8 days or more.
+    "spark_hours": 192,
     "window_s": 30.0,        # window for p50 / avg derived stats
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [

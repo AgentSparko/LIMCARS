@@ -36,6 +36,35 @@ SPARK_STRIDE = {k: s for k, (s, _) in SPARK_SERIES.items()}
 SPARK_KEEP = {k: keep for k, (_, keep) in SPARK_SERIES.items()}
 
 
+def _num_or_none(v):
+    """_num, but NULL is a meaningful state in the money columns (not yet priced) — keep it."""
+    return None if v is None else _num(v)
+
+
+def _num(v) -> float:
+    """A money value as a Python float, or 0.0 — never an exception, never a silent disappearance.
+
+    A text value in a REAL column does NOT fail at INSERT. SQLite is happily permissive and then
+    does two damaging things with it. `SUM()` reads the leading digits, so "500,000" contributes
+    500 — the headline is not missing that money, it is understating it by a factor of a thousand,
+    which is worse than a hole because nothing looks broken. And Python raises
+    `can only concatenate str` the moment counters.py writes `p + g`, taking down the endpoint
+    that computes money. Both boundaries coerce: the write path can be reached by a dialect sending
+    a formatted number, and the read path has to survive rows a previous version already wrote.
+    Measured, not assumed — both behaviours are pinned in tests/test_money_types.py.
+    """
+    if isinstance(v, str):
+        # a formatted number is recoverable money, not junk: "1,200" and " 47.5 " are what a
+        # dialect that stringifies with separators actually sends. Casting in SQL instead would
+        # have read "1,200" as 1.0 — wrong money, silently, which is worse than no money.
+        v = v.replace(",", "").replace("\u00a0", "").replace(" ", "").strip()
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f == f else 0.0          # NaN would poison a SUM the same way a string does
+
+
 class Store:
     def __init__(self, path: str, persist_seconds: float = 3600,
                  minute_days: float = 30.0, history_years: float = 1.0,
@@ -121,11 +150,24 @@ class Store:
         # the aggregate ladder (hourly + daily), so history survives minute pruning
         from . import tiers as _tiers
         _tiers.ensure_schema(self._con)
+        # money columns first: a text value in a REAL column vanishes from SUM(), so repair it
+        # before anything reads or re-derives a money figure from those rows
+        try:
+            repaired = self.repair_numeric_columns()
+            if repaired:
+                print(f"[limcars] repaired text-in-REAL money rows: {repaired}", flush=True)
+        except sqlite3.Error as exc:                   # never block a boot
+            print(f"[limcars] money-column repair skipped: {exc}", flush=True)
         # harvest the sparkline points before anything can be pruned (see backfill_spark_stats)
         try:
-            self.backfill_spark_stats()
-        except sqlite3.Error:                          # pragma: no cover - never block a boot
-            pass
+            st = self.backfill_spark_stats()
+            if st and st.get("inserted"):
+                print(f"[limcars] sparkline history backfilled from rings: {st['inserted']} points",
+                      flush=True)
+        except sqlite3.Error as exc:                   # pragma: no cover - never block a boot
+            # was `pass`: a silently-skipped backfill means the sparklines lost weeks of history
+            # and nothing anywhere said so. A boot must not fail for it, but it must not be quiet.
+            print(f"[limcars] sparkline backfill skipped: {exc}", flush=True)
 
     def save_engine_samples(self, engine: str, rows: list[tuple[float, dict]]) -> None:
         with self._lock:
@@ -156,10 +198,21 @@ class Store:
                 v = row.get(key)
                 if v is None:
                     continue
-                cap = SERIES_MAX.get(key)
-                if cap is not None and isinstance(v, (int, float)) and v > cap:
+                if isinstance(v, bool):
                     continue
-                pairs.append((engine, key, ti, float(v)))
+                try:
+                    # A dialect may publish a metric as "92.8"; that is a plottable number and
+                    # coercing keeps the point. Anything that will not parse used to raise right
+                    # here — inside save_engine_samples, holding the store lock — so one bad field
+                    # lost the whole batch, every batch, for that engine. Dropping the unplottable
+                    # point is the only acceptable failure; losing samples is not.
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                cap = SERIES_MAX.get(key)
+                if cap is not None and v > cap:
+                    continue
+                pairs.append((engine, key, ti, v))
         if pairs:
             self._con.executemany(
                 "INSERT OR REPLACE INTO spark_stats(engine,key,t,v) VALUES (?,?,?,?)", pairs)
@@ -175,18 +228,26 @@ class Store:
         out: dict = {}
         with self._lock:
             for key, (stride, _keep) in SPARK_SERIES.items():
-                cur = self._con.execute(
-                    "INSERT OR REPLACE INTO spark_stats(engine,key,t,v)"
-                    " SELECT engine, ?, CAST(t AS INTEGER), json_extract(data, ?)"
-                    " FROM engine_samples WHERE CAST(t AS INTEGER) % ? = 0"
-                    f" AND json_extract(data, '$.{key}') IS NOT NULL",
-                    (key, f"$.{key}", int(stride)))
-                out[key] = max(0, cur.rowcount or 0)
-            # each series is kept exactly as long as its own sparkline reaches, and not one hour
-            # longer — the year bubble needs 26 h, the prefix-cache lifetime spark needs 8 days
-            now = time.time()
+                for (eng,) in self._con.execute(
+                        "SELECT DISTINCT engine FROM engine_samples").fetchall():
+                    # Watermark, not full scan: on a 1 GB ring this statement is the expensive
+                    # thing the user waits for at boot, and everything older than the newest
+                    # point was harvested by the boot before. The overlap covers a sample that
+                    # landed while the previous pass was running.
+                    last = self._con.execute(
+                        "SELECT MAX(t) FROM spark_stats WHERE engine=? AND key=?",
+                        (eng, key)).fetchone()[0]
+                    cur = self._con.execute(
+                        "INSERT OR REPLACE INTO spark_stats(engine,key,t,v)"
+                        " SELECT ?, ?, CAST(t AS INTEGER), json_extract(data, ?)"
+                        " FROM engine_samples WHERE engine=? AND t > ?"
+                        " AND CAST(t AS INTEGER) % ? = 0"
+                        f" AND json_extract(data, '$.{key}') IS NOT NULL",
+                        (eng, key, f"$.{key}", eng, (last or 0) - 10800, int(stride)))
+                    out[key] = out.get(key, 0) + max(0, cur.rowcount or 0)
             # each series is kept exactly as long as its own sparkline reaches, capped by the
             # operator's spark_hours knob (lower it and every bubble shows a shorter history)
+            now = time.time()
             for key, (_stride, keep) in SPARK_SERIES.items():
                 self._con.execute("DELETE FROM spark_stats WHERE key=? AND t < ?",
                                   (key, now - min(keep, self.spark_s)))
@@ -252,6 +313,51 @@ class Store:
         dict is the same object the SSE broker hands to every browser."""
         return {k: v for k, v in row.items() if k not in drop}
 
+    def repair_numeric_columns(self) -> dict:
+        """Put TEXT that should have been REAL back into the money columns, once, at boot.
+
+        Older builds let a formatted number ("92.8") into a REAL column because SQLite does not
+        police column types: those rows drop out of every SUM silently (a savings dashboard that
+        under-reports money is the worst failure it can have) and then raise in Python the moment
+        two of them are added. The write path coerces now, so this only clears what a previous
+        version left behind. CAST is identity for a value that is already a number and 0 for junk,
+        so a repair can never move a good reading — and the pass costs nothing when there is
+        nothing to do, which is the normal case.
+
+        Returns {table: rows_repaired} for the log.
+        """
+        out: dict[str, int] = {}
+        with self._lock:
+            for tbl in ("counter_buckets", "counter_hour", "counter_day"):
+                try:
+                    cols = [row[1] for row in self._con.execute(f"PRAGMA table_info({tbl})")   # noqa: S608
+                            if (row[2] or "").upper().startswith("REAL")]
+                except Exception:
+                    continue
+                for col in cols:
+                    try:
+                        n = self._con.execute(
+                            f'SELECT COUNT(*) FROM {tbl} WHERE typeof("{col}")=\'text\''      # noqa: S608
+                        ).fetchone()[0]
+                    except Exception:
+                        continue                                            # column gone: nothing to do
+                    if not n:
+                        continue
+                    # repaired in Python, through the same _num the write path uses, rather than
+                    # CAST in SQL: CAST reads "1,200" as 1.0, so the "repair" would have invented
+                    # wrong money. One coercion function for both boundaries means they cannot drift.
+                    bad = self._con.execute(
+                        f'SELECT rowid, "{col}" FROM {tbl} WHERE typeof("{col}")=\'text\''   # noqa: S608
+                    ).fetchall()
+                    for rowid, raw in bad:
+                        self._con.execute(
+                            f'UPDATE {tbl} SET "{col}" = ? WHERE rowid = ?',                  # noqa: S608
+                            (_num(raw), rowid))
+                    out[tbl] = out.get(tbl, 0) + len(bad)
+            if out:
+                self._con.commit()
+        return out
+
     def _prune(self, table: str, col: str) -> None:
         # The statement is built by f-string because SQLite cannot bind
         # identifiers. That is only safe while both names are literals, so pin
@@ -310,13 +416,20 @@ class Store:
                   priced_at=COALESCE(counter_buckets.priced_at, excluded.priced_at),
                   price_src=COALESCE(counter_buckets.price_src, excluded.price_src)
                 """,
-                (engine, ts, b["prompt"], b["cached"], b["gen"], b["reqs"],
-                 b["iters"], b["dec_min"], b["dec_peak"], b["spec_sum"],
-                 b["spec_n"], synth,
-                 b.get("cost_hot"), b.get("cost_base"), b.get("cost_nocache"),
-                 b.get("price_slug"), b.get("price_in"), b.get("price_out"),
-                 b.get("price_cw"), b.get("price_cr"), b.get("price_crhot"),
-                 b.get("priced_at"), b.get("price_src")))
+                # every numeric column goes through _num/_num_or_none on the way in. SQLite does
+                # not police column types: a formatted "92.8" from a dialect is stored as TEXT, and
+                # TEXT money vanishes from SUM() silently (the headline under-reports, which for a
+                # savings dashboard is the worst failure it can have) before it crashes Python at
+                # `p + g` in counters.py. NULL stays NULL — it means "not priced", not zero.
+                (engine, ts, _num(b["prompt"]), _num(b["cached"]), _num(b["gen"]),
+                 _num(b["reqs"]), _num(b["iters"]), _num(b["dec_min"]), _num(b["dec_peak"]),
+                 _num(b["spec_sum"]), _num(b["spec_n"]), synth,
+                 _num_or_none(b.get("cost_hot")), _num_or_none(b.get("cost_base")),
+                 _num_or_none(b.get("cost_nocache")), b.get("price_slug"),
+                 _num_or_none(b.get("price_in")), _num_or_none(b.get("price_out")),
+                 _num_or_none(b.get("price_cw")), _num_or_none(b.get("price_cr")),
+                 _num_or_none(b.get("price_crhot")), _num_or_none(b.get("priced_at")),
+                 b.get("price_src")))
             self._con.commit()
         # retention ladder: fold into hours/days, prove the aggregates, then trim minutes.
         # Never deletes minutes the ladder cannot reproduce (see tiers.enforce_retention).
@@ -372,8 +485,17 @@ class Store:
         return out
 
     def ring_stats(self) -> dict:
-        """What the rings cost and how much of them is resolution nothing can render."""
+        """What the rings cost and how much of them is resolution nothing can render.
+
+        Cached for 30 s on purpose: /api/storage polls this, and `SUM(LENGTH(data))` is a full
+        scan of the ring tables — cheap at 7 k rows, and an under-the-lock page sweep of every
+        sample the operator configured the box to keep. A number this cosmetic is not worth
+        making the sampler wait for.
+        """
         now = time.time()
+        cached = getattr(self, "_ring_stats_cache", None)
+        if cached and now - cached[0] < 30.0:
+            return cached[1]
         with self._lock:
             out: dict = {"ring_full_s": self.ring_full_s, "persist_s": self.persist_s}
             for table in ("engine_samples", "hw_samples"):
@@ -384,9 +506,15 @@ class Store:
                 out[table] = {"rows": n, "bytes": by, "rows_above_full_resolution": old}
             n, by = self._con.execute(
                 "SELECT COUNT(*), COALESCE(SUM(LENGTH(v)),0) FROM spark_stats").fetchone()
+            deepest = max(keep for _s, keep in SPARK_SERIES.values())
             out["spark_stats"] = {"rows": n, "bytes": by, "kept_s": self.spark_s,
-                                  "keys": sorted(SPARK_SERIES)}
-            return out
+                                  "keys": sorted(SPARK_SERIES),
+                                  # too low = a visible sparkline is being pruned early; surfaced
+                                  # here because the log warning is never read by anyone
+                                  "short": self.spark_s < deepest,
+                                  "needed_s": deepest}
+        self._ring_stats_cache = (now, out)
+        return out
 
     def set_persist_window(self, seconds: float) -> float:
         """Change the 1 s ring window at runtime and prune immediately, so a
@@ -655,7 +783,7 @@ class Store:
         from . import tiers
         horizon = tiers.horizon_ts(time.time(), self.minute_days)
         with self._lock:
-            rows = [(t, p, c, g, 1) for t, p, c, g in self._con.execute(
+            rows = [(t, _num(p), _num(c), _num(g), 1) for t, p, c, g in self._con.execute(
                 "SELECT ts, prompt, cached, gen FROM counter_buckets"
                 " WHERE engine=? AND COALESCE(synthetic,0)=0 AND ts>=? ORDER BY ts",
                 (engine, horizon)).fetchall()]
