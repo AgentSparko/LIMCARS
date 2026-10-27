@@ -312,6 +312,100 @@ def test_a_reader_never_trusts_an_unbuilt_ladder(tmp_path):
         "the read should have healed the ladder itself"
 
 
+def test_idle_box_goes_blank_rather_than_serving_the_ladder(tmp_path):
+    """An idle box must not project money from an aggregate.
+
+    The cards are documented to the operator as "the last active hour of real minute buckets".
+    A fallback that answered from the hourly tier kept a $4,792/yr projection alive through a
+    two-hour idle period (observed live), which reads as traffic that did not happen.
+    """
+    store = _mk(tmp_path, minute_days=30)
+    now = int(time.time())
+    busy = (now - 5 * 3600) // HOUR * HOUR          # a genuinely busy hour, still in minutes
+    for k in range(50):
+        store.save_counter_bucket("e1", busy + k * 60, _bkt(20000.0))
+    idle = now // 60 * 60                            # the box is idle NOW: rows exist, no tokens
+    for k in range(55):
+        store.save_counter_bucket("e1", idle - k * 60, _bkt(0.0))
+    got = store.last_active_hour("e1")
+    assert got["empty"] is True, \
+        f"idle box must report no active hour, got {got}"
+
+
+def test_recent_hour_rows_do_not_freeze(tmp_path):
+    """The fold used to be reachable only through the prune, so once nothing had aged out the
+    hourly rows stopped updating and reported a partial hour forever."""
+    store = _mk(tmp_path, minute_days=30)
+    now = int(time.time())
+    h0 = (now - 2 * 3600) // HOUR * HOUR
+    for k in range(3):
+        store.save_counter_bucket("e1", h0 + k * 60, _bkt(1000.0))
+    # nothing older than the horizon exists, so the write path takes the cheap branch
+    store.save_counter_bucket("e1", h0 + 3 * 60, _bkt(1000.0))
+    store.save_counter_bucket("e1", h0 + 4 * 60, _bkt(1000.0))
+    row = store._con.execute(
+        "SELECT real_rows, real_prompt FROM counter_hour WHERE engine='e1' AND hour=?",
+        (h0,)).fetchone()
+    assert row is not None and row[0] == 5, f"hourly row froze at {row}"
+    assert row[1] == pytest.approx(5000.0)
+
+
+def test_long_pause_still_has_a_rate_to_project_from(tmp_path):
+    """The case the fallback IS for: everything recent is gone from the minutes, and the last
+    busy hour survives only as an aggregate — the headline must not vanish."""
+    # seeded wide, then the window is narrowed — the realistic catch-up path. Writing old rows
+    # one minute at a time under a narrow window is the pathological case; it is covered by
+    # test_a_straggler_backfill_can_never_shrink_an_hour below.
+    store = _mk(tmp_path)
+    now = int(time.time())
+    old = (now - 40 * DAY) // HOUR * HOUR
+    for k in range(30):
+        store.save_counter_bucket("e1", old + k * 60, _bkt(30000.0))
+    store.minute_days = 30.0
+    tiers.enforce_retention(store._con, minute_days=30, history_years=6)
+    assert store._con.execute("SELECT COUNT(*) FROM counter_buckets WHERE ts < ?",
+                              (tiers.horizon_ts(time.time(), 30),)).fetchone()[0] == 0
+    got = store.last_active_hour("e1")
+    assert got["empty"] is False and got["basis"] == "aged_out_hourly_tier"
+    assert got["prompt"] > 0 and got["buckets"] == 30 and got["hour_ts"] == old
+
+
+def test_a_straggler_backfill_can_never_shrink_an_hour(tmp_path):
+    """An hour that has been folded and aged out must not be rewritten from a partial sample.
+
+    A restore or late seed can land one old minute of an already-summarised hour. Folding the
+    survivors alone would replace the rich aggregate with a fragment and silently lose the rest
+    of that hour's tokens — the exact class of loss the ladder exists to prevent.
+    """
+    store = _mk(tmp_path)
+    now = int(time.time())
+    h0 = (now - 45 * DAY) // HOUR * HOUR
+    for k in range(40):
+        store.save_counter_bucket("e1", h0 + k * 60, _bkt(1000.0))
+    store.minute_days = 30.0
+    tiers.enforce_retention(store._con, minute_days=30, history_years=6)
+    before = store._con.execute(
+        "SELECT real_rows, real_prompt FROM counter_hour WHERE engine='e1' AND hour=?",
+        (h0,)).fetchone()
+    assert before[0] == 40 and before[1] == pytest.approx(40000.0), before
+    # the straggler: one more minute of that hour arrives long after the hour was summarised
+    store._con.execute("INSERT OR REPLACE INTO counter_buckets(engine, ts, prompt, cached, gen,"
+                       " reqs, iters, dec_min, dec_peak, spec_sum, spec_n, synthetic)"
+                       " VALUES ('e1', ?, 7000.0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0)",
+                       (h0 + 55 * 60,))
+    store._con.commit()
+    tiers.rollup_hours(store._con)
+    after = store._con.execute(
+        "SELECT real_rows, real_prompt FROM counter_hour WHERE engine='e1' AND hour=?",
+        (h0,)).fetchone()
+    assert after[0] >= before[0] and after[1] >= before[1], \
+        f"aggregate shrank from a partial fold: {before} -> {after}"
+    # and nothing of that hour may be deleted while its numbers disagree with the aggregate
+    rep = tiers.enforce_retention(store._con, minute_days=30, history_years=6)
+    assert store._con.execute("SELECT COUNT(*) FROM counter_buckets WHERE engine='e1' AND ts>=?"
+                              " AND ts<?", (h0, h0 + HOUR)).fetchone()[0] >= 1
+
+
 def test_hour_totals_real_only_excludes_seed(store):
     now = int(time.time())
     base = (now - 60 * DAY) // HOUR * HOUR

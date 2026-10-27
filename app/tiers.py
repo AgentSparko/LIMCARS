@@ -147,11 +147,19 @@ def rollup_hours(con: sqlite3.Connection, from_ts: int | None = None) -> int:
     rows = con.execute(q, params).fetchall()
     if not rows:
         return 0
+    # An aggregate must never SHRINK. If some minutes of an hour vanished since the last fold —
+    # a straggler backfill for a period that already aged out, a restore that lands old rows
+    # one at a time — folding the survivors would overwrite the richer row and quietly drop the
+    # rest of that hour. Skip those hours instead: the redundancy gate then refuses to delete
+    # what is left of them and says so, rather than losing it without a word.
+    covered = {int(h): int(rn or 0) for h, rn in con.execute(
+        "SELECT hour, COALESCE(real_rows, 0) + COALESCE(synth_rows, 0) FROM counter_hour")}
+    kept = [r for r in rows if int(r[-2]) + int(r[-1]) >= covered.get(int(r[1]), -1)]
     con.executemany(
         f"INSERT OR REPLACE INTO counter_hour({','.join(_HOUR_COLS)}) "
-        f"VALUES ({','.join('?' * len(_HOUR_COLS))})", rows)
+        f"VALUES ({','.join('?' * len(_HOUR_COLS))})", kept)
     con.commit()
-    return len(rows)
+    return len(kept)
 
 
 def rollup_days(con: sqlite3.Connection) -> int:

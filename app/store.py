@@ -188,6 +188,13 @@ class Store:
             if stale:
                 tiers.enforce_retention(self._con, minute_days=self.minute_days,
                                         history_years=self.history_years)
+            else:
+                # Nothing has aged out, so the full retention pass is skipped — but the fold is
+                # only reachable through it, and without this the hourly rows FREEZE at whatever
+                # they were when the last prune happened (observed: an hour kept reporting 44
+                # buckets / 15.98M tokens while its own minutes held 59 / 18.3M). Refresh the
+                # open hours; two or three groups, microseconds, no deletes.
+                tiers.rollup_hours(self._con, from_ts=int(time.time()) - 3 * 3600)
 
     def set_persist_window(self, seconds: float) -> float:
         """Change the 1 s ring window at runtime and prune immediately, so a
@@ -557,6 +564,28 @@ class Store:
                     "minute_days": self.minute_days,
                     "history_years": self.history_years}
 
+    def _aged_out_hour(self, engine: str) -> dict:
+        """Newest MEASURED hour that has already aged out of the minute table.
+
+        Exists for exactly one case: a box restarted after a long pause, whose last busy hour
+        survives only as an aggregate — without it the cost headline silently vanishes. Only
+        hours strictly below the ladder horizon qualify. A RECENT hour must never be answered
+        from the ladder here: the figure is documented to the operator as "the last active hour
+        of real minute buckets", and answering it from an aggregate kept a projected-savings
+        card alive through a two-hour idle period instead of going blank.
+        """
+        from . import tiers
+        horizon = tiers.horizon_ts(time.time(), self.minute_days)
+        with self._lock:
+            h = self._con.execute(
+                "SELECT hour, real_prompt, real_cached, real_gen, real_rows FROM counter_hour"
+                " WHERE engine=? AND COALESCE(real_rows,0) > 0 AND hour < ?"
+                " ORDER BY hour DESC LIMIT 1", (engine, horizon)).fetchone()
+        if not h or (h[1] + h[2] + h[3]) <= 0:
+            return {"empty": True}
+        return {"empty": False, "prompt": h[1], "cached": h[2], "gen": h[3],
+                "buckets": h[4], "hour_ts": h[0], "basis": "aged_out_hourly_tier"}
+
     def last_active_hour(self, engine: str) -> dict:
         """Totals of the most recent 60-min span that actually has REAL
         buckets (anchor = newest non-synthetic bucket, window =
@@ -564,35 +593,28 @@ class Store:
         (old-dash rule). Synthetic seed/gap buckets are excluded from both
         the anchor and the totals (audit M1: fresh install seeded the whole
         engine lifetime into one bucket -> $/year fantasy figures)."""
+        # The anchor is the newest REAL minute: an hour that produced no tokens is not an
+        # active hour, and a seeded synthetic bucket must never define one either (audit M1).
         with self._lock:
             r = self._con.execute(
                 "SELECT MAX(ts) FROM counter_buckets WHERE engine=?"
                 " AND COALESCE(synthetic,0)=0", (engine,)).fetchone()
-            if not r or r[0] is None:
-                return {"empty": True}
-            anchor = r[0]
-            r2 = self._con.execute(
-                "SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
-                " COALESCE(SUM(gen),0), COUNT(*) FROM counter_buckets"
-                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0",
-                (engine, anchor - 3600)).fetchone()
+            anchor = r[0] if r else None
+            r2 = None
+            if anchor is not None:
+                r2 = self._con.execute(
+                    "SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
+                    " COALESCE(SUM(gen),0), COUNT(*) FROM counter_buckets"
+                    " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0",
+                    (engine, anchor - 3600)).fetchone()
+        if anchor is None or r2 is None:
+            return self._aged_out_hour(engine)      # nothing in the minutes at all
         prompt, cached, gen, n = r2
         # NOTE: this is an activity test, not a token total — cached is summed
         # in deliberately, so an engine whose cached counter is NOT a subset of
         # prompt still counts as active. Displayed totals are always p + g.
         if not n or (prompt + cached + gen) <= 0:
-            # nothing recent in the minutes: fall back to the newest MEASURED hour in the
-            # ladder, so a box restarted after a long pause still has a rate to project from
-            # instead of silently losing the cost headline
-            with self._lock:
-                h = self._con.execute(
-                    "SELECT hour, real_prompt, real_cached, real_gen, real_rows"
-                    " FROM counter_hour WHERE engine=? AND COALESCE(real_rows,0) > 0"
-                    " ORDER BY hour DESC LIMIT 1", (engine,)).fetchone()
-            if not h or (h[1] + h[2] + h[3]) <= 0:
-                return {"empty": True}
-            return {"empty": False, "prompt": h[1], "cached": h[2], "gen": h[3],
-                    "buckets": h[4]}
+            return self._aged_out_hour(engine)      # real minutes exist, but none of them paid
         return {"empty": False, "prompt": prompt, "cached": cached, "gen": gen,
                 "buckets": n}
 
