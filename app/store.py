@@ -21,12 +21,18 @@ SERIES_MAX = {"prefill_tps_avg": 12000.0, "prefill_tps_now": 12000.0}
 
 class Store:
     def __init__(self, path: str, persist_seconds: float = 3600,
-                 minute_days: float = 30.0, history_years: float = 1.0):
+                 minute_days: float = 30.0, history_years: float = 1.0,
+                 ring_full_seconds: float = 3600.0):
         self.path = path
         self.persist_s = persist_seconds
         # how long each rung of the ladder is kept; see app/tiers.py
         self.minute_days = max(1.0, float(minute_days))
         self._ladder_checked = False    # see _ensure_ladder: fold before trusting the ladder
+        # Second-resolution data exists only to serve the last hour: the charts' largest
+        # window is 3600 s, the sparklines stride at 60/120 s and the 7-day backfill is capped
+        # at 800 points, so a 1 s sample older than this can never be rendered. Beyond it we
+        # keep one row per minute (thinned by thin_rings, which refuses to lose a minute).
+        self.ring_full_s = min(86400.0, max(60.0, float(ring_full_seconds)))
         self.history_years = min(20.0, max(0.5, float(history_years)))
         self._lock = threading.Lock()
         self._con = sqlite3.connect(path, check_same_thread=False)
@@ -86,7 +92,7 @@ class Store:
         with self._lock:
             self._con.executemany(
                 "INSERT INTO engine_samples(t, engine, data) VALUES (?,?,?)",
-                [(t, engine, json.dumps(r)) for t, r in rows])
+                [(t, engine, json.dumps(self._lean(r, self._DROP_ENGINE))) for t, r in rows])
             self._con.commit()
         self._prune("engine_samples", "t")
 
@@ -94,7 +100,7 @@ class Store:
         with self._lock:
             self._con.executemany(
                 "INSERT INTO hw_samples(t, data) VALUES (?,?)",
-                [(t, json.dumps(r)) for t, r in rows])
+                [(t, json.dumps(self._lean(r, self._DROP_HW))) for t, r in rows])
             self._con.commit()
         self._prune("hw_samples", "t")
 
@@ -109,6 +115,41 @@ class Store:
 
     # the only (table, column) pairs this class will ever delete on
     _PRUNEABLE = frozenset({("engine_samples", "t"), ("hw_samples", "t")})
+
+    # Fields stripped at the STORAGE boundary only — the live row the browser receives keeps
+    # everything, so this cannot change what the dashboard renders. Every name here was
+    # checked against both the chart contract (sampler.SERIES_KEYS) and web/js, including the
+    # keys the UI builds dynamically: histMs/histBasis concatenate "ttft"/"e2e" with
+    # _p50_ms/_avg_ms/_n/_1h at runtime, so the whole ttft_*/e2e_* families are deliberately
+    # NOT listed here even though a literal grep finds no consumer. A naive grep-based "dead"
+    # scan classifies them as unused and would delete a working chart.
+    _DROP_ENGINE = frozenset({
+        # a copy of the projected-savings bubble, stamped into the ring twice a second. The
+        # bubbles read it from the live SSE row; the only DB reader of ring JSON is
+        # series_tail(), whose whitelist (SERIES_KEYS) uses the flat savings_day/month/year
+        # keys instead. Largest single item in a row: 24.4% of the bytes.
+        "savings",
+        # latency twins no consumer names, and not reachable by the dynamic pattern above
+        "itl_avg_ms", "itl_n", "itl_p50_1h_ms", "itl_avg_1h_ms", "itl_n_1h",
+        "queue_time_avg_ms", "queue_time_n", "queue_time_p50_1h_ms",
+        "queue_time_avg_1h_ms", "queue_time_n_1h",
+        "prefill_time_p50_ms", "prefill_time_avg_ms", "prefill_time_n",
+        "prefill_time_p50_1h_ms", "prefill_time_avg_1h_ms", "prefill_time_n_1h",
+        "decode_time_p50_ms", "decode_time_avg_ms", "decode_time_n",
+        "decode_time_p50_1h_ms", "decode_time_avg_1h_ms", "decode_time_n_1h",
+    })
+    # hardware sensors the dashboard never asks for (gpu*/vram* are auto-charted and stay)
+    _DROP_HW = frozenset({
+        "temp_acpitz_temp1", "temp_acpitz_temp3", "temp_acpitz_temp4",
+        "temp_acpitz_temp6", "temp_acpitz_temp7", "temp_mt7925_phy0_temp1",
+        "load1", "load5", "mem_avail_gb", "swap_used_gb", "disk_r_mbs", "disk_w_mbs",
+    })
+
+    @staticmethod
+    def _lean(row: dict, drop: frozenset) -> dict:
+        """Copy without the fields storage does not need. Never mutates `row`: the caller's
+        dict is the same object the SSE broker hands to every browser."""
+        return {k: v for k, v in row.items() if k not in drop}
 
     def _prune(self, table: str, col: str) -> None:
         # The statement is built by f-string because SQLite cannot bind
@@ -195,6 +236,52 @@ class Store:
                 # buckets / 15.98M tokens while its own minutes held 59 / 18.3M). Refresh the
                 # open hours; two or three groups, microseconds, no deletes.
                 tiers.rollup_hours(self._con, from_ts=int(time.time()) - 3 * 3600)
+
+    def thin_rings(self) -> dict:
+        """Collapse everything older than the full-resolution hour to one row per minute.
+
+        Deleting samples is the one thing this database must not get wrong, so the delete is
+        bracketed by a proof rather than trusted: the set of (minute, engine) that had a row
+        before must be exactly the set that has one after. If it does not hold, the transaction
+        is rolled back and the reason is returned — the same discipline as the ladder's
+        redundancy gate, for the same reason. Rows inside the full-resolution window are never
+        touched, so the last hour always keeps its second-by-second shape.
+        """
+        full = time.time() - self.ring_full_s
+        out: dict = {"thinned": 0, "minutes_before": 0, "minutes_after": 0}
+        with self._lock:
+            for table in ("engine_samples", "hw_samples"):
+                eng = ", engine" if table == "engine_samples" else ""
+                q_min = (f"SELECT COUNT(*) FROM (SELECT DISTINCT CAST(t AS INTEGER)/60{eng}"
+                         f" FROM {table} WHERE t < ?)")
+                before = self._con.execute(q_min, (full,)).fetchone()[0]
+                cur = self._con.execute(
+                    f"DELETE FROM {table} WHERE t < ? AND rowid NOT IN"
+                    f" (SELECT MIN(rowid) FROM {table} WHERE t < ? GROUP BY CAST(t AS INTEGER)/60{eng})",
+                    (full, full))
+                after = self._con.execute(q_min, (full,)).fetchone()[0]
+                if after != before:
+                    self._con.rollback()
+                    out["blocked"] = f"{table}: minutes {before} -> {after}, nothing deleted"
+                    return out
+                out["thinned"] += max(0, cur.rowcount or 0)
+                out["minutes_before"] += before
+                out["minutes_after"] += after
+            self._con.commit()
+        return out
+
+    def ring_stats(self) -> dict:
+        """What the rings cost and how much of them is resolution nothing can render."""
+        now = time.time()
+        with self._lock:
+            out = {"ring_full_s": self.ring_full_s, "persist_s": self.persist_s}
+            for table in ("engine_samples", "hw_samples"):
+                n, by, old = self._con.execute(
+                    f"SELECT COUNT(*), COALESCE(SUM(LENGTH(data)),0),"
+                    f" COALESCE(SUM(CASE WHEN t < ? THEN 1 ELSE 0 END),0) FROM {table}",
+                    (now - self.ring_full_s,)).fetchone()
+                out[table] = {"rows": n, "bytes": by, "rows_above_full_resolution": old}
+            return out
 
     def set_persist_window(self, seconds: float) -> float:
         """Change the 1 s ring window at runtime and prune immediately, so a

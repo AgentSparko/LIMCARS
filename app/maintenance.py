@@ -42,6 +42,8 @@ class Maintenance(threading.Thread):
         self.disk_headroom = float(cfg.get("compact_disk_headroom", 1.2))
         # a young database has nothing worth reclaiming; do not rewrite it for sport
         self.min_bytes = float(cfg.get("compact_min_bytes", 20 << 20))
+        # how often to fold the rings down to one row per minute past the full-resolution hour
+        self.thin_interval = max(60.0, float(cfg.get("thin_interval_s", 300)))
         self._stop = threading.Event()
         self.status: dict = {"enabled": self.enabled, "runs": 0, "last_run": None,
                              "last_vacuum": None, "freed_bytes_total": 0,
@@ -167,13 +169,33 @@ class Maintenance(threading.Thread):
             return
         try:
             self.run_once()
+            thinned = (self.store.thin_rings() or {}).get("thinned", 0)
+            self.status["last_thin"] = {"thinned": thinned}
+            # The boot order is compact-then-thin, so the pages this thin frees are invisible to
+            # the pass above (measured: 244k rows deleted, freelist still reported 16 pages, and
+            # the file stayed 555 MB while 530 MB of it was dead). A thin this large rewrites
+            # most of the file, so it earns its own compaction immediately — compact() still
+            # refuses on its own guards.
+            if thinned > 5000:
+                self.status["note"] = f"post-thin compaction after {thinned} rows"
+                self.run_once()
         except Exception as exc:                       # never take the dashboard down for tidy
             self.status["note"] = f"boot pass failed: {exc}"
-        while not self._stop.wait(self.interval):
+        # Two cadences on one thread: thinning is cheap and wants to be frequent (otherwise the
+        # full-resolution window grows a day deep again), compaction is a full file rewrite and
+        # must stay on its own interval.
+        while not self._stop.wait(min(self.interval, self.thin_interval)):
             try:
-                # fold first, then reclaim: the ladder is what makes the rings disposable
-                self._rollup()
-                self.run_once()
+                thinned = (self.store.thin_rings() or {}).get("thinned", 0)
+                # A thin can free hundreds of megabytes in one statement, and SQLite hands
+                # those pages back to nobody until a VACUUM — so a big thin earns a compaction
+                # pass immediately instead of waiting an hour for the schedule. compact() still
+                # refuses on its own guards (reclaim ratio, disk headroom, minimum size).
+                due = (time.time() - (self.status.get("last_run") or 0)) >= self.interval
+                if due or thinned > 5000:
+                    # fold first, then reclaim: the ladder is what makes the rings disposable
+                    self._rollup()
+                    self.run_once()
             except Exception as exc:
                 self.status["note"] = f"scheduled pass failed: {exc}"
 

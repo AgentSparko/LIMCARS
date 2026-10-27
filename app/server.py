@@ -92,7 +92,8 @@ class Limcars:
         from .store import Store
         self.store = Store(cfg["db_path"], float(cfg.get("persist_seconds", 3600)),
                            minute_days=float(cfg.get("minute_bucket_days", 30)),
-                           history_years=float(cfg.get("history_years", 1)))
+                           history_years=float(cfg.get("history_years", 1)),
+                           ring_full_seconds=float(cfg.get("ring_full_seconds", 3600)))
         from .sampler import EngineManager
         self.engines = EngineManager(cfg, self.broker, self.store)
         from .hw import HwSampler
@@ -588,6 +589,7 @@ class Handler(BaseHTTPRequestHandler):
                                # the ladder: how full each rung is, and where the seams are.
                                # An operator verifying an upgrade reads this next to the money.
                                "ladder": app.store.ladder_counts(),
+                               "rings": app.store.ring_stats(),
                                "windows": {
                                    "persist_seconds": app.cfg.get("persist_seconds", 172800),
                                    "minute_bucket_days": app.cfg.get("minute_bucket_days", 30),

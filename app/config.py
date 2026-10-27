@@ -47,6 +47,10 @@ DEFAULTS = {
     # minute window is affordable — it is the 1 s rings that are 242 MB/day.
     "minute_bucket_days": 30,
     "history_years": 1,
+    # ring resolution: 1 s samples are kept this long, then collapsed to one row per minute
+    # until persist_seconds. The charts' largest window is 3600 s and the sparklines stride at
+    # 60/120 s, so a second-resolution row older than this cannot be rendered by anything.
+    "ring_full_seconds": 3600,
     "window_s": 30.0,        # window for p50 / avg derived stats
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [

@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 208 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 223 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -305,6 +305,39 @@ In plain words: the dashboard keeps a 1-second memory for two days, a minute-by-
 for a month, an hourly memory for as long as you ask (six years costs about 48 MB), and a daily
 memory forever — and it is not allowed to forget anything until it has proven it can remember it
 another way.
+
+## 🔬 The rings: one second where it is seen, one minute where it is not
+
+The two ring tables (`engine_samples`, `hw_samples`) were 94% of the database file — 540 MB for
+48 hours of samples. Two measurements decided what they should hold, instead of a guess:
+
+* **what is in a row.** An engine row carried 65 fields. The nested `savings` projection blob
+  was 24.4% of the bytes and nothing read it from the database (it is recomputed live every
+  second); 29 latency twins (`itl_*`, `queue_time_*`, `prefill_time_*`, `decode_time_*`) were
+  another 34.8% with no reader at all. Half the hardware row was sensor spam (`load1/5`,
+  `swap_used_gb`, `temp_acpitz_*`, `temp_mt7925_*`, disk/net throughput) no card ever asked for.
+  Unread fields are stripped **at the storage boundary only** — the row the browser receives
+  over SSE still carries everything, which is what keeps the savings cards alive.
+* **what can be rendered.** The largest chart window is 3600 s, sparklines stride at 60/120 s,
+  and the 7-day backfill is capped at 800 points. A second-resolution sample older than one
+  hour cannot become a pixel, so past the full-resolution hour the rings keep **one sample per
+  minute** — with a proof around the delete: the set of minutes before must equal the set after,
+  or the transaction rolls back.
+
+Result: **540 MB → 25 MB**, engine rows 2,175 B → 1,213 B (65 fields → 42), same dashboard.
+Tune the boundary with `ring_full_seconds` (default 3600) in `data/config.json`.
+
+Re-prove it after any storage change:
+
+```
+python3 scripts/limcars_contract_diff.py <before.json> <after.json>
+```
+
+It re-fetches every endpoint the browser reads and asserts three things: no field inside the
+render contract disappeared, cumulative fields are byte-identical for any minute the snapshot
+also served, and no minute of history was dropped. Money is checked one-directionally — a token
+counter may only ever grow. (`ttft_*` / `e2e_*_1h_ms` are concatenated at runtime inside
+`histMs`, so a literal grep finds no consumer and would delete a working chart; they stay.)
 
 ## 💵 Money is recorded as it was earned
 
