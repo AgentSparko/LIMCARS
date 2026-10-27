@@ -211,7 +211,19 @@ def test_storage_stats_reports_the_dead_space_it_would_reclaim(tmp_path):
     assert s["dead_bytes"] == s["free_pages"] * s["page_size"]
     assert s["rows"]["counter_buckets"] == 0
     assert s["tables_bytes"] == {}, "dbstat must stay opt-in (it walks every page)"
-    assert st.storage_stats(tables=True)["tables_bytes"], "?tables=1 should report table sizes"
+    # dbstat is a compile-time option (SQLITE_ENABLE_DBSTAT_VTAB) and the Windows CI image does not
+    # always carry it, so branch on what the panel ACTUALLY returned rather than on a capability
+    # probe that could disagree with the query it is supposed to predict.
+    tb = st.storage_stats(tables=True)["tables_bytes"]
+    if not tb:
+        assert st.storage_stats()["bytes"] > 0, "the rest of the panel must work without dbstat"
+        compiled = st._con.execute(
+            "SELECT 1 FROM pragma_module_list WHERE name='dbstat'").fetchone()
+        if compiled:
+            pytest.fail("dbstat is compiled in yet ?tables=1 returned nothing — the opt-in "
+                        "table report is broken, not unavailable")
+        pytest.skip("this sqlite build has no dbstat virtual table; the panel degrades correctly")
+    assert tb, "?tables=1 should report table sizes"
 
 
 # --- the VACUUM guard must fail CLOSED -------------------------------------------------

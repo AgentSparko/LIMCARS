@@ -220,7 +220,7 @@ client can name — including `histNum`/`histMs`/`histBasis` (`dashboard.js:104-
 
 | Guard | File | Catches |
 |---|---|---|
-| 253 tests / 30 files | `tests/` | everything below is also a test |
+| 255 tests / 31 files | `tests/` | everything below is also a test |
 | ring storage | `test_ring_storage.py` (12) | unread field stored, caller row mutated, thin losing a minute, row byte budget, a text metric costing the engine its samples, `ring_stats` caching |
 | sparkline stats | `test_spark_stats.py` (11) | stats not surviving the prune, the 7-day sparkline amputated, watermark skipping points, stride/keys drifting from the consumer |
 | render contract | `test_render_contract.py` (7) | deny-list touching a charted field, dynamic-family drift |
@@ -232,6 +232,7 @@ client can name — including `histNum`/`histMs`/`histBasis` (`dashboard.js:104-
 | security | `test_security_http.py` (16), `test_nodes_ssh_opts.py` (31), `test_auth.py` | unauthenticated writes, ssh option injection, lockout, a query string choosing the scan size |
 | portability | `test_portability.py`, `test_portability_linux.py` | Windows path and `/proc` path, and that they agree |
 | docs/code drift | `test_docs_knobs.py` | a documented knob the code does not implement |
+| explicit encodings | `test_explicit_encodings.py` (2) | a text open that leaves the encoding to the platform — the bug that turned the Windows lane red |
 | **upgrade rehearsal** | `scripts/limcars_upgrade_rehearsal.py` | a real old database, old code as the baseline, deep diff of every payload the dashboard renders, plus the file actually shrinking |
 | contract diff | `scripts/limcars_contract_snapshot.py` + `limcars_contract_diff.py` | a storage change moving a visible reading; the contract is derived from the app so it cannot drift from what is rendered |
 | tidy / ladder CLIs | `scripts/limcars_tidy.py` (`--tier`), `scripts/ladder_live_proof.py` | operator-driven migration with a money gate |

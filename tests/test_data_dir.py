@@ -70,7 +70,7 @@ def test_booted_instance_keeps_its_state_out_of_the_repo(tmp_path):
 
         # the state landed where we pointed it
         assert (tmp_path / "auth.json").exists(), "auth.json did not follow LIMCARS_DATA"
-        assert json.loads((tmp_path / "auth.json").read_text()).get("hash"), \
+        assert json.loads((tmp_path / "auth.json").read_text(encoding="utf-8")).get("hash"), \
             "password was not stored in the isolated dir"
         # ...and nowhere else
         for p, (existed, ns) in before.items():

@@ -73,13 +73,13 @@ for t in ("engine_samples", "hw_samples", "counter_buckets", "events", "counter_
     except Exception:
         d["counts"][t] = None
 store._con.close()
-json.dump(d, open(out, "w"))
+json.dump(d, open(out, "w", encoding="utf-8"))
 """
 
 
 def _run_dump(code: str, db: str, out: str) -> dict:
     script = os.path.join(code, ".rehearsal_dumper.py")
-    with open(script, "w") as fh:
+    with open(script, "w", encoding="utf-8") as fh:
         fh.write(DUMPER)
     env = dict(os.environ, LIMCARS_DATA=tempfile.mkdtemp(prefix="limcars-rehearsal-"))
     try:
@@ -92,7 +92,7 @@ def _run_dump(code: str, db: str, out: str) -> dict:
             os.unlink(script)
         except OSError:
             pass
-    return json.load(open(out))
+    return json.load(open(out, encoding="utf-8"))
 
 
 def boot_new(db: str) -> str:

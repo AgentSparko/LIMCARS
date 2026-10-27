@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 253 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 255 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 

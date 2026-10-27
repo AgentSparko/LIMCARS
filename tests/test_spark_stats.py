@@ -222,7 +222,7 @@ def test_spark_series_matches_the_consumer(tmp_path):
         if key == "cache_hit_pct":
             # drawn by the client straight off /api/history, not by counters.py
             js = (pathlib.Path(__file__).resolve().parent.parent / "web" / "js"
-                  / "dashboard.js").read_text()
+                  / "dashboard.js").read_text(encoding="utf-8")   # explicit: Windows defaults to cp1252
             assert "cache_hit_pct" in js and "api/history" in js
             continue
         assert f'"{key}"' in src and f"{stride}" in src, f"{key}@{stride} no longer drawn"

@@ -172,7 +172,7 @@ def check(name, before_rows, after_rows, snap_ts):
 
 
 def main():
-    snap = json.load(open(SNAP))
+    snap = json.load(open(SNAP, encoding="utf-8"))
     snap_ts = os.path.getmtime(SNAP)
     print(f"snapshot {SNAP} taken {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(snap_ts))}"
           f"  ({time.strftime('%H:%M:%S')}) — comparing readings at or before that instant\n")
@@ -251,7 +251,7 @@ def main():
             problems.append(("money", f"cost_hot shrank {cost_before} -> {cost_now}"))
 
     json.dump({"taken_at": time.time(), "after": snap.get("_after", {}),
-               "sparks": (get(COUNTERS).get("sparks") or {})}, open(OUT, "w"))
+               "sparks": (get(COUNTERS).get("sparks") or {})}, open(OUT, "w", encoding="utf-8"))
     print(f"\nafter-snapshot -> {OUT}")
     if problems:
         print(f"\n{len(problems)} check(s) failed — the change altered what the dashboard serves:")

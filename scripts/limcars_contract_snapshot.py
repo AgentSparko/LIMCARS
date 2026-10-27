@@ -42,7 +42,7 @@ def main():
         "sparks": {k: (counters.get("sparks") or {}).get(k) or []
                    for k in ("day", "month", "year")},
     }
-    json.dump(snap, open(OUT, "w"))
+    json.dump(snap, open(OUT, "w", encoding="utf-8"))
     print(f"captured -> {OUT}")
     for k, v in snap["sparks"].items():
         print(f"  {k:5s} spark {len(v):>4} points")

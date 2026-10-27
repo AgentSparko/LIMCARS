@@ -114,14 +114,14 @@ def _hwmon_temp() -> dict:
         for hw in sorted("/sys/class/hwmon") and os.listdir("/sys/class/hwmon"):
             d = f"/sys/class/hwmon/{hw}"
             try:
-                name = open(d + "/name").read().strip()
+                name = open(d + "/name", encoding="utf-8", errors="replace").read().strip()
             except OSError:
                 continue
             for label in os.listdir(d):
                 if not label.endswith("_input") or not label.startswith(("temp", "cpu", "gpu", "soctherm")):
                     continue
                 try:
-                    val = int(open(f"{d}/{label}").read()) / 1000.0
+                    val = int(open(f"{d}/{label}", encoding="utf-8").read()) / 1000.0
                 except (OSError, ValueError):
                     continue
                 key = f"{name}_{label[:-6]}"
