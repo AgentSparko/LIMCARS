@@ -110,7 +110,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 239 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 253 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -329,8 +329,9 @@ prefix-cache bubble's 7-day lifetime sparkline). Everything else it gets from me
 | hourly / daily totals | 6 y / forever | see next section |
 
 **Measured: 540 MB → 10.3 MB.** The whole 7-day lifetime sparkline costs 11 KB; it used to cost
-~500 MB of 1-second samples. Tunables in `data/config.json`: `persist_seconds` (ring horizon),
-`ring_full_seconds`, `spark_hours`.
+~500 MB of 1-second samples. Tunables in `data/config.json`: `persist_seconds` (ring horizon), `ring_full_seconds` (how long a
+sample keeps second detail), `spark_hours` (how long the sparkline stats survive — keep it ≥ 8 days
+or a visible curve ages out early; `/api/storage` reports `rings.spark_stats.short`).
 
 Storage is a **deny-list, decided by a gate**. `tests/test_render_contract.py` derives the render
 contract from the app itself — `sampler.SERIES_KEYS`, `hw.series_keys()` (whose `_BASE_KEYS`

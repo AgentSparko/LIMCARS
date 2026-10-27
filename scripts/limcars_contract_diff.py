@@ -153,6 +153,12 @@ def check(name, before_rows, after_rows, snap_ts):
     lost = sorted(expected - set(cur))
     worst = max(((k, v) for k, v in drift.items() if v), key=lambda kv: kv[1], default=None)
     bad = len(mismatches) + len(missing_field) + len(lost)
+    # a section with nothing to compare has proven nothing: say so instead of printing OK, or the
+    # whole tool becomes a green light that a moved window can satisfy vacuously
+    if not common:
+        print(f"SKIP {name:26s} no minute overlaps the snapshot instant (window moved on) — "
+              f"this endpoint proved nothing this run")
+        return 0
     print(f"{'OK ' if not bad else 'BAD'} {name:26s} minutes {len(common):>4}  stable {len(stable):>2} "
           f"mismatch {len(mismatches):>3}  stripped {len(absent):>3}  lost {len(lost):>3}"
           + (f"  | drift max {worst[0]}={worst[1]:.2f}" if worst else ""))
