@@ -166,6 +166,23 @@ def test_the_seven_day_prefix_cache_spark_survives_the_hour_buffer(tmp_path):
     assert all(r.get("cache_hit_pct") is not None for r in beyond)
 
 
+def test_a_short_ring_window_leaves_no_hole_before_the_stats_take_over(tmp_path):
+    """Settings may set persist_seconds as low as 5 min. If history() assumed the raw rows always
+    reached a full hour, the minutes between the prune horizon and that assumption would be served
+    by neither source -- a silent gap in the middle of the lifetime sparkline."""
+    store = Store(str(tmp_path / "hole.db"), persist_seconds=60, ring_full_seconds=3600)
+    now = time.time()
+    start = int(now - 3 * 3600)
+    start -= start % 60
+    _seed(store, "e1", float(start), 3 * 3600, stride=60)
+    assert store.raw_coverage_s == 60.0
+    rows = store.history("engine_samples", "e1", 7 * 86400)
+    served = {int(r["t"]) // 60 for r in rows if r.get("cache_hit_pct") is not None}
+    wanted = {int(start) // 60 + i for i in range(180)}
+    missing = sorted(wanted - served)
+    assert not missing, f"{len(missing)} minutes served by neither source, e.g. {missing[:5]}"
+
+
 def test_spark_series_matches_the_consumer(tmp_path):
     """If counters.py ever changes a stride or a key, this table stops matching what is drawn."""
     import inspect

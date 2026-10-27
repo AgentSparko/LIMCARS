@@ -54,6 +54,9 @@ class Store:
         # kept min(its own reach, this) -- the default covers the deepest reach (the 7-day
         # prefix-cache lifetime sparkline), and lowering it shortens every bubble on purpose.
         self.spark_s = max(3600.0, min(30 * 86400.0, float(spark_hours) * 3600.0))
+        # how far back raw rows actually reach: the prune horizon, never more than the
+        # full-resolution hour the buffer was sized for
+        self.raw_coverage_s = min(self.ring_full_s, float(getattr(self, "persist_s", 3600.0)))
         # a series whose reach the ceiling cannot cover is a bug in SPARK_SERIES, not a knob
         deepest = max(keep for _s, keep in SPARK_SERIES.values())
         if self.spark_s < deepest:
@@ -391,6 +394,7 @@ class Store:
         old rows until the next write). Clamped to the Settings range.
         """
         self.persist_s = min(604800.0, max(300.0, float(seconds)))
+        self.raw_coverage_s = min(self.ring_full_s, self.persist_s)
         self._prune("engine_samples", "t")
         self._prune("hw_samples", "t")
         return self.persist_s
@@ -848,7 +852,10 @@ class Store:
             for key, t, v in stats:
                 ti = int(t)
                 # only the region the rings no longer cover, and never shadow a real sample
-                if ti >= now - self.ring_full_s or ti in have:
+                # raw rows cover min(horizon, full-resolution hour) — Settings can push
+                # persist_seconds as low as 5 min, and assuming an hour here would leave a hole
+                # between where the samples stop and where the stats take over
+                if ti >= now - self.raw_coverage_s or ti in have:
                     continue
                 merged.setdefault(ti, {"t": float(ti)})[key] = v
             out.extend(merged.values())
