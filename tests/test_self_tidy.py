@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+from app import tiers
 from app.maintenance import Maintenance
 from app.store import Store
 
@@ -37,6 +38,22 @@ def _fat_store(path, rows=4000):
     st._con.commit()
     st._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     st._con.commit()
+    return st
+
+
+def _full_ring_store(path, now):
+    """A fat database the way a running install has it: rings a full persist window deep, the
+    oldest hour of minutes about to age out, and recent buckets up to the open minute."""
+    st = _fat_store(path)
+    st.save_engine_samples("e1", [(now - 3600 + 0.5 * i, {"kv_pct": 1.0}) for i in range(7200)])
+    st.save_hw_samples([(now - 3600 + i, {"cpu_pct": 5.0}) for i in range(3600)])
+    oldest = tiers.horizon_ts(now, st.minute_days)
+    recent = int(now) // 60 * 60 - 60           # the open minute has no bucket yet
+    for ts in [oldest + i * 60 for i in range(60)] + [recent - i * 60 for i in range(5)]:
+        st.save_counter_bucket("e1", ts, {
+            "prompt": 900, "cached": 400, "gen": 50, "reqs": 1, "iters": 2, "dec_min": None,
+            "dec_peak": None, "spec_sum": None, "spec_n": 0,
+            "cost_hot": 0.25, "price_slug": "s", "priced_at": now, "price_src": "live"})
     return st
 
 
@@ -202,6 +219,59 @@ def test_a_concurrent_writer_is_not_mistaken_for_drift(tmp_path, monkeypatch):
     assert m.run_once(force=True)["vacuumed"] is True
     assert "warning" not in m.status, m.status
     assert m.enabled is True, "late writes must not switch the tidy thread off"
+
+
+def test_a_live_server_is_not_mistaken_for_drift(tmp_path, monkeypatch):
+    """The cap does not freeze what the server does around it. Retention deletes from the OLD
+    end (Store._prune on every ring write, the minute tier on the first bucket write of a new
+    hour), and the sampler writes rows stamped BEFORE the cap (a ring batch is 4-10 s of
+    samples, a minute's bucket lands a minute later). A live install with a full ring read
+    that as data loss and switched the tidy thread off on its first real pass."""
+    clock = {"now": (int(time.time()) // 3600 + 1) * 3600 - 2.0}   # two seconds before the hour
+    monkeypatch.setattr(time, "time", lambda: clock["now"])
+    st = _full_ring_store(str(tmp_path / "t.db"), clock["now"])
+    oldest = tiers.horizon_ts(clock["now"], st.minute_days)
+    real = st.compact
+
+    def live(**kw):
+        r = real(**kw)
+        clock["now"] += 5                       # the VACUUM took five seconds and crossed the hour
+        t = clock["now"]
+        st.save_engine_samples("e1", [(t - 3 + i, {"kv_pct": 2.0}) for i in range(4)])
+        st.save_hw_samples([(t - 9 + i, {"cpu_pct": 6.0}) for i in range(10)])
+        st.save_counter_bucket("e1", int(t) // 60 * 60 - 60, {
+            "prompt": 10, "cached": 1, "gen": 1, "reqs": 1, "iters": 1, "dec_min": None,
+            "dec_peak": None, "spec_sum": None, "spec_n": 0})
+        return r
+
+    monkeypatch.setattr(st, "compact", live)
+    m = Maintenance(CFG, st)
+    assert m.run_once(force=True)["vacuumed"] is True
+    # retention really did run in between, or this test proves nothing
+    assert st._con.execute("SELECT MIN(t) FROM engine_samples").fetchone()[0] > oldest
+    assert st._con.execute("SELECT COUNT(*) FROM counter_buckets WHERE ts<?",
+                           (oldest + 3600,)).fetchone()[0] == 0
+    assert "warning" not in m.status, m.status["warning"]
+    assert m.enabled is True, "a live server must not switch the tidy thread off"
+
+
+def test_a_ring_minute_lost_inside_the_window_is_still_caught(tmp_path, monkeypatch):
+    """Ignoring the old end and new writes must not blind the gate to the window itself."""
+    now = time.time()
+    st = _full_ring_store(str(tmp_path / "t.db"), now)
+    real = st.compact
+
+    def hungry(**kw):
+        r = real(**kw)
+        st._con.execute("DELETE FROM engine_samples WHERE t BETWEEN ? AND ?",
+                        (now - 1800, now - 1790))
+        st._con.commit()
+        return r
+
+    monkeypatch.setattr(st, "compact", hungry)
+    m = Maintenance(CFG, st)
+    assert "invariant_drift" in m.run_once(force=True)
+    assert m.enabled is False and "engine_samples" in m.status["warning"]
 
 
 def test_storage_stats_reports_the_dead_space_it_would_reclaim(tmp_path):

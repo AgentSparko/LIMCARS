@@ -62,11 +62,13 @@ class Maintenance(threading.Thread):
                    if os.path.exists(x))
 
     def _invariants(self, cap: int) -> dict:
-        """Row counts and money, restricted to rows at or before `cap`.
+        """Ring rows per minute and the money of every bucket, at or before `cap`.
 
         The cap is the point. The server is writing rings twice a second and a bucket a
         minute while this runs, so comparing raw counts before/after a VACUUM would always
         "drift". Measuring both sides against one frozen timestamp makes it a real check.
+        Kept per slice rather than as totals because the cap alone does not freeze them: see
+        _lost() for what the server still changes under it.
         """
         con = getattr(self.store, "_con", None)
         out: dict = {}
@@ -83,21 +85,17 @@ class Maintenance(threading.Thread):
                 if not held:
                     self.status["note"] = "invariants skipped: store lock busy"
                     return {}
-            for table, col in (("engine_samples", "t"), ("hw_samples", "t"),
-                               ("counter_buckets", "ts")):
+            for table in ("engine_samples", "hw_samples"):
                 try:
-                    out[table] = con.execute(
-                        f"SELECT COUNT(*) FROM {table} WHERE {col}<=?", (cap,)).fetchone()[0]
+                    out[table] = dict(con.execute(
+                        f"SELECT CAST(t AS INTEGER)/60*60, COUNT(*) FROM {table}"
+                        " WHERE t<=? GROUP BY 1", (cap,)).fetchall())
                 except Exception:  # noqa: BLE001 — a missing table is not a drift signal
                     out[table] = None
             try:
-                row = con.execute(
-                    "SELECT COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
-                    " COALESCE(SUM(gen),0), COALESCE(SUM(reqs),0),"
-                    " COALESCE(SUM(cost_hot),0), COUNT(cost_hot) FROM counter_buckets"
-                    " WHERE ts<=?", (cap,)).fetchone()
-                for k, v in zip(("prompt", "cached", "gen", "reqs", "cost_hot", "priced"), row):
-                    out[k] = round(float(v), 6) if isinstance(v, float) else v
+                out["counter_buckets"] = {(e, ts): rest for e, ts, *rest in con.execute(
+                    "SELECT engine, ts, prompt, cached, gen, reqs, cost_hot FROM counter_buckets"
+                    " WHERE ts<=?", (cap,))}
             except Exception:  # noqa: BLE001
                 pass
         finally:
@@ -105,7 +103,39 @@ class Maintenance(threading.Thread):
                 lock.release()
         # a read that produced nothing is NOT a clean check — returning {} here used to make the
         # VACUUM guard pass vacuously, which is the one thing it exists to prevent
-        return out if "prompt" in out and out.get("engine_samples") is not None else {}
+        return out if "counter_buckets" in out and out.get("engine_samples") is not None else {}
+
+    def _lost(self, pre: dict, post: dict) -> dict:
+        """What the rewrite lost: a ring minute holding fewer rows, a bucket gone or changed.
+
+        One way only, because the server keeps writing under the cap: a sampler batch lands
+        rows stamped before it, and a minute's bucket is written a minute later under that
+        minute's ts. A VACUUM can lose rows but never add one, so growth is a writer.
+        Retention deletes from the old end meanwhile (Store._prune on every ring write, the
+        minute tier on the first bucket write of a new hour), so slices below its floor, read
+        now that the rewrite is done, are not compared. Everything above it still is.
+        """
+        from . import tiers
+        now = time.time()
+        ring = now - self.store.persist_s                       # Store._prune's cutoff
+        floors = {"engine_samples": ring, "hw_samples": ring,
+                  "counter_buckets": tiers.horizon_ts(now, self.store.minute_days)}
+        out: dict = {}
+        for table, floor in floors.items():
+            a, b = pre.get(table), post.get(table)
+            if a is None or b is None:
+                if (a is None) != (b is None):
+                    out[table] = "unreadable on one side"
+                continue
+            if table == "counter_buckets":
+                bad = {f"{e}@{ts}": (v, b.get((e, ts))) for (e, ts), v in a.items()
+                       if ts >= floor and b.get((e, ts)) != v}
+            else:
+                bad = {m: (n, b.get(m, 0)) for m, n in a.items()
+                       if m >= floor and b.get(m, 0) < n}
+            if bad:
+                out[table] = dict(sorted(bad.items())[:5])      # a sample is enough to act on
+        return out
 
     def _rollup(self) -> None:
         """Fold aged minutes into the hourly/daily ladder without deleting anything.
@@ -162,7 +192,7 @@ class Maintenance(threading.Thread):
             self.enabled = False
             rep["invariant_unverified"] = True
             return rep
-        drift = {k: (pre[k], post[k]) for k in pre if pre[k] != post[k]}
+        drift = self._lost(pre, post)
         if drift:
             self.enabled = False                      # do not do it again while confused
             self.status["warning"] = f"rows changed across compaction: {drift}"
