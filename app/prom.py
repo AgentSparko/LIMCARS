@@ -24,12 +24,15 @@ def parse(text: str) -> dict[str, list[Line]]:
     for raw in text.split("\n"):
         if not raw or raw[0] == "#":
             continue
-        # split value: last whitespace-separated token
-        sp = raw.rfind(" ")
-        if sp < 0:
+        # name[{labels}] value [timestamp], split by spaces or tabs: the value
+        # is the first token after the labels, which end at the last '}' (a
+        # label value may hold blanks or '}', a value/timestamp never does)
+        rb = raw.rfind("}")
+        toks = raw[rb + 1:].split()
+        head = raw[:rb + 1] if rb >= 0 else (toks.pop(0) if toks else "")
+        if not toks:
             continue
-        val_s = raw[sp + 1:]
-        head = raw[:sp]
+        val_s = toks[0]
         try:
             val = float(val_s)
         except ValueError:
@@ -74,7 +77,8 @@ def _parse_labels(s: str) -> dict[str, str]:
         while j < n:
             c = s[j]
             if c == "\\":
-                buf.append(s[j + 1: j + 2])
+                esc = s[j + 1: j + 2]
+                buf.append("\n" if esc == "n" else esc)
                 j += 2
                 continue
             if c == '"':
