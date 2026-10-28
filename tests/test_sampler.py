@@ -129,3 +129,54 @@ def test_restart_still_rejects_a_live_counter_that_went_backwards():
     s.store = _Empty(s.store.saved)
     s._rate_minute(now, {"prompt_tokens": 1000, "gen_tokens": 1700})
     assert s._rate_prev_t == now and s._rate_prev["prompt_tokens"] == 1000
+
+
+def _vllm_counters(t):
+    """A vLLM engine serving 2000 prompt tok/s (60% from cache) and 200 gen tok/s."""
+    return {"prompt_tokens": 1_000_000.0 + 2000 * t, "gen_tokens": 200_000.0 + 200 * t,
+            "cached_tokens": 600_000.0 + 1200 * t, "req_success": 500.0 + t}
+
+
+def test_a_scrape_missing_the_cached_series_is_not_a_counter_reset(tmp_path):
+    """One /metrics body without the cached series read as 0, i.e. a counter reset: that
+    minute's tokens were dropped and the next minute billed the engine's lifetime cache."""
+    from app.store import Store
+    s = _mk()
+    s.store = Store(str(tmp_path / "s.db"))
+    t0 = time.time() // 60 * 60
+    for t in (0, 60, 60.5, 120, 180, 180.5, 240, 240.5):
+        c = _vllm_counters(t)
+        if t in (60, 180):                 # the minute closes on a half-written scrape
+            del c["cached_tokens"]
+        s._rate_minute(t0 + t, c)
+    first, last = _vllm_counters(0), s._rate_prev
+    p, cached, g = s.store._con.execute(
+        "SELECT SUM(prompt), SUM(cached), SUM(gen) FROM counter_buckets WHERE synthetic=0"
+    ).fetchone()
+    assert cached == last["cached_tokens"] - first["cached_tokens"], \
+        f"billed {cached:.0f} cached tokens, engine served {last['cached_tokens'] - first['cached_tokens']:.0f}"
+    assert p == last["prompt_tokens"] - first["prompt_tokens"], "a minute's prompt was dropped"
+    assert g == last["gen_tokens"] - first["gen_tokens"]
+    # a real restart still rebuilds the baseline, even before the new process exports cached
+    s._rate_minute(t0 + 300.5, {"prompt_tokens": 500.0, "gen_tokens": 50.0})
+    assert s._rate_prev_t == t0 + 300.5 and s._rate_prev["prompt_tokens"] == 500.0
+    s._rate_minute(t0 + 360.5, {"prompt_tokens": 900.0, "gen_tokens": 90.0})
+    assert s._rate_prev_t == t0 + 360.5, "the new process's minutes are never closed"
+
+
+def test_a_counter_that_stays_missing_does_not_stall_the_ledger(tmp_path):
+    """The wait for a complete scrape is bounded: if the cached series never comes back while
+    prompt/gen keep climbing, the baseline is rebuilt without it and minutes close again."""
+    from app.store import Store
+    s = _mk()
+    s.store = Store(str(tmp_path / "s.db"))
+    t0 = time.time() // 60 * 60
+    s._rate_minute(t0, _vllm_counters(0))
+    for t in range(60, 421, 60):
+        c = _vllm_counters(t)
+        del c["cached_tokens"]
+        s._rate_minute(t0 + t, c)
+    assert s._rate_prev_t == t0 + 420, "minute closes stopped for good"
+    p, cached = s.store._con.execute(
+        "SELECT SUM(prompt), SUM(cached) FROM counter_buckets WHERE synthetic=0").fetchone()
+    assert (p, cached) == (2 * 2000 * 60, 0)    # the two minutes after the rebuild at 300 s
