@@ -57,6 +57,22 @@ def test_labels_with_commas_and_quotes():
     assert labels["a"] == "x,y" and labels["b"] == 'say "hi"' and v == 5.0
 
 
+def test_value_is_read_before_an_exposition_timestamp():
+    # `name value timestamp`: the optional trailing ms timestamp is not the value
+    s = prom.parse('vllm:prompt_tokens_total{engine="0"} 5000 1793000000000\nup 1 1793000000000')
+    assert s["vllm:prompt_tokens_total"][0][2] == 5000.0 and s["up"][0][2] == 1.0
+
+
+def test_tab_separated_samples_are_kept():
+    s = prom.parse('m{a="x y"}\t8\nn\t9\t1793000000000')
+    assert s["m"][0][1:] == ({"a": "x y"}, 8.0) and s["n"][0][2] == 9.0
+
+
+def test_label_escapes_follow_the_exposition_format():
+    s = prom.parse('m{path="C:\\\\dir\\nnext",q="\\"x\\""} 3')
+    assert s["m"][0][1] == {"path": "C:\\dir\nnext", "q": '"x"'}
+
+
 def test_sse_broker_replay_and_drop():
     from app.sse import Topic
     import queue as _q
