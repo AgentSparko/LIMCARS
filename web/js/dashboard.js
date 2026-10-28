@@ -130,7 +130,17 @@ const e2eHourBasis = l => histBasis(l, 'e2e');
 // ---------------- build ----------------
 
 // selected engine (header switcher; ?engine= > cookie > first configured)
-const eng = () => (state.sel && state.engines[state.sel]) ? state.sel : Object.keys(state.engines)[0];
+const eng = () => {
+  const ids = Object.keys(state.engines);
+  const up = id => { const e = state.engines[id]; return !!(e && (e.alive || (e.meta && e.meta.alive))); };
+  const sel = state.sel && state.engines[state.sel] ? state.sel : null;
+  // A remembered selection that went dead must not hide a live engine —
+  // after an engine swap the stored pref pointed at the old (now dead) one
+  // and the whole page read "no stats". An EXPLICIT click on a dead engine
+  // is honoured: the user wants its last state, not a silent redirect.
+  if (sel && (up(sel) || state.selExplicit)) return sel;
+  return ids.find(up) || sel || ids[0];
+};
 const latest = () => (state.engines[eng()] || {}).latest || {};
 // sidebar hardware source: this box, or a cluster node picked in the sidebar
 const hwNode = () => (state.nodeSel && state.nodes && state.nodes[state.nodeSel]) || null;
@@ -1022,7 +1032,7 @@ function renderScope() {
 
 async function renderInfo() {
   let d;
-  try { d = await (await fetch('/api/engine-info')).json(); }
+  try { d = await (await fetch(`/api/engine-info?engine=${encodeURIComponent(eng())}`)).json(); }
   catch (e) { return; }  // audit: kept showing pre-outage config as current
   const t = document.querySelector('#info-tbl');
   if (!d.healthy) { t.innerHTML = `<tr><td class="muted">${escH(String(d.error || 'offline'))}</td></tr>`; return; }
@@ -1031,7 +1041,12 @@ async function renderInfo() {
     ['KV pool', d.pool_tokens ? fmtK(d.pool_tokens) + ' tok' + (d.num_gpu_blocks ? ` · ${d.num_gpu_blocks.toLocaleString()} blocks × ${d.block_size}` : '') : '–'],
     ['KV dtype', d.kv_dtype], ['Speculative', d.spec + ' · K=' + (d.draft_k ?? '–')],
     ['Accept rate', d.accept_rate != null ? d.accept_rate + '%' : '–'],
-  ].map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${escH(String(v ?? '–'))}</td></tr>`).join('');
+  ];
+  // engines with their own contract (TandemLLM) bring their own rows
+  for (const [k, v] of (d.rows_extra || [])) {
+    if (!rows.some(r => r[0] === k)) rows.push([k, v]);
+  }
+  const html = rows.map(([k, v]) => `<tr><td class="muted">${k}</td><td class="mono">${escH(String(v ?? '–'))}</td></tr>`).join('');
   const cfg = Object.entries(d.config || {}).map(([k, v]) =>
     `<tr><td class="muted">${escH(k)}</td><td class="mono">${escH(String(v))}</td></tr>`).join('');
   const launch = d.launch
@@ -1043,7 +1058,7 @@ async function renderInfo() {
          <button class="pill" id="rec-new">＋ New</button>
        </div>`
     : '';
-  t.innerHTML = rows
+  t.innerHTML = html
     + `<tr><td colspan="2" style="padding:6px 0 0"><div class="side-lbl">full engine config (vllm:cache_config_info)</div>
        <table class="data" style="width:100%">${cfg}</table>${launch}</td></tr>`;
   const saveRec = (name, cmd) => authFetch('/api/recipes', {
@@ -1649,6 +1664,7 @@ function selectEngine(id) {
   const prev = eng();
   if (!state.engines[id] || id === prev) return;
   state.sel = id;
+  state.selExplicit = true;   // clicked, not remembered — see eng()
   uiPrefs = writeUiPrefs({ engine: id });
   const u = new URL(location.href);
   u.searchParams.set('engine', id);
