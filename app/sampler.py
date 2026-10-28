@@ -114,6 +114,7 @@ class EngineSampler(threading.Thread):
         self._min_acc: dict = {"dec": [], "spec": []}
         self._rate_prev: dict | None = None
         self._rate_prev_t = 0.0
+        self._rate_live: set[str] = set()       # counters the baseline really read
         self._savings_cache: dict | None = None
         self._stop = threading.Event()
         self.started = time.time()
@@ -414,6 +415,7 @@ class EngineSampler(threading.Thread):
             return
         base = {"prompt_tokens": cur_p, "gen_tokens": cur_g, "cached_tokens": cur_c,
                 "req_success": cur_r, "iterations": cur_i}
+        live = {k for k in base if counters.get(k) is not None}
         if self._rate_prev is None:
             # Restore last-seen absolutes from SQLite: the engine kept
             # serving while limcars was down/restarting — a fresh baseline
@@ -422,7 +424,6 @@ class EngineSampler(threading.Thread):
             # Signals the dialect no longer exposes (e.g. a mapping dropped in
             # an upgrade) read 0 now: a saved value for them must not veto the
             # restore of the real token baselines.
-            live = {k for k in base if counters.get(k) is not None}
             saved = self.store.get_counter_raw(self.id) if self.store else None
             if (saved and now - saved[0] < 86400
                     and all(float(saved[1].get(k, 0)) <= v + 1e-6
@@ -447,6 +448,7 @@ class EngineSampler(threading.Thread):
                         "synthetic": 1})
                 self._rate_prev = base
                 self._rate_prev_t = now
+            self._rate_live = live
             return
         if now - self._rate_prev_t < 60.0:
             return
@@ -463,15 +465,29 @@ class EngineSampler(threading.Thread):
             self._ps_seen = _ps
             self._rate_prev = base
             self._rate_prev_t = now
+            self._rate_live = live
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
             self._kv_pool = None    # new block config → re-parse pool
             return
         if _ps:
             self._ps_seen = _ps
+        # A counter the baseline read is missing from this scrape (half-written
+        # body, a label set not registered yet): its 0 is not a reset — taking
+        # it as one dropped this minute and billed the engine's lifetime count
+        # the next. Wait for a complete scrape; a real restart still shows as
+        # prompt/gen going backwards or proc_start moving. The wait is bounded:
+        # a torn scrape heals on the next tick, so a series still gone after
+        # 300 s (five minute-closes) is gone for good. Past that the close runs
+        # as usual and the baseline is rebuilt from what is live — at most that
+        # span is lost, never every minute after it.
+        if (dp >= 0 and dg >= 0 and not self._rate_live <= live
+                and now - self._rate_prev_t < 300.0):
+            return
         if dp < 0 or dg < 0 or dc < 0:              # engine restart → rebuild base
             self._rate_prev = base
             self._rate_prev_t = now
+            self._rate_live = live
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
             return
@@ -508,6 +524,7 @@ class EngineSampler(threading.Thread):
                 **_money})
         self._rate_prev = base
         self._rate_prev_t = now
+        self._rate_live = live
 
     def _compute_savings(self, now: float, counters: dict) -> dict | None:
         """Cost of the same tokens via cloud API. IDENTICAL code path to the
