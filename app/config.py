@@ -77,6 +77,13 @@ DEFAULTS = {
     ],
     "db_path": str(DATA / "limcars.db"),
     "auth_token": None,      # when set, /api/* requires X-Limcars-Token
+    # Password-gate policy (app/auth.py). Tunable so an install that reaches further than the
+    # LAN can tighten the ladder without a code change. max_attempts is wrong tries before the
+    # first lock; the lock then steps through these durations for repeat offenders and holds at
+    # the last one; a quiet stretch this long with no failure drops the step back to the first.
+    "auth_max_attempts": 10,
+    "auth_lock_steps": [60, 300, 1800, 3600, 7200],
+    "auth_quiet_reset_s": 21600,
 }
 
 

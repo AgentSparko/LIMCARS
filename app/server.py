@@ -119,7 +119,10 @@ class Limcars:
         self.settings = _Settings(cfg.get("settings_path")
                                   or str(config.DATA / "settings.json"))
         from .auth import AuthGate
-        self.auth = AuthGate(cfg.get("auth_path") or str(config.DATA / "auth.json"))
+        self.auth = AuthGate(cfg.get("auth_path") or str(config.DATA / "auth.json"),
+                             max_attempts=cfg.get("auth_max_attempts", 10),
+                             lock_steps=cfg.get("auth_lock_steps") or (60, 300, 1800, 3600, 7200),
+                             quiet_reset_s=cfg.get("auth_quiet_reset_s", 21600))
         # Reclaim the history database ourselves. Users update by pulling and
         # restarting; the installs that never installed a tidy timer are the ones
         # still holding a high-water-mark file full of freelist pages, so the
@@ -414,9 +417,12 @@ class Handler(BaseHTTPRequestHandler):
             cur = body.get("current")
             gate = self.app.auth
             if gate.enabled and not self._is_local():
-                # changing an existing password over the network proves
-                # knowledge of it first (atomic lockout ladder via attempt())
-                ok, rem = gate.attempt(self._client_ip(), cur or "")
+                # changing an existing password over the network proves knowledge of it
+                # first. Its OWN lockout budget (auth.CHANGE): burning the write gate's
+                # tries here used to mean a fumbled Settings form locked you out of recipe
+                # edits — and, once locked, out of the change form that could get you out.
+                from .auth import CHANGE as PW_CHANGE
+                ok, rem = gate.attempt(self._client_ip(), cur or "", scope=PW_CHANGE)
                 if rem > 0:
                     return self._json({"ok": False, "error": "locked",
                                        "retry_after": round(rem, 1)}, code=423)
@@ -623,8 +629,16 @@ class Handler(BaseHTTPRequestHandler):
                                    "minute_bucket_days": app.cfg.get("minute_bucket_days", 30),
                                    "history_years": app.cfg.get("history_years", 1)}})
         if path == "/api/auth/status":
+            ip = self._client_ip()
+            # attempts_left, so the Settings form can warn "2 tries left" instead of
+            # springing a lock; locked_for_you stays for the dashboard's existing reader.
             return self._json({"enabled": app.auth.enabled,
-                               "locked_for_you": round(app.auth.locked_for(self._client_ip()), 1)})
+                               "locked_for_you": round(app.auth.locked_for(ip), 1),
+                               "attempts_left": app.auth.attempts_left(ip),
+                               "max_attempts": app.auth.max_attempts,
+                               "change_locked_for_you": round(
+                                   app.auth.locked_for(ip, scope="change"), 1),
+                               "change_attempts_left": app.auth.attempts_left(ip, scope="change")})
         if path == "/api/snapshot":
             secs = (qs.get("seconds") or [None])[0]
             try:
