@@ -108,6 +108,7 @@ class Limcars:
         self.recipes = Recipes(str(config.DATA))
         from .live_engines import LiveEngines
         self.live_engines = LiveEngines()
+        self.engines.attach_discovery(self.live_engines)
         self._savhist_cache: dict[int, tuple] = {}   # days -> (ts, payload)
         self._lostpot_cache: dict[str, tuple] = {}   # 'all' -> (ts, payload)
         from .clients import ClientSampler
@@ -605,6 +606,13 @@ class Handler(BaseHTTPRequestHandler):
             for s in all_s:
                 if s.id == want or getattr(s, "label", None) == want:
                     return s
+        # no explicit pick: prefer a LIVE engine. The first sampler can be a
+        # dead config-declared one (the engine moved ports), and then every
+        # engine-scoped panel showed "connection refused" for an engine that
+        # was serving fine on another port.
+        for s in all_s:
+            if getattr(s, "alive", False):
+                return s
         return all_s[0] if all_s else None
 
     def _api_get(self, path: str, qs: dict) -> None:

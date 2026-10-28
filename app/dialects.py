@@ -37,6 +37,8 @@ number.
 """
 from __future__ import annotations
 
+from typing import cast
+
 from . import prom
 
 
@@ -49,6 +51,12 @@ def _get(series: dict, spec, kind: str):
     if spec is None:
         return None
     if isinstance(spec, dict):
+        if "ratio" in spec:
+            num = _get(series, spec["ratio"][0], kind)
+            den = _get(series, spec["ratio"][1], kind)
+            if num is None or not den:
+                return None
+            return num / den
         parts = [_get(series, p, kind) for p in spec["sum"]]
         if parts[0] is None:
             return None
@@ -242,12 +250,6 @@ LLAMACPP = {
 # restored from a snapshot"). Names verified against 0xBakeer/TandemLLM
 # server/metrics.py + server/METRICS.md on 2026-10-26.
 _TANDEM_MAP = {
-    "gauge": {
-        "running": ["tandemllm:requests_inflight", "qwen38:requests_inflight",
-                    "qse_requests_running"],
-        "waiting": ["tandemllm:requests_waiting", "qwen38:requests_waiting",
-                    "qse_requests_waiting"],
-    },
     "counter": {
         "prompt_tokens": ["tandemllm:prompt_tokens_total", "qwen38:prompt_tokens_total",
                           "qse_prompt_tokens_total"],
@@ -273,6 +275,26 @@ _TANDEM_MAP = {
         "e2e": ["qse_e2e_request_latency_seconds"],
         "queue_time": ["qse_request_queue_seconds"],
         "prefill_time": ["qse_request_prefill_seconds"],
+        # the engine's OWN per-request decode speed (tok/s), observed at
+        # completion — the honest decode number for this engine, since
+        # qse_generation_tokens_total is completion-charged (a whole output
+        # lands in one tick: 3k-token reply / 0.5 s tick = fake 6000 t/s)
+        "decode_tps": ["qse_request_decode_tokens_per_second"],
+    },
+    # gen/prompt tokens are charged when a request FINISHES (metrics.py
+    # on_request), not per step: the sampler must never read a per-tick
+    # counter difference as a speed for this engine.
+    "gen_completion_charged": True,
+    # No vLLM-style KV block pool exists here (metrics.py header says so
+    # outright). The engine's equivalent is the state store — KV snapshots
+    # against its byte budget — so that occupancy IS the honest "cache used".
+    "gauge": {
+        "running": ["tandemllm:requests_inflight", "qwen38:requests_inflight",
+                    "qse_requests_running"],
+        "waiting": ["tandemllm:requests_waiting", "qwen38:requests_waiting",
+                    "qse_requests_waiting"],
+        "kv_pct": {"ratio": [("qse_cache_bytes", {"cache": "state"}),
+                             "qse_state_store_budget_bytes"]},
     },
 }
 TANDEMLLM = {"kind": "tandemllm", "prefix": "tandemllm:", **_TANDEM_MAP}
@@ -402,19 +424,19 @@ def detect(body: str) -> str | None:
 def read_gauges(series: dict, dial: dict) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for logical, spec in dial.get("gauge", {}).items():
-        out[logical] = _get(series, spec, "value")
+        out[logical] = cast("float | None", _get(series, spec, "value"))
     return out
 
 
 def read_counters(series: dict, dial: dict) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for logical, spec in dial.get("counter", {}).items():
-        out[logical] = _get(series, spec, "value")
+        out[logical] = cast("float | None", _get(series, spec, "value"))
     return out
 
 
 def read_hists(series: dict, dial: dict) -> dict[str, tuple | None]:
     out: dict[str, tuple | None] = {}
     for logical, spec in dial.get("hist", {}).items():
-        out[logical] = _get(series, spec, "hist")
+        out[logical] = cast("tuple | None", _get(series, spec, "hist"))
     return out

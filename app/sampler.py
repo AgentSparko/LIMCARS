@@ -171,7 +171,12 @@ class EngineSampler(threading.Thread):
             return r.read()
 
     def _tick(self) -> None:
-        body = self._fetch("/metrics").decode("utf-8", "replace")
+        # 8 s, not 1.5 s: a loaded TandemLLM renders /metrics in 4-10 s
+        # (it collects allocator, cache and disk-tier reports). A scrape
+        # that missed by a second must not mark a live engine dead — three
+        # consecutive misses do (see _fail).
+        body = self._fetch("/metrics", timeout=8.0).decode("utf-8", "replace")
+        self._fails = 0
         now = time.time()
         # KV pool size (tokens) is static config — parse once: the bubble then
         # can show used/free in TOKENS, not just percent
@@ -267,18 +272,39 @@ class EngineSampler(threading.Thread):
             self._pf_last_move = now
         row["prefill_active"] = (now - self._pf_last_move) < 1.5
         if dial.get("gen_completion_charged"):
-            # gen tokens land when a request finishes (llama.cpp): a per-tick
-            # difference is a completion burst, not a speed. Pair them with the
-            # engine's own decode compute seconds; shown while requests run
-            # (no metric separates prefill from decode, so no phase is claimed).
+            # gen tokens land when a request finishes (llama.cpp, TandemLLM):
+            # a per-tick difference is a completion burst, not a speed. Pair
+            # them with the engine's own decode compute seconds; shown while
+            # requests run (no metric separates prefill from decode, so no
+            # phase is claimed).
             paired = self._paired_rate("gen_tokens", "decode_seconds")
+            if paired is None and "decode_tps" in dial.get("hist", {}):
+                # TandemLLM has no decode-seconds counter — use the engine's
+                # OWN per-request decode-speed histogram: the mean over the
+                # requests that completed in this window. The counter path
+                # above would read a 3k-token output landing in one 0.5 s
+                # tick as 6000 t/s — physically impossible, and it did.
+                d = self._hist_delta("decode_tps")
+                paired = (d[1] / d[2]) if d and d[2] else None
             row["decode_tps_now"] = paired if running else None
         if (row.get("decode_tps_now") or 0) > 0:
             self._gen_last_move = now
-        row["decode_active"] = (now - self._gen_last_move) < 1.5
+        if dial.get("gen_completion_charged") and "decode_tps" in dial.get("hist", {}):
+            # the histogram only moves at completion, so the 1.5 s stickiness
+            # would dim the bubble straight through a long decode. The
+            # engine's own gauge is the truth: it counts generations the
+            # engine is working on right now.
+            row["decode_active"] = bool(running)
+        else:
+            row["decode_active"] = (now - self._gen_last_move) < 1.5
         row["decode_tps_avg"] = (self._paired_rate("gen_tokens", "decode_seconds")
                                  if dial.get("gen_completion_charged")
                                  else self._win_rate("gen_tokens"))
+        if row["decode_tps_avg"] is None and dial.get("gen_completion_charged"):
+            # no decode-seconds counter to pair with: fall back to the plain
+            # window token rate (aggregate incl. idle gaps — the same
+            # definition every other engine's avg carries)
+            row["decode_tps_avg"] = self._win_rate("gen_tokens")
         row["cache_hit_pct"] = self._win_ratio("prefix_hits", "prefix_queries", scale=100.0)
         row["spec_accept_pct"] = self._win_ratio("accepted_tokens", "draft_tokens", scale=100.0)
         # step-level acceptance (Atlas): share of verify steps accepting >=1 draft
@@ -575,6 +601,13 @@ class EngineSampler(threading.Thread):
 
     def _fail(self, exc: Exception) -> None:
         now = time.time()
+        # A slow engine is not a dead engine: TandemLLM's /metrics render
+        # takes 4-10 s under load, and a single missed scrape used to flip
+        # the dashboard to "unreachable". Three consecutive failures mean
+        # it is really gone; until then the last row stands.
+        self._fails = getattr(self, "_fails", 0) + 1
+        if self._fails < 3:
+            return
         was_alive = self.alive
         self.alive = False
         if was_alive:
@@ -812,6 +845,8 @@ class EngineManager:
         self.cfg, self.broker, self.store = cfg, broker, store
         self.samplers: dict[str, EngineSampler] = {}
         self._lock = threading.Lock()
+        self._auto: set[str] = set()      # sampler ids started by discovery
+        self._live = None                 # LiveEngines once attach_discovery runs
         for eng in cfg.get("engines", []):
             self._start(eng)
 
@@ -819,6 +854,70 @@ class EngineManager:
         s = EngineSampler(self.cfg, eng, self.broker, self.store)
         self.samplers[eng["id"]] = s
         s.start()
+
+    # ---------------- auto-discovery ----------------
+
+    def attach_discovery(self, live_engines) -> None:
+        """Wire the live-engine detector to the sampler pool: an engine the
+        detector attributes to a real process gets sampled without being
+        declared in config.json. Orphan port rows stay display-only — they
+        are often proxies exposing the same /metrics, and sampling both the
+        proxy and the engine would double-count every token. A candidate is
+        only connected once its /metrics parses as a known dialect, so a
+        plain OpenAI endpoint that speaks no metrics is never polled at 2 Hz.
+        Disable with cfg['auto_engines'] = false."""
+        if self.cfg.get("auto_engines", True) is False:
+            return
+        self._live = live_engines
+        threading.Thread(target=self._discover_loop, name="engine-discovery",
+                         daemon=True).start()
+
+    def _discover_loop(self) -> None:
+        while True:
+            try:
+                self._discover_once()
+            except Exception:  # noqa: BLE001 — discovery must never die
+                pass
+            time.sleep(15.0)
+
+    def _discover_once(self) -> None:
+        rows = self._live.scan()
+        with self._lock:
+            declared = {s.url for eid, s in self.samplers.items()
+                        if eid not in self._auto}
+        want: dict[str, dict] = {}
+        for r in rows:
+            if r.get("orphan") or r.get("pid") is None:
+                continue                     # proxy / root-owned: display only
+            for port in sorted(r.get("serving_ports") or {}):
+                url = f"http://127.0.0.1:{port}"
+                if url in declared:
+                    continue                 # config already samples this engine
+                if self._metrics_dialect(url) is None:
+                    continue                 # no metrics dialect — not samplable
+                eid = f"auto-{port}"
+                want[eid] = {"id": eid, "url": url, "kind": None,
+                             "label": r.get("model") or r.get("type") or url}
+                declared.add(url)            # never two auto ids on one port
+        with self._lock:
+            for eid, eng in want.items():
+                if eid not in self.samplers:
+                    self._auto.add(eid)
+                    self._start(eng)
+            for eid in list(self._auto):
+                if eid not in want and eid in self.samplers:
+                    self.samplers.pop(eid).stop()   # engine gone: retire sampler
+                    self._auto.discard(eid)
+
+    @staticmethod
+    def _metrics_dialect(url: str) -> str | None:
+        try:
+            req = urllib.request.Request(
+                url + "/metrics", headers={"User-Agent": "limcars-next/1.0"})
+            with urllib.request.urlopen(req, timeout=5.0) as r:  # noqa: S310
+                return dialects.detect(r.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 — unreachable = not a candidate
+            return None
 
     def get(self, engine_id: str) -> EngineSampler | None:
         with self._lock:
@@ -829,4 +928,9 @@ class EngineManager:
             return list(self.samplers.values())
 
     def snapshots(self, seconds: float | None = None) -> dict:
-        return {s.id: s.snapshot(seconds) for s in self.all()}
+        # alive-first: the UI defaults to the FIRST engine when the user has
+        # no stored selection, so a dead config-declared engine must not
+        # shadow a live auto-discovered one (the "no stats" symptom)
+        with self._lock:
+            items = sorted(self.samplers.values(), key=lambda s: (not s.alive, s.id))
+        return {s.id: s.snapshot(seconds) for s in items}
