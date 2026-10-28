@@ -277,7 +277,7 @@ def enforce_retention(con, *, minute_days: float, history_years: float,
     if engines is None:
         engines = [r[0] for r in con.execute("SELECT DISTINCT engine FROM counter_buckets")]
     bucket_cap = horizon_ts(now, minute_days)   # same hour-aligned seam every reader uses
-    hour_cap = hour_horizon(now, history_years)   # day-aligned seam shared with the readers
+    hour_cap = hour_horizon(now, history_years, minute_days)   # day-aligned seam the readers share
     # only judge redundancy for rows we are actually about to drop
     older = con.execute("SELECT COUNT(*) FROM counter_buckets WHERE ts < ?",
                         (bucket_cap,)).fetchone()[0]
@@ -348,10 +348,17 @@ def hour_totals(con, engine: str, since_ts: int | None, before_ts: int | None,
             "source": "counter_hour"}
 
 
-def hour_horizon(now: float, history_years: float) -> int:
+def hour_horizon(now: float, history_years: float, minute_days: float) -> int:
     """Below this, only the daily rung answers. Day-aligned for the same reason `horizon_ts`
-    is hour-aligned: a boundary that splits a day lets a day be counted twice or never."""
-    return (int(now - float(history_years) * 365.25 * DAY) // DAY) * DAY
+    is hour-aligned: a boundary that splits a day lets a day be counted twice or never.
+
+    Never above the minute horizon. If minute_bucket_days outlasts history_years, the hourly
+    rung is kept down to the day the minute horizon falls in: otherwise the day leg and the
+    minute leg both answer the years in between, and retention trims the hours of a day whose
+    minutes are still there, so the next fold rebuilds that day from a fragment of it.
+    """
+    cap = int(now - float(history_years) * 365.25 * DAY)
+    return (min(cap, horizon_ts(now, minute_days)) // DAY) * DAY
 
 
 def day_totals(con, engine: str, since_ts: int | None, before_ts: int | None,

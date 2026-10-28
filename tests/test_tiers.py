@@ -230,6 +230,41 @@ def test_seam_is_counted_exactly_once(store):
         "readers must partition history, not overlap or leave a hole"
 
 
+def test_minutes_kept_longer_than_hours_are_counted_once(store):
+    """minute_bucket_days may outlast history_years (this fixture: 3650 d vs 1 y).
+
+    The day leg then ended at the hourly cap while the minute leg started at the minute horizon,
+    years below it, so every day in between was read from both the minutes and its day row:
+    double the traffic the moment a day row existed.
+    """
+    noon = int(time.time()) // DAY * DAY + 12 * HOUR
+    _seed(store, [400 + k / 24 for k in range(6)], per_hour=4, now=noon)
+    whole = store._con.execute(
+        "SELECT COALESCE(SUM(prompt),0) FROM counter_buckets WHERE engine='e1'").fetchone()[0]
+    tiers.rollup_all(store._con)
+    assert store._con.execute("SELECT COUNT(*) FROM counter_day").fetchone()[0] > 0
+    assert store.counter_totals("e1", None)["prompt"] == pytest.approx(whole)
+
+
+def test_retention_never_rebuilds_a_day_from_part_of_its_hours(store):
+    """Same setting, write side: hours were trimmed at history_years while that day's minutes
+    were still kept, so the next fold rebuilt the day containing the minute horizon from the
+    minutes left above it and replaced the whole day with that fragment."""
+    d1 = (int(time.time()) - 400 * DAY) // DAY * DAY
+    for h in range(-24, 48):                           # three full days, d1 in the middle
+        store.save_counter_bucket("e1", d1 + h * HOUR, _bkt(1000.0))
+    tiers.rollup_all(store._con)
+    t0 = d1 + 400 * DAY + 12 * HOUR                    # minute horizon at noon on d1
+    for step in range(0, 19, 6):                       # ... then walking into the next day
+        rep = tiers.enforce_retention(store._con, minute_days=400, history_years=1,
+                                      now=t0 + step * HOUR)
+        assert rep.get("blocked") is None, rep
+    row = store._con.execute("SELECT real_rows, real_prompt FROM counter_day"
+                             " WHERE engine='e1' AND day=?", (d1 // DAY,)).fetchone()
+    assert row is not None and row[0] == 24, f"day row holds {row} of 24 minutes"
+    assert row[1] == pytest.approx(24000.0)
+
+
 def test_recent_only_window_reads_just_minutes(store):
     _seed(store, [2, 5, 90])
     tiers.rollup_all(store._con)

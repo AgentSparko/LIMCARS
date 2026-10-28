@@ -686,7 +686,7 @@ class Store:
         from . import tiers
         now = time.time()
         horizon = tiers.horizon_ts(now, self.minute_days)      # minutes | hourly
-        hour_cap = tiers.hour_horizon(now, self.history_years)  # hourly | daily
+        hour_cap = tiers.hour_horizon(now, self.history_years, self.minute_days)  # hourly | daily
         with self._lock:
             self._ensure_ladder(horizon)
             a = self._bucket_totals(engine, horizon if since_ts is None
