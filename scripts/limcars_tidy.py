@@ -25,6 +25,8 @@ Safety model
 3. Money-invariant gate: the headline figures are computed from the database before and after
    the operation. Any difference aborts, restores the backup, and exits non-zero. Compaction
    must be money-preserving by construction, and this makes that an assertion instead of a hope.
+   Under --allow-live the backup is kept but never copied over the database (see
+   restore_unless_live), and the rings the server writes every few seconds are not compared.
 4. PRAGMA integrity_check / quick_check must both be clean before the file is swapped in.
 5. Disk-space preflight: VACUUM needs roughly one copy of the file free.
 6. Exit codes: 0 ok / nothing to do, 2 gate failed, 3 preflight failed, 4 usage.
@@ -68,6 +70,9 @@ MONEY_QUERIES = {
     "hw_last": "SELECT COALESCE(MAX(t),0) FROM hw_samples",
     "events": "SELECT COUNT(*) FROM events",
 }
+# Written by the running server every few seconds. On a closed database they must not move
+# either, but under --allow-live they cannot hold still, and none of them is money.
+LIVE_KEYS = frozenset({"eng_rows", "eng_last", "hw_rows", "hw_last", "events"})
 
 
 def human(n: float) -> str:
@@ -260,17 +265,18 @@ def run(db: str, apply: bool, keep_backup: bool, allow_live: bool, quiet: bool) 
     try:
         vres = vacuum(db)
     except sqlite3.Error as exc:
-        print(f"VACUUM failed: {exc}\nrestoring backup", file=sys.stderr)
-        restore(db, bkp)
+        print(f"VACUUM failed: {exc}", file=sys.stderr)
+        restore_unless_live(db, bkp, allow_live)
         return 2
 
     ok, why = integrity(db)
     post = money(db)
-    drift = {k: (pre[k], post[k]) for k in pre if pre[k] != post[k]}
+    drift = {k: (pre[k], post[k]) for k in pre
+             if pre[k] != post[k] and not (allow_live and k in LIVE_KEYS)}
     after_size = db_size(db)
     if not ok or drift:
-        print(f"GATE FAILED ({why}; drift={drift}) — restoring backup", file=sys.stderr)
-        restore(db, bkp)
+        print(f"GATE FAILED ({why}; drift={drift})", file=sys.stderr)
+        restore_unless_live(db, bkp, allow_live)
         return 2
     print(f"money after     : prompt {post['prompt']:,.0f} · cached {post['cached']:,.0f} · "
           f"gen {post['gen']:,.0f} · reqs {post['reqs']:,.0f} · buckets {post['bucket_rows']:,}")
@@ -283,6 +289,25 @@ def run(db: str, apply: bool, keep_backup: bool, allow_live: bool, quiet: bool) 
         os.remove(bkp)
         print("backup          : removed (--keep-backup was not given)")
     return 0
+
+
+def restore_unless_live(db: str, bkp: str, allow_live: bool) -> None:
+    """Put the backup back, unless a server may have the database open.
+
+    restore() deletes the file and copies the backup in. A server holding the old file keeps
+    writing to the deleted inode, so everything it records until its next restart is lost
+    (measured: the server's connection saw 3,049 rows while the file held 3,010). Under
+    --allow-live that server is expected, and without fuser server_holds() only sees one that
+    is mid-write, so --allow-live alone is reason enough to leave the file alone.
+    """
+    held = server_holds(db)
+    if allow_live or held:
+        print(f"NOT restoring: {db} may be open in LIMCARS ({held or '--allow-live'}).\n"
+              f"  the backup is kept at {bkp}; if the database is damaged, stop the service\n"
+              f"  and copy it over the database (delete the -wal and -shm files).", file=sys.stderr)
+        return
+    print("restoring backup", file=sys.stderr)
+    restore(db, bkp)
 
 
 def restore(db: str, bkp: str) -> None:
