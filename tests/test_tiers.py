@@ -273,6 +273,37 @@ def test_daily_totals_survive_hour_pruning(tmp_path):
     assert after == before, "daily totals must not move when hourly rows age out"
 
 
+def test_a_day_row_sums_every_hour_of_that_day(tmp_path):
+    """Several busy hours in one UTC day must fold into one day row holding all of them, not
+    just the last hour written. The test above seeds one hour per day, which can't tell."""
+    store = _mk(tmp_path)
+    noon = int(time.time()) // DAY * DAY + 12 * HOUR          # 6 hours back stay on one day
+    _seed(store, [400 + k / 24 for k in range(6)], per_hour=4, now=noon)
+    day = (noon - 400 * DAY) // DAY
+    minutes = store._con.execute(
+        "SELECT SUM(prompt), SUM(gen) FROM counter_buckets WHERE engine='e1' AND ts/86400=?",
+        (day,)).fetchone()
+    tiers.rollup_all(store._con)
+    row = store._con.execute(
+        "SELECT real_prompt + synth_prompt, real_gen + synth_gen, real_rows + synth_rows"
+        " FROM counter_day WHERE engine='e1' AND day=?", (day,)).fetchone()
+    assert row is not None, "the day was never folded"
+    assert row[2] == 24, f"day row holds {row[2]} of 24 minutes"
+    assert row[0] == pytest.approx(minutes[0]) and row[1] == pytest.approx(minutes[1])
+    # and the figure must survive the hour rows ageing out, which is when the day row is all
+    # that is left of that day
+    since = noon - 500 * DAY
+    before = [(r[0], r[1]) for r in store.daily_bucket_totals("e1", since)]
+    store.minute_days, store.history_years = 30.0, 0.5
+    rep = tiers.enforce_retention(store._con, minute_days=store.minute_days,
+                                  history_years=store.history_years)
+    assert rep.get("blocked") is None, rep
+    assert rep["pruned_hours"] > 0
+    assert [(r[0], r[1]) for r in store.daily_bucket_totals("e1", since)] == before
+    # only this one day was seeded, so the all-time total is that day's minute sum
+    assert store.counter_totals("e1", None)["prompt"] == pytest.approx(minutes[0])
+
+
 def test_history_years_setting_bounds_the_hour_tier(store):
     _seed(store, [2, 100, 300, 900], per_hour=2)
     rep = tiers.enforce_retention(store._con, minute_days=30, history_years=1)
