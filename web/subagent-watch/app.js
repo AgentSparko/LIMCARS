@@ -41,6 +41,9 @@ if (LC_PW) {
   const _lcRawFetch = window.fetch.bind(window);
   let lcAsked = false;
   window.fetch = async (u, o = {}) => {
+    // overlay up: the page reloads once a password is typed, so the pollers
+    // must not keep firing password-less requests at the gate until then
+    if (lcAsked) throw new Error('locked');
     const r = await _lcRawFetch(u, o);
     if ((r.status === 401 || r.status === 423) && !lcAsked) {
       lcAsked = true;

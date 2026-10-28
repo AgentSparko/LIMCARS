@@ -137,7 +137,11 @@ class AuthGate:
                 rem = max(0.0, ent["until"] - self._now())
                 if rem > 0:
                     return False, rem
-            if self.enabled and pw and self._matches(pw):
+            if not pw:
+                # no password sent is not a guess: pollers behind the password
+                # prompt would otherwise lock the IP out of every gate
+                return False, 0.0
+            if self.enabled and self._matches(pw):
                 if self.ips.pop(ip, None) is not None:
                     self._save()
                 return True, 0.0

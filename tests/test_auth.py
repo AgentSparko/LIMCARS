@@ -68,6 +68,24 @@ def test_lockout_ladder(tmp_path):
     assert g.failure(ip) == 7200.0        # capped, repeats every 3
 
 
+def test_empty_password_does_not_climb_the_ladder(tmp_path):
+    """A request carrying no password (the traces page polling behind its password prompt)
+    is not a guess. Three of them used to lock the IP out for 60 s, so the right password
+    typed straight after was refused, and recipe edits and engine control with it."""
+    g = make_gate(tmp_path)
+    g.set_password("s3cret")
+    ip = "203.0.113.12"
+    for _ in range(3):
+        assert g.attempt(ip, "") == (False, 0.0)
+    assert g.locked_for(ip) == 0.0
+    assert g.attempt(ip, "s3cret") == (True, 0.0)
+    # wrong passwords still count, and an empty one still reports a lock already running
+    assert g.attempt(ip, "nope") == (False, 0.0)
+    assert g.attempt(ip, "nope") == (False, 0.0)
+    assert g.attempt(ip, "nope") == (False, 60.0)
+    assert g.attempt(ip, "") == (False, 60.0)
+
+
 def test_success_resets_counter(tmp_path):
     g = make_gate(tmp_path)
     g.set_password("s3cret")
