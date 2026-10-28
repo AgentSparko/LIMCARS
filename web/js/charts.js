@@ -220,15 +220,28 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
   if (max <= min) max = min + 1;
   const y = v => H - 3 - ((v - min) / (max - min)) * (H - 6);
   const x = i => 1 + i * (W - 2) / Math.max(1, n - 1);
-  let d = '', lastIdx = -1;
-  values.forEach((v, i) => {
-    if (!Number.isFinite(v)) return;
-    d += (d ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1);
-    lastIdx = i;
-  });
+  // Draw at most ~1 point per 1.5 px. Beyond that the screen cannot resolve the
+  // series at all, and because x() divides by n, EVERY appended sample shifts all
+  // the others a sub-pixel to the left — a bubble that has been on screen a while
+  // (the lifetime and savings ones, which no caller thins) crawled/danced on every
+  // poll until a reload reset the array. Index is preserved, so the shape, the
+  // span and the hover readout all stay true to the full series.
+  const CAP = Math.max(16, Math.floor(W / 1.5));
+  let idxs = [];
+  for (let i = 0; i < n; i++) if (Number.isFinite(values[i])) idxs.push(i);
+  if (idxs.length > CAP) {
+    const stride = Math.ceil(idxs.length / CAP);
+    const kept = idxs.filter((_, k) => k % stride === 0);
+    if (kept[kept.length - 1] !== idxs[idxs.length - 1]) kept.push(idxs[idxs.length - 1]);
+    idxs = kept;
+  }
+  let d = '';
+  for (const i of idxs) d += (d ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(values[i]).toFixed(1);
+  const lastIdx = idxs.length ? idxs[idxs.length - 1] : -1;
+  const firstIdx = idxs.length ? idxs[0] : 0;
   let out = '';
   if (d) {
-    out += `<path d="${d}L${x(lastIdx)},${H}L${x(0)},${H}Z" fill="${color}" opacity="0.10"/>`;
+    out += `<path d="${d}L${x(lastIdx)},${H}L${x(firstIdx)},${H}Z" fill="${color}" opacity="0.10"/>`;
     out += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.4"/>`;
     const lv = values[lastIdx];
     if (Number.isFinite(lv)) out += `<circle cx="${x(lastIdx)}" cy="${y(lv)}" r="2.4" fill="${COLORS.now}"/>`;
@@ -236,7 +249,7 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
   svgEl.innerHTML = out;
   // hover readout: nearest sample -> shared tooltip + marker dot (values,
   // optional times and formatter ride along on the element for the listener)
-  svgEl._spark = { values, min, max, n, W, color, x, y, fmt: opts.fmt || (v => fmt(v, 1)), times: opts.times };
+  svgEl._spark = { values, min, max, n, W, color, x, y, idxs, fmt: opts.fmt || (v => fmt(v, 1)), times: opts.times };
   if (!svgEl._sparkBound && typeof document !== 'undefined') {
     svgEl._sparkBound = true;
     svgEl.style.cursor = 'crosshair';
@@ -246,15 +259,14 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
       const r = svgEl.getBoundingClientRect();
       const px = (e.clientX - r.left) * (s.W / (r.width || s.W));
       const i0 = Math.max(0, Math.min(s.n - 1, Math.round((px - 1) * Math.max(1, s.n - 1) / (s.W - 2))));
-      // series may contain null gaps — snap to the nearest finite sample
-      let i = i0;
-      if (!Number.isFinite(s.values[i])) {
-        let l = i0 - 1, r = i0 + 1;
-        while (l >= 0 && !Number.isFinite(s.values[l])) l--;
-        while (r < s.n && !Number.isFinite(s.values[r])) r++;
-        const dl = l >= 0 ? i0 - l : Infinity, dr = r < s.n ? r - i0 : Infinity;
-        i = dl <= dr ? l : r;
-      }
+      // series may contain null gaps, and long series are thinned to the pixel
+      // budget: snap to the nearest sample that is actually DRAWN, so the marker
+      // dot and the readout can never disagree with what the eye sees
+      const cand = (s.idxs && s.idxs.length) ? s.idxs
+        : (() => { const a = []; for (let k = 0; k < s.n; k++) if (Number.isFinite(s.values[k])) a.push(k); return a; })();
+      if (!cand.length) { kill(); return; }
+      let i = cand[0], best = Infinity;
+      for (const k of cand) { const dd = Math.abs(k - i0); if (dd < best) { best = dd; i = k; } }
       const v = s.values[i];
       if (!Number.isFinite(v)) { kill(); return; }
       let label = s.fmt(v);

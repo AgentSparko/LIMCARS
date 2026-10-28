@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS } from './charts.js?v=20261026g';
+import { SeriesStore, LineChart, spark, fmt, COLORS } from './charts.js?v=20261028a';
 
 const state = {
   store: new SeriesStore(4000),
