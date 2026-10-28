@@ -437,6 +437,35 @@ def test_a_straggler_backfill_can_never_shrink_an_hour(tmp_path):
                               " AND ts<?", (h0, h0 + HOUR)).fetchone()[0] >= 1
 
 
+def test_a_busier_engine_never_blocks_another_engines_hour(tmp_path):
+    """The never-shrink guard is per engine. Two engines sharing an hour are two aggregates.
+
+    Comparing a light engine's 20 minutes against a busy engine's 60 in the same hour reads as
+    a shrink, so the light engine's hour was never written: the gate then reported "no
+    aggregate row" and blocked every prune, and once the hour aged out the light engine's
+    traffic was gone from its totals.
+    """
+    store = _mk(tmp_path)
+    now = int(time.time())
+    h0 = (now - 45 * DAY) // HOUR * HOUR
+    for k in range(60):
+        store.save_counter_bucket("e2", h0 + k * 60, _bkt(1000.0))
+    tiers.rollup_all(store._con)                       # e2's hour is folded first
+    for k in range(20):
+        store.save_counter_bucket("e1", h0 + k * 60, _bkt(500.0))
+    pre = store.counter_totals("e1", None)["prompt"]
+    tiers.rollup_all(store._con)
+    row = store._con.execute(
+        "SELECT real_rows, real_prompt FROM counter_hour WHERE engine='e1' AND hour=?",
+        (h0,)).fetchone()
+    assert row is not None and row[0] == 20, f"e1's hour was not folded: {row}"
+    assert row[1] == pytest.approx(10000.0)
+    store.minute_days = 30.0
+    rep = tiers.enforce_retention(store._con, minute_days=30, history_years=6)
+    assert rep.get("blocked") is None, rep
+    assert store.counter_totals("e1", None)["prompt"] == pytest.approx(pre)
+
+
 def test_a_strided_refresh_never_folds_a_partial_hour(tmp_path):
     """`from_ts` is a cost control, not a licence to summarise half an hour.
 
