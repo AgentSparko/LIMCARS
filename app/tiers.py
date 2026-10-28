@@ -179,7 +179,7 @@ def rollup_days(con: sqlite3.Connection) -> int:
          " COALESCE(SUM(unp_prompt),0), COALESCE(SUM(unp_cached),0), COALESCE(SUM(unp_gen),0),"
          " COALESCE(SUM(busy_minutes),0),"
          " COALESCE(SUM(CASE WHEN busy_minutes>0 THEN 1 ELSE 0 END),0), MIN(price_slug)"
-         " FROM counter_hour GROUP BY engine, hour / 24")
+         f" FROM counter_hour GROUP BY engine, hour / {int(DAY)}")
     rows = con.execute(q).fetchall()
     if not rows:
         return 0
