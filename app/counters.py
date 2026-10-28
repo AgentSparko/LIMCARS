@@ -27,6 +27,9 @@ def report(store, engine: str, window: str, model: str | None,
     # audit: rate anchors + panel totals use measured minutes only (the
     # synthetic seed/gap buckets are estimates, and the seed at now-3660 used
     # to fake a 366-day "tracked" span and a seed-derived fantasy per_hour).
+    # issue #22 narrowed that exclusion to the estimates: gap buckets are counted
+    # (the engine served those tokens) while every rate anchor inside
+    # counter_totals still sums them over measured minutes only.
     w = store.counter_totals(engine, since, real_only=True)
     life = store.counter_totals(engine, None, real_only=True)
     if w.get("empty"):

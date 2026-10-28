@@ -38,16 +38,42 @@ import time
 DAY = 86400
 HOUR = 3600
 
-# additive measures, all-rows semantics split into measured vs synthetic
+# additive measures, all-rows semantics split by how the row was produced
 _MEASURES = ("prompt", "cached", "gen", "reqs", "iters", "cost_hot", "cost_base", "cost_nocache")
+
+# Three additive classes, one column set each (issue #22). A gap-spanning bucket is
+# MEASURED traffic — the engine really served those tokens, the sampler was just not
+# watching for part of the span — so its tokens belong in every total. What it is NOT
+# is a valid "one busy minute": real_rows, busy_minutes, dec_min/dec_peak, spec and the
+# active-hour anchor stay measured-only, which is why gap gets its own set rather than
+# being folded into real_* (a gap row counted as real_rows would define an active hour
+# and price a savings projection off a downtime span) or left in synth_* (which every
+# total excludes, so served tokens vanished: 528,514 prompt on one engine here).
+_GAPMEAS = ("prompt", "cached", "gen", "reqs", "iters", "cost_hot")
 
 _REAL = "".join(f"  real_{m} REAL,\n" for m in _MEASURES)
 _SYNTH = "".join(f"  synth_{m} REAL,\n" for m in _MEASURES[:5]) + "  synth_cost_hot REAL,\n"
+_GAP = "".join(f"  gap_{m} REAL,\n" for m in _GAPMEAS)
+
+
+def _side(m: str, real_only: bool) -> str:
+    """The ladder expression for one additive measure, shared by hour_totals and day_totals.
+
+    Both rungs must answer identically or a figure silently moves when a range ages out of
+    the minute table, so the predicate lives in exactly one place. cost_base/cost_nocache
+    have no gap/synth twin at all (write-once display extras, recorded for measured
+    minutes), and asking for one would raise "no such column" rather than understate.
+    """
+    gap = f" + COALESCE(gap_{m},0)" if m in _GAPMEAS else ""
+    if real_only or m not in _MEASURES[:5] + ("cost_hot",):
+        return f"real_{m}{gap}"
+    return f"real_{m} + COALESCE(synth_{m},0){gap}"
 
 DDL = f"""
 CREATE TABLE IF NOT EXISTS counter_hour(
   engine TEXT, hour INTEGER,
 {_REAL}  real_rows INTEGER DEFAULT 0,
+{_GAP}  gap_rows INTEGER DEFAULT 0,
 {_SYNTH}  synth_rows INTEGER DEFAULT 0,
   dec_min REAL, dec_peak REAL, spec_sum REAL, spec_n INTEGER,
   priced_rows INTEGER DEFAULT 0, unpriced_rows INTEGER DEFAULT 0,
@@ -59,6 +85,7 @@ CREATE INDEX IF NOT EXISTS ix_ch_hour ON counter_hour(hour);
 CREATE TABLE IF NOT EXISTS counter_day(
   engine TEXT, day INTEGER,
 {_REAL}  real_rows INTEGER DEFAULT 0,
+{_GAP}  gap_rows INTEGER DEFAULT 0,
 {_SYNTH}  synth_rows INTEGER DEFAULT 0,
   dec_min REAL, dec_peak REAL, spec_sum REAL, spec_n INTEGER,
   priced_rows INTEGER DEFAULT 0, unpriced_rows INTEGER DEFAULT 0,
@@ -72,6 +99,21 @@ CREATE INDEX IF NOT EXISTS ix_cd_day ON counter_day(day);
 
 def ensure_schema(con: sqlite3.Connection) -> None:
     con.executescript(DDL)
+    # gap_* arrived with issue #22 and CREATE TABLE IF NOT EXISTS will not add columns to a
+    # table that already exists, so existing databases get them the same way store.py adds
+    # its bucket columns. Readers COALESCE them, so a pre-migration row simply counts as 0
+    # gap tokens until the next fold republishes the hour.
+    for m in _GAPMEAS:
+        for tbl in ("counter_hour", "counter_day"):
+            try:
+                con.execute(f"ALTER TABLE {tbl} ADD COLUMN gap_{m} REAL DEFAULT 0")   # noqa: S608 — module constants, pinned above
+            except Exception:  # duplicate column on existing DBs
+                pass
+    for tbl in ("counter_hour", "counter_day"):
+        try:
+            con.execute(f"ALTER TABLE {tbl} ADD COLUMN gap_rows INTEGER DEFAULT 0")   # noqa: S608 — ditto
+        except Exception:
+            pass
     con.commit()
 
 
@@ -83,16 +125,27 @@ def _bucket_select() -> str:
     measured vs synthetic is kept apart with CASE rather than a WHERE, so a single pass
     produces both and neither can be silently dropped.
     """
-    def s(col: str, synth: bool = False) -> str:
-        kind = "!=0" if synth else "=0"
-        return (f"COALESCE(SUM(CASE WHEN COALESCE(synthetic,0){kind} "
+    def s(col: str, kind: str = "meas") -> str:
+        pred = {"meas": "COALESCE(synthetic,0)=0",
+                # a gap is measured traffic spanning >1 minute: counted, but never as
+                # a busy minute (see the class comment on _GAPMEAS)
+                "gap": "COALESCE(synth_kind,0)=2",
+                # everything synthetic that is not a gap is a lifetime estimate
+                "seed": "COALESCE(synthetic,0)!=0 AND COALESCE(synth_kind,0)<>2"}[kind]
+        return (f"COALESCE(SUM(CASE WHEN {pred} "
                 f"THEN COALESCE({col},0) END),0)")
+
+    def cnt(kind: str) -> str:
+        return s("1", kind).replace("COALESCE(1,0)", "1")
+
     parts = []
     for m in _MEASURES:
-        parts.append(s(m, synth=False))
+        parts.append(s(m, "meas"))
     for m in ("prompt", "cached", "gen", "reqs", "iters"):
-        parts.append(s(m, synth=True))
-    parts.append(s("cost_hot", synth=True))
+        parts.append(s(m, "seed"))
+    parts.append(s("cost_hot", "seed"))
+    for m in _GAPMEAS:
+        parts.append(s(m, "gap"))
     parts += [
         "MIN(CASE WHEN COALESCE(synthetic,0)=0 THEN dec_min END)",
         "MAX(CASE WHEN COALESCE(synthetic,0)=0 THEN dec_peak END)",
@@ -111,8 +164,11 @@ def _bucket_select() -> str:
         "COALESCE(SUM(CASE WHEN COALESCE(synthetic,0)=0 AND (COALESCE(prompt,0)"
         "+COALESCE(gen,0))>0 THEN 1 ELSE 0 END),0)",     # busy minutes: measured traffic only
         "MIN(price_slug)",
-        "COALESCE(SUM(CASE WHEN COALESCE(synthetic,0)=0 THEN 1 ELSE 0 END),0)",
-        "COALESCE(SUM(CASE WHEN COALESCE(synthetic,0)!=0 THEN 1 ELSE 0 END),0)",
+        # the three row counts, last and in column order: rollup_hours reads them positionally
+        # for the never-shrink gate and buckets_are_redundant compares their sum against the
+        # raw COUNT(*), so real+gap+synth must cover EVERY bucket row or a prune could delete
+        # minutes the ladder cannot reproduce
+        cnt("meas"), cnt("gap"), cnt("seed"),
     ]
     return ", ".join(parts)
 
@@ -123,11 +179,12 @@ def _bucket_select() -> str:
 _HOUR_COLS = (["engine", "hour"]
               + [f"real_{m}" for m in _MEASURES]
               + [f"synth_{m}" for m in ("prompt", "cached", "gen", "reqs", "iters")]
-              + ["synth_cost_hot",
-                 "dec_min", "dec_peak", "spec_sum", "spec_n",
+              + ["synth_cost_hot"]
+              + [f"gap_{m}" for m in _GAPMEAS]
+              + ["dec_min", "dec_peak", "spec_sum", "spec_n",
                  "priced_rows", "unpriced_rows", "unp_prompt", "unp_cached", "unp_gen",
                  "busy_minutes", "price_slug",
-                 "real_rows", "synth_rows"])
+                 "real_rows", "gap_rows", "synth_rows"])
 
 
 def rollup_hours(con: sqlite3.Connection, from_ts: int | None = None) -> int:
@@ -158,9 +215,11 @@ def rollup_hours(con: sqlite3.Connection, from_ts: int | None = None) -> int:
     # what is left of them and says so, rather than losing it without a word.
     # Keyed by (engine, hour), the row's own key: two engines in one hour are two aggregates.
     covered = {(e, int(h)): int(rn or 0) for e, h, rn in con.execute(
-        "SELECT engine, hour, COALESCE(real_rows, 0) + COALESCE(synth_rows, 0)"
+        "SELECT engine, hour,"
+        " COALESCE(real_rows,0) + COALESCE(gap_rows,0) + COALESCE(synth_rows,0)"
         " FROM counter_hour")}
-    kept = [r for r in rows if int(r[-2]) + int(r[-1]) >= covered.get((r[0], int(r[1])), -1)]
+    kept = [r for r in rows
+            if int(r[-3]) + int(r[-2]) + int(r[-1]) >= covered.get((r[0], int(r[1])), -1)]
     con.executemany(
         f"INSERT OR REPLACE INTO counter_hour({','.join(_HOUR_COLS)}) "
         f"VALUES ({','.join('?' * len(_HOUR_COLS))})", kept)
@@ -172,10 +231,11 @@ def rollup_days(con: sqlite3.Connection) -> int:
     """Fold hours into days. Cheap and total: hours are ~24 rows/engine/day, so recomputing
     every day from scratch is safer than trying to be incremental about it."""
     cols = ([f"real_{m}" for m in _MEASURES]
-            + [f"synth_{m}" for m in ("prompt", "cached", "gen", "reqs", "iters", "cost_hot")])
+            + [f"synth_{m}" for m in ("prompt", "cached", "gen", "reqs", "iters", "cost_hot")]
+            + [f"gap_{m}" for m in _GAPMEAS])
     sel = ", ".join(f"COALESCE(SUM({c}),0)" for c in cols)
     q = (f"SELECT engine, hour / {int(DAY)}, {sel},"
-         " COALESCE(SUM(real_rows),0), COALESCE(SUM(synth_rows),0),"
+         " COALESCE(SUM(real_rows),0), COALESCE(SUM(gap_rows),0), COALESCE(SUM(synth_rows),0),"
          " MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0), COALESCE(SUM(spec_n),0),"
          " COALESCE(SUM(priced_rows),0), COALESCE(SUM(unpriced_rows),0),"
          " COALESCE(SUM(unp_prompt),0), COALESCE(SUM(unp_cached),0), COALESCE(SUM(unp_gen),0),"
@@ -186,7 +246,8 @@ def rollup_days(con: sqlite3.Connection) -> int:
     if not rows:
         return 0
     names = (["engine", "day"] + cols +
-             ["real_rows", "synth_rows", "dec_min", "dec_peak", "spec_sum", "spec_n",
+             ["real_rows", "gap_rows", "synth_rows",
+              "dec_min", "dec_peak", "spec_sum", "spec_n",
               "priced_rows", "unpriced_rows", "unp_prompt", "unp_cached", "unp_gen",
               "busy_minutes", "busy_hours", "price_slug"])
     con.executemany(
@@ -222,11 +283,19 @@ def _minute_hours(con, engine: str, cap: int) -> dict:
 
 
 def _aggregate_hours(con, engine: str, cap: int) -> dict:
-    """The same hours as the ladder holds. All-rows = measured + synthetic columns."""
-    sel = ", ".join(f"COALESCE(real_{c},0) + COALESCE(synth_{c},0)" for c in _GATE)
+    """The same hours as the ladder holds. All-rows = measured + gap + seed columns.
+
+    Every class must be summed here: this is the proof that lets minutes be deleted, and a
+    class left out makes the aggregate look smaller than the rows it replaces, which the
+    gate then (correctly) refuses to prune — or, if the row count is the part left out, an
+    hour could be judged redundant while its gap minutes are still unreproduced.
+    """
+    sel = ", ".join(f"COALESCE(real_{c},0) + COALESCE(gap_{c},0) + COALESCE(synth_{c},0)"
+                    for c in _GATE)
     return {int(r[0]): tuple(float(v or 0) for v in r[1:])
             for r in con.execute(
-                f"SELECT hour, {sel}, COALESCE(real_rows,0) + COALESCE(synth_rows,0)"
+                f"SELECT hour, {sel},"
+                " COALESCE(real_rows,0) + COALESCE(gap_rows,0) + COALESCE(synth_rows,0)"
                 " FROM counter_hour WHERE engine=? AND hour < ?", (engine, int(cap)))}
 
 
@@ -312,14 +381,11 @@ def hour_totals(con, engine: str, since_ts: int | None, before_ts: int | None,
                 real_only: bool) -> dict | None:
     """Aggregate rows over the hourly tier, mirroring counter_totals semantics."""
     # cost_base / cost_nocache are display extras recorded for measured minutes only, so they
-    # have no synth_ twin — asking for one raises "no such column" (and must never silently
-    # become 0, which would understate the nocache comparison in the headline).
-    _SYNTHLESS = ("cost_base", "cost_nocache")
-
+    # have no gap/synth twin — asking for one raises "no such column" (and must never silently
+    # become 0, which would understate the nocache comparison in the headline). The class
+    # predicates live in one place (_side) so both rungs answer identically.
     def side(m):
-        if real_only or m in _SYNTHLESS:
-            return f"real_{m}"
-        return f"real_{m} + COALESCE(synth_{m},0)"
+        return _side(m, real_only)
     sel = ", ".join(f"COALESCE(SUM({side(m)}),0)" for m in _MEASURES)
     q = (f"SELECT {sel}, MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0),"
          " COALESCE(SUM(spec_n),0), MIN(hour), MAX(hour + 59),"
@@ -370,12 +436,8 @@ def day_totals(con, engine: str, since_ts: int | None, before_ts: int | None,
     Without this leg, history_years would be a deletion policy rather than a retention policy:
     everything older than the hourly window would exist in counter_day and be read by nobody.
     """
-    _SYNTHLESS = ("cost_base", "cost_nocache")
-
     def side(m):
-        if real_only or m in _SYNTHLESS:
-            return f"real_{m}"
-        return f"real_{m} + COALESCE(synth_{m},0)"
+        return _side(m, real_only)
     sel = ", ".join(f"COALESCE(SUM({side(m)}),0)" for m in _MEASURES)
     q = (f"SELECT {sel}, MIN(dec_min), MAX(dec_peak), COALESCE(SUM(spec_sum),0),"
          " COALESCE(SUM(spec_n),0), MIN(day * 86400), MAX(day * 86400 + 86399),"
@@ -469,9 +531,14 @@ def tier_daily(con, engine: str, since_ts: int, before_ts: int | None = None) ->
     the horizon falls in, and the hours of that day below the horizon come from counter_hour
     (hour_horizon keeps them at least that far back).
     """
-    cols = ("real_prompt", "real_cached", "real_gen", "real_cost_hot", "real_cost_base",
-            "real_cost_nocache", "priced_rows", "unpriced_rows", "unp_prompt", "unp_cached",
-            "unp_gen")
+    # prompt/cached/gen/cost_hot carry the gap twin: a gap bucket is traffic the engine
+    # really served, so it belongs in the daily money chart exactly as it does in the
+    # totals (issue #22). The measured-only display extras keep no twin, matching what the
+    # minute side of daily_bucket_totals() sums, so the two halves of the seam agree.
+    cols = tuple(f"real_{c} + COALESCE(gap_{c},0)"
+                 for c in ("prompt", "cached", "gen", "cost_hot")) + (
+        "real_cost_base", "real_cost_nocache",
+        "priced_rows", "unpriced_rows", "unp_prompt", "unp_cached", "unp_gen")
     q = (f"SELECT day, {', '.join(cols)}"
          " FROM counter_day WHERE engine=? AND day * 86400 >= ?")
     params: list = [engine, int(since_ts)]
