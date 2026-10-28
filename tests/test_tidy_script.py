@@ -99,11 +99,57 @@ def test_a_corrupt_file_is_refused_not_installed(tmp_path, monkeypatch):
     real_integrity = tidy.integrity
     monkeypatch.setattr(tidy, "integrity",
                         lambda p: (False, "integrity_check=database disk image is malformed"))
-    rc = tidy.main(["--apply", "--db", db, "--allow-live", "--quiet"])
+    # a closed database: under --allow-live the backup is kept but never copied back
+    monkeypatch.setattr(tidy, "server_holds", lambda p: None)
+    rc = tidy.main(["--apply", "--db", db, "--quiet"])
     assert rc == 2, f"expected the gate to fail the run, got rc={rc}"
     monkeypatch.setattr(tidy, "integrity", real_integrity)
     # the restore must have left a working database
     assert tidy.money(db)["prompt"] == 4_000_000
+
+
+def _server_writes_during_vacuum(monkeypatch, write):
+    """The running server's sampler, which keeps writing while the nightly timer compacts."""
+    real = tidy.vacuum
+
+    def vacuum(db, *a, **kw):
+        r = real(db, *a, **kw)
+        write()
+        return r
+    monkeypatch.setattr(tidy, "vacuum", vacuum)
+
+
+def test_live_ring_writes_do_not_fail_the_gate(tmp_path, monkeypatch):
+    """The timer runs --apply --allow-live beside a server that writes its rings every few
+    seconds. Those rows are not money and cannot hold still, so they must not fail the gate."""
+    db = str(tmp_path / "t.db")
+    _fat_db(db)
+    live = Store(db, persist_seconds=3600)
+    _server_writes_during_vacuum(
+        monkeypatch, lambda: live.save_engine_samples("e1", [(time.time(), {"kv_pct": 1.0})]))
+    assert tidy.main(["--apply", "--db", db, "--allow-live", "--quiet"]) == 0
+
+
+def test_a_failed_gate_never_restores_over_a_live_database(tmp_path, monkeypatch, capsys):
+    """restore() deletes the file and copies the backup in. A server holding the old file keeps
+    writing to the deleted inode, so everything it records until a restart is lost (measured:
+    the server's connection saw 3,049 rows while the file held 3,010)."""
+    db = str(tmp_path / "t.db")
+    _fat_db(db)
+    live = Store(db, persist_seconds=3600)
+    ts = int(time.time()) // 60 * 60 + 60
+    _server_writes_during_vacuum(monkeypatch, lambda: live.save_counter_bucket("e1", ts, {
+        "prompt": 7, "cached": 0, "gen": 1, "reqs": 1, "iters": 1, "dec_min": None,
+        "dec_peak": None, "spec_sum": None, "spec_n": 0}))
+    assert tidy.main(["--apply", "--db", db, "--allow-live", "--quiet"]) == 2
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM counter_buckets WHERE ts=?", (ts,)
+                           ).fetchone()[0] == 1, "the backup was copied over the live database"
+    finally:
+        con.close()
+    assert len([f for f in os.listdir(tmp_path) if ".pretidy-" in f]) == 1, "backup not kept"
+    assert "NOT restoring" in capsys.readouterr().err
 
 
 def test_it_refuses_an_in_use_database(tmp_path, monkeypatch):

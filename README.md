@@ -258,7 +258,9 @@ python3 scripts/limcars_tidy.py --install-timer      # daily user timer (04:30, 
 
 It keeps a `*.pretidy-<stamp>` backup, refuses to run against an open database unless
 `--allow-live`, refuses when the disk lacks headroom, and **aborts and restores** if any
-headline figure moves: a reclaim that changed a token total is a bug, not a saving.
+headline figure moves: a reclaim that changed a token total is a bug, not a saving. Under
+`--allow-live` it aborts but never copies the backup over a database the server has open
+(the server would keep writing to the deleted file); the backup is kept and it says so.
 
 ## 📆 Six years of history, in about 48 MB
 
