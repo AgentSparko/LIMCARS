@@ -156,9 +156,11 @@ def rollup_hours(con: sqlite3.Connection, from_ts: int | None = None) -> int:
     # one at a time — folding the survivors would overwrite the richer row and quietly drop the
     # rest of that hour. Skip those hours instead: the redundancy gate then refuses to delete
     # what is left of them and says so, rather than losing it without a word.
-    covered = {int(h): int(rn or 0) for h, rn in con.execute(
-        "SELECT hour, COALESCE(real_rows, 0) + COALESCE(synth_rows, 0) FROM counter_hour")}
-    kept = [r for r in rows if int(r[-2]) + int(r[-1]) >= covered.get(int(r[1]), -1)]
+    # Keyed by (engine, hour), the row's own key: two engines in one hour are two aggregates.
+    covered = {(e, int(h)): int(rn or 0) for e, h, rn in con.execute(
+        "SELECT engine, hour, COALESCE(real_rows, 0) + COALESCE(synth_rows, 0)"
+        " FROM counter_hour")}
+    kept = [r for r in rows if int(r[-2]) + int(r[-1]) >= covered.get((r[0], int(r[1])), -1)]
     con.executemany(
         f"INSERT OR REPLACE INTO counter_hour({','.join(_HOUR_COLS)}) "
         f"VALUES ({','.join('?' * len(_HOUR_COLS))})", kept)
