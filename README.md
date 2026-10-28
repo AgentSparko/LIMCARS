@@ -185,9 +185,11 @@ agent does well. 🤖
 - 🔒 One shared password (set from the sidebar) guards recipe add/edit/delete
   and Hermes trace data. Start/Stop, probe and the dashboard stay open for
   convenience; localhost is exempt.
-- 🧱 Escalating per-IP lockout — 3 wrong tries → 1 min, 6 → 5 min, 9 → 30 min,
-  12 → 2 h. Passwords are stored as salted **scrypt** hashes and compared in
-  constant time.
+- 🧱 Escalating per-IP lockout — `auth_max_attempts` wrong tries (10 by default) → 1 min,
+  then 5 min, 30 min, 1 h, 2 h for repeat offenders; a lock you have waited out buys back a
+  full budget, and a quiet 6 h resets the escalation. Changing the password has its own
+  budget, so the Settings form can't lock you out of it. Passwords are stored as salted
+  **scrypt** hashes and compared in constant time.
 - 🔒 **The dashboard binds to `127.0.0.1` by default.** The recipe server
   executes stored commands as the user running LIMCARS, so a dashboard reachable
   from your LAN without a password is a remote code execution path for anyone on
