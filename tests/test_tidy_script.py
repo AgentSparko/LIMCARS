@@ -164,5 +164,33 @@ def test_it_works_on_a_pre_migration_database(tmp_path):
     assert tidy.money(db)["prompt"] == 4_000_000
 
 
+def test_tier_still_counts_an_engine_whose_minutes_all_aged_out(tmp_path, monkeypatch, capsys):
+    """The fold's money check listed engines from counter_buckets only. An engine whose minutes
+    are all past the horizon is gone from that table once folded, so the check read its history
+    as 0 and refused (rc 4) after the fold was committed, with every token in counter_day. And
+    once the fold was through, the compaction dry run still said nothing had been written."""
+    db = str(tmp_path / "t.db")
+    Store(db)._con.close()
+    day = (int(time.time()) - 400 * 86400) // 86400 * 86400
+    con = sqlite3.connect(db)
+    con.executemany("INSERT INTO counter_buckets(engine, ts, prompt, cached, gen, reqs, iters)"
+                    " VALUES ('e1', ?, 1000, 0, 100, 1, 1)",
+                    [(day + h * 3600 + m * 60,) for h in range(24) for m in range(5)])
+    con.commit()
+    con.close()
+    monkeypatch.setattr(tidy, "server_holds", lambda p: None)
+    rc = tidy.main(["--db", db, "--tier", "--quiet"])
+    out, err = capsys.readouterr()
+    assert rc == 0, err
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT SUM(real_prompt) FROM counter_day").fetchone()[0] == 120_000
+        folded = con.execute("SELECT COUNT(*) FROM counter_buckets").fetchone()[0] < 120
+    finally:
+        con.close()
+    if folded:
+        assert "nothing written" not in out, out
+
+
 def _diff(a, b):
     return {k: (a[k], b[k]) for k in a if a[k] != b[k]}
