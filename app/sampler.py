@@ -471,7 +471,7 @@ class EngineSampler(threading.Thread):
                         "prompt": cur_p, "cached": cur_c, "gen": cur_g,
                         "reqs": cur_r, "iters": cur_i, "dec_min": None,
                         "dec_peak": None, "spec_sum": None, "spec_n": 0,
-                        "synthetic": 1})
+                        "synthetic": 1, "synth_kind": 1})   # estimate: hidden from totals
                 self._rate_prev = base
                 self._rate_prev_t = now
             self._rate_live = live
@@ -537,16 +537,23 @@ class EngineSampler(threading.Thread):
             _money = pricing_mod.money_stamped(
                 max(0, dp), max(0, dc), max(0, dg),
                 pricing_mod.effective_price(self.model, self.cfg.get("pricing")))
+            # span since the last close, not since the shutdown: a 90 s restart can still
+            # span >120 s wall-clock because the baseline is the previous minute's close.
+            _gap = (now - self._rate_prev_t) > 120
             self.store.save_counter_bucket(self.id, int(self._rate_prev_t // 60) * 60, {
                 "prompt": max(0, dp), "cached": max(0, dc), "gen": max(0, dg),
                 "reqs": max(0, dr), "iters": max(0, di),
                 "dec_min": min([v for v in dec if v > 0], default=None),
                 "dec_peak": max(dec, default=None),
                 "spec_sum": sum(spec), "spec_n": len(spec),
-                # gap-spanning bucket (sampler was down/quiet > 2 min): real
-                # tokens but NOT a valid "one busy minute" for rate/savings
-                # anchors — excluded from last_active_hour (audit M2)
-                "synthetic": 1 if (now - self._rate_prev_t) > 120 else 0,
+                # gap-spanning bucket (sampler was down/quiet > 2 min): the engine really
+                # served these tokens, so they are counted in every total (issue #22) —
+                # what they are NOT is a valid "one busy minute" for rate/savings anchors,
+                # so synthetic=1 still excludes them from last_active_hour (audit M2) and
+                # from the measured-only dec/spec/busy columns. synth_kind=2 is what tells
+                # the readers "measured traffic", not an engine-lifetime estimate.
+                "synthetic": 1 if _gap else 0,
+                "synth_kind": 2 if _gap else 0,
                 **_money})
         self._rate_prev = base
         self._rate_prev_t = now

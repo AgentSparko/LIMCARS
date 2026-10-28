@@ -128,6 +128,17 @@ class Store:
                 "ALTER TABLE counter_buckets ADD COLUMN synthetic INTEGER DEFAULT 0")
         except Exception:  # duplicate column on existing DBs
             pass
+        # issue #22: `synthetic` grew a second meaning. A lifetime SEED and a GAP-spanning
+        # close both set it, but only one of them is traffic the engine really served — so
+        # every total (real_only=True) hid both, and a restart during real load silently
+        # deleted those tokens from the money lines. synth_kind separates them:
+        # 0 = measured minute, 1 = lifetime seed (estimate), 2 = gap (measured, >1 minute).
+        # Rows still 0 with synthetic=1 are pre-migration legacy and get classified below.
+        try:
+            self._con.execute(
+                "ALTER TABLE counter_buckets ADD COLUMN synth_kind INTEGER DEFAULT 0")
+        except Exception:  # duplicate column on existing DBs
+            pass
         # Money as it was EARNED. Cloud prices move (the fetcher refreshes
         # pricing.json, a user edits it), and every $ figure used to be
         # recomputed at read time from whatever the rate was right then — so
@@ -146,6 +157,20 @@ class Store:
                     f"ALTER TABLE counter_buckets ADD COLUMN {col} {typ}")
             except Exception:  # duplicate column on existing DBs
                 pass
+        # Issue #22 migration: classify legacy synthetic rows exactly once. The two write
+        # paths are distinguishable from the row itself, no heuristic needed — the seed path
+        # stores no money at all (an engine-lifetime dump is not a priced minute: no
+        # price_slug, no cost_hot), while a gap close goes through the normal close path and
+        # always carries a frozen price. Measured on the live database: 1 seed, 5 gaps, the
+        # gaps holding 528,514 prompt tokens that every total had been hiding.
+        # Self-limiting: after this, no row matches the predicate, so it costs one indexed
+        # scan on the next startup and nothing ever again. A gap written back when no price
+        # was known classifies as a seed and stays uncredited — under-counting an estimate
+        # is safe; crediting a total from a guess is not.
+        self._con.execute(
+            "UPDATE counter_buckets SET synth_kind ="
+            " CASE WHEN cost_hot IS NOT NULL OR price_slug IS NOT NULL THEN 2 ELSE 1 END"
+            " WHERE COALESCE(synthetic,0)=1 AND COALESCE(synth_kind,0)=0")
         self._con.commit()
         # the aggregate ladder (hourly + daily), so history survives minute pruning
         from . import tiers as _tiers
@@ -374,33 +399,39 @@ class Store:
         ts = int(ts) // 60 * 60      # defensive: minute buckets must align,
                                      # unaligned rows fragment hourly windows
         synth = 1 if b.get("synthetic") else 0
+        # 0 = measured, 1 = lifetime seed, 2 = gap-spanning (measured over >1 minute).
+        # A synthetic row with no kind stated is treated as the weaker class (a seed):
+        # under-counting an estimate is safe, inflating a total from a guess is not.
+        kind = int(b.get("synth_kind") or 1) if synth else 0
         with self._lock:
             if synth:
-                # A synthetic seed/gap bucket must never clobber a real minute.
-                # INSERT OR REPLACE used to overwrite the row and minute_rows()
-                # filters synthetic out, so every limcars restart silently
-                # deleted the minute of real traffic the seed landed in
-                # (found while gating the lost-potential alert on an honest
-                # hour of history). A real minute is worth more than a seed.
+                # A synthetic bucket must never clobber a written fact. INSERT OR REPLACE
+                # used to overwrite the row and minute_rows() filters synthetic out, so
+                # every limcars restart silently deleted the minute of real traffic the
+                # seed landed in (found while gating the lost-potential alert on an honest
+                # hour of history). Precedence: measured(0) > gap(2) > seed(1) — a restart
+                # can seed into the very minute a gap later closes over, in either order.
                 cur = self._con.execute(
-                    "SELECT COALESCE(synthetic,0) FROM counter_buckets"
-                    " WHERE engine=? AND ts=?", (engine, ts)).fetchone()
-                if cur is not None and cur[0] == 0:
-                    return           # keep the real bucket, drop the seed
+                    "SELECT COALESCE(synthetic,0), COALESCE(synth_kind,0)"
+                    " FROM counter_buckets WHERE engine=? AND ts=?",
+                    (engine, ts)).fetchone()
+                if cur is not None and (cur[0] == 0 or cur[1] > kind):
+                    return           # keep the stronger bucket, drop this one
             self._con.execute(
                 """
                 INSERT INTO counter_buckets
                   (engine,ts,prompt,cached,gen,reqs,iters,dec_min,dec_peak,
-                   spec_sum,spec_n,synthetic,
+                   spec_sum,spec_n,synthetic,synth_kind,
                    cost_hot,cost_base,cost_nocache,price_slug,price_in,price_out,
                    price_cw,price_cr,price_crhot,priced_at,price_src)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(engine,ts) DO UPDATE SET
                   prompt=excluded.prompt, cached=excluded.cached, gen=excluded.gen,
                   reqs=excluded.reqs, iters=excluded.iters,
                   dec_min=excluded.dec_min, dec_peak=excluded.dec_peak,
                   spec_sum=excluded.spec_sum, spec_n=excluded.spec_n,
                   synthetic=excluded.synthetic,
+                  synth_kind=excluded.synth_kind,
                   -- money is write-once: the first stamp is the historical fact.
                   -- Re-saving a minute (restart, gap backfill, importer) must never
                   -- re-price what was already earned, so an existing value always wins.
@@ -423,7 +454,7 @@ class Store:
                 # `p + g` in counters.py. NULL stays NULL — it means "not priced", not zero.
                 (engine, ts, _num(b["prompt"]), _num(b["cached"]), _num(b["gen"]),
                  _num(b["reqs"]), _num(b["iters"]), _num(b["dec_min"]), _num(b["dec_peak"]),
-                 _num(b["spec_sum"]), _num(b["spec_n"]), synth,
+                 _num(b["spec_sum"]), _num(b["spec_n"]), synth, kind,
                  _num_or_none(b.get("cost_hot")), _num_or_none(b.get("cost_base")),
                  _num_or_none(b.get("cost_nocache")), b.get("price_slug"),
                  _num_or_none(b.get("price_in")), _num_or_none(b.get("price_out")),
@@ -745,7 +776,13 @@ class Store:
              " THEN gen END),0)"
              " FROM counter_buckets"
              " WHERE engine=?" + (" AND ts>=?" if since_ts is not None else "")
-             + (" AND COALESCE(synthetic,0)=0" if real_only else ""))
+             # issue #22: "real_only" meant "not synthetic", which hid traffic the engine
+             # really served whenever the sampler had been down (a gap bucket) alongside the
+             # engine-lifetime estimates that genuinely must stay out. Gaps are measured, so
+             # they count here; seeds are a guess, so they do not. The rate anchors above are
+             # unchanged — every dec/spec/busy expression still says COALESCE(synthetic,0)=0,
+             # which is what keeps a 4-minute span from posing as one busy minute.
+             + (" AND (COALESCE(synthetic,0)=0 OR COALESCE(synth_kind,0)=2)" if real_only else ""))
         params = [engine] + ([since_ts] if since_ts is not None else [])
         r = self._con.execute(q, params).fetchone()
         if not r or r[9] is None:
@@ -763,11 +800,17 @@ class Store:
                 "legacy_prompt": lp, "legacy_cached": lc, "legacy_gen": lg}
 
     def counter_bucket_rows(self, engine: str, seconds: float) -> list[tuple]:
-        """(ts, prompt, cached, gen) raw minute-buckets for sparklines."""
+        """(ts, prompt, cached, gen) raw minute-buckets for sparklines.
+
+        Gap buckets are included: a sparkline answers "what did this engine serve", and
+        tokens served during a sampler outage are part of the answer — the same rule the
+        totals use, so a spike and the number under it can never disagree.
+        """
         with self._lock:
             return self._con.execute(
                 "SELECT ts,prompt,cached,gen FROM counter_buckets"
-                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
+                " WHERE engine=? AND ts>=?"
+                " AND (COALESCE(synthetic,0)=0 OR COALESCE(synth_kind,0)=2)"
                 " ORDER BY ts",
                 (engine, int(time.time() - seconds))).fetchall()
 
@@ -794,34 +837,47 @@ class Store:
         """(utc_day, prompt, cached, gen, cost_hot, cost_base, cost_nocache,
         priced_rows, unpriced_rows, unpriced_prompt, unpriced_cached, unpriced_gen)
         calendar-day sums for the daily
-        money-saved chart. SYNTHETIC buckets (seed/gap) are EXCLUDED: the
-        lifetime seed bucket parked at "today" would otherwise render as one
-        engine-lifetime-sized bar dominating the chart (audit F7), and gap
-        backfill covers downtime, not the measured day. The chart therefore
-        means "what was measured live", consistent with every other rate view.
+        money-saved chart. SEED buckets are EXCLUDED: the lifetime seed bucket
+        parked at "today" would otherwise render as one engine-lifetime-sized
+        bar dominating the chart (audit F7). GAP buckets are INCLUDED (issue
+        #22) — the engine really served those tokens, so the day they happened
+        in is the day they belong to; only the per-minute rate views keep
+        excluding them, because a span is not a minute.
 
         Money comes back split into what was frozen at the time and what is
         still unpriced, so the caller never has to present a re-priced figure
-        as if it were historical.
+        as if it were historical. cost_base/cost_nocache and the priced-vs-unpriced
+        accounting stay MEASURED-only (the fold keeps no twin for them), exactly as
+        tiers.tier_daily() answers for the aged-out half of the window — if the two
+        halves of the seam disagree, a day's bar moves when it ages out of minutes.
         """
         from . import tiers
         horizon = tiers.horizon_ts(time.time(), self.minute_days)
         since = int(since_ts)
         with self._lock:
             self._ensure_ladder(horizon)
+            _meas = "COALESCE(synthetic,0)=0"
             brows = self._con.execute(
                 "SELECT ts/86400, COALESCE(SUM(prompt),0), COALESCE(SUM(cached),0),"
                 " COALESCE(SUM(gen),0),"
                 " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN cost_hot END),0),"
-                " COALESCE(SUM(CASE WHEN cost_base IS NOT NULL THEN cost_base END),0),"
-                " COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL THEN cost_nocache END),0),"
-                " COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL THEN 1 ELSE 0 END),0),"
-                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN 1 ELSE 0 END),0),"
-                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN prompt END),0),"
-                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN cached END),0),"
-                " COALESCE(SUM(CASE WHEN cost_hot IS NULL THEN gen END),0)"
+                f" COALESCE(SUM(CASE WHEN cost_base IS NOT NULL AND {_meas}"
+                " THEN cost_base END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_nocache IS NOT NULL AND {_meas}"
+                " THEN cost_nocache END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_hot IS NOT NULL AND {_meas}"
+                " THEN 1 ELSE 0 END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_hot IS NULL AND {_meas}"
+                " THEN 1 ELSE 0 END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_hot IS NULL AND {_meas}"
+                " THEN prompt END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_hot IS NULL AND {_meas}"
+                " THEN cached END),0),"
+                f" COALESCE(SUM(CASE WHEN cost_hot IS NULL AND {_meas}"
+                " THEN gen END),0)"
                 " FROM counter_buckets"
-                " WHERE engine=? AND ts>=? AND COALESCE(synthetic,0)=0"
+                " WHERE engine=? AND ts>=?"
+                " AND (COALESCE(synthetic,0)=0 OR COALESCE(synth_kind,0)=2)"
                 " GROUP BY ts/86400",
                 (engine, max(since, horizon))).fetchall()
             # the ladder side ALWAYS stops at the horizon: conditioning this on `since` lets a
