@@ -57,6 +57,42 @@ const tip = (typeof document !== 'undefined') ? (() => {
   document.body.appendChild(d); return d;
 })() : null;
 
+// Which instantaneous rate fields are only meaningful while the engine is actually
+// doing the thing they measure. The card layer already dims these on the STICKY
+// server-side activity flag ("instantaneous 2 Hz per-tick values flicker bright/dark
+// mid-stream"), but the series underneath was fed the raw 2 Hz value — so between
+// decode bursts the sparkline plunged to 0 (and back) while the number above it was
+// held: the "dancing charts" report, worst on the top row (Gen speed / Prefill / KV).
+// A rate that cannot be measured is not a measured zero, so it feeds a gap.
+export const RATE_WHILE_ACTIVE = {
+  decode_tps_now: 'decode_active', decode_tps_avg: 'decode_active',
+  prefill_tps_now: 'prefill_active', prefill_tps_avg: 'prefill_active',
+};
+// Fields that report a false 0 while idle (vLLM: kv_cache_usage_perc = 0 while the
+// prefix-cached blocks are still resident). The number holds the last real reading;
+// the curve must hold it too, or the two visibly contradict each other.
+export const HOLD_LAST_NONZERO = new Set(['kv_pct']);
+
+/**
+ * The value to append for one engine field on one frame — pure, so it can be tested
+ * without a DOM (tests/js/series_sample.mjs).
+ * @param {string} field   the field name, e.g. 'kv_pct'
+ * @param {*} raw          the value the engine reported this frame
+ * @param {object} [frame] the whole frame, for the sticky activity flags
+ * @param {object} [held]  caller-owned per-engine scratch pad for hold-last values
+ * @returns {number|null}  what to store; null means "not measurable", not zero
+ */
+export function seriesSample(field, raw, frame, held) {
+  if (HOLD_LAST_NONZERO.has(field)) {
+    if (typeof raw === 'number' && raw > 0) { (held || (held = {}))[field] = raw; return raw; }
+    if (raw === 0 && held && typeof held[field] === 'number') return held[field];
+    return raw;                     // never seen a real reading yet: 0 is all we know
+  }
+  const flag = RATE_WHILE_ACTIVE[field];
+  if (flag && frame && frame[flag] === false) return null;
+  return raw;
+}
+
 export class LineChart {
   /**
    * @param {HTMLElement} host

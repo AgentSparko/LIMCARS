@@ -18,6 +18,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "js" / "spark_cap.mjs"
+SCRIPT2 = ROOT / "tests" / "js" / "series_sample.mjs"
 NODE = shutil.which("node")
 HAS_NODE = NODE is not None
 node_cmd = [NODE or "node", str(SCRIPT)]
@@ -46,3 +47,28 @@ def test_dashboard_imports_the_charts_bundle_it_needs():
     assert "charts.js?v=" in js, "the charts import lost its cache-bust tag"
     tag = js.split("charts.js?v=", 1)[1].split("'", 1)[0]
     assert tag and tag != "undefined", f"empty cache-bust tag: {tag!r}"
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node not installed")
+def test_series_feed_does_not_contradict_the_printed_number():
+    """The 'dancing charts' fix lives in a pure function, so it is testable headlessly.
+
+    Regression from the owner's video: bubbles whose number is held (kv_pct) or dimmed
+    (rate fields while idle) were still fed the raw 2 Hz value, so the last point fell to
+    0 at the poll rate — a full-height swing, since spark()'s floor is 0.
+    """
+    r = subprocess.run([NODE or "node", str(SCRIPT2)], capture_output=True, text=True, timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    assert r.returncode == 0, f"seriesSample regression failed:\n{out}"
+    assert "all checks passed" in out, out
+
+
+def test_the_feed_actually_routes_engine_fields_through_the_policy():
+    """Mechanism, not intent: if the push site reverts to `o[k]`, the dance is back.
+
+    A unit test on the pure function cannot notice the caller stop calling it.
+    """
+    js = (ROOT / "web" / "js" / "dashboard.js").read_text(encoding="utf-8")
+    assert "seriesSample(" in js, "the SSE feed no longer applies the series policy"
+    assert "state.store.push(`${id_}.${k}`, o.t, o[k])" not in js, \
+        "the raw 2 Hz value is being pushed again — that is the dancing-charts bug"

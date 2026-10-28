@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS } from './charts.js?v=20261028a';
+import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, HOLD_LAST_NONZERO } from './charts.js?v=20261028c';
 
 const state = {
   store: new SeriesStore(4000),
@@ -514,9 +514,22 @@ function refresh() {
       state._heldNz = state._heldNz || {};
       const raw = l ? l[ref.d.series] : null;
       if (raw != null && raw > 0) state._heldNz[hk] = { v: ref.v.textContent, s: ref.sub.textContent };
-      else if (raw === 0 && state._heldNz[hk]) {
-        ref.v.textContent = state._heldNz[hk].v;
-        ref.sub.textContent = state._heldNz[hk].s + ' · held, cache resident';
+      else if (raw === 0) {
+        if (state._heldNz[hk]) {
+          ref.v.textContent = state._heldNz[hk].v;
+          ref.sub.textContent = state._heldNz[hk].s + ' · held, cache resident';
+        } else {
+          // Nothing non-zero seen since the reload, but the seeded series carries the
+          // last real reading. Use it, so the number and the sparkline hold the same
+          // value — one layer holding while the other shows the engine's false 0 is
+          // exactly what made the top row look like it was dancing.
+          const hv = (state.engines[eng()] || {})._held?.[ref.d.series];
+          if (typeof hv === 'number') {
+            const lf = { ...(l || {}), [ref.d.series]: hv };
+            ref.v.textContent = ref.d.main(lf);
+            ref.sub.textContent = (ref.d.sub ? ref.d.sub(lf) : '') + ' · held, cache resident';
+          }
+        }
       }
     }
     // hold-last: when a value blanks out (traffic stopped / window empty),
@@ -709,9 +722,23 @@ async function seed(reseedWindow = true) {
   const snap = await r.json();
   state.engines = {};
   for (const [id, e] of Object.entries(snap.engines || {})) {
-    state.engines[id] = { meta: e, latest: e.latest || {},
+    const eng = { meta: e, latest: e.latest || {},
       rx: e.last_scrape ? Date.now() - Math.max(0, (snap.ts || 0) - e.last_scrape) * 1000 : 0 };
-    for (const [k, rows] of Object.entries(e.series || {})) state.store.seed(`${id}.${k}`, rows);
+    state.engines[id] = eng;
+    for (const [k, rows] of Object.entries(e.series || {})) {
+      state.store.seed(`${id}.${k}`, rows);
+      // Prime the hold pad from history. Without this a reload forgets the last real
+      // reading, and an idle engine's DOCUMENTED false zero (kv_cache_usage_perc = 0
+      // while prefix-cached blocks are still resident) would then print and draw as
+      // "cache empty" for the whole session — the two layers agreeing only by being
+      // both wrong. The truth is already in the rows we just seeded, so borrow it.
+      if (HOLD_LAST_NONZERO.has(k)) {
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const v = rows[i] && rows[i][1];
+          if (typeof v === 'number' && v > 0) { (eng._held || (eng._held = {}))[k] = v; break; }
+        }
+      }
+    }
     // e2e/queue p50 series aren't in snapshot series list — seed from ring rows missing: skip, SSE fills in
   }
   state.hw = snap.hw || {};
@@ -824,7 +851,12 @@ async function connect() {
                            'running','waiting','kv_pct','ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
                            'e2e_p50_ms','cache_hit_pct','spec_accept_pct','spec_step_accept_pct','spec_accept_len',
                            'draft_tok_per_step','gen_peak','prompt_total','gen_total'])
-            state.store.push(`${id_}.${k}`, o.t, o[k]);
+            // seriesSample keeps the curve honest about what the number above it says:
+            // rate fields go null (not 0) while the sticky activity flag says nothing is
+            // happening, and kv_pct holds its last real reading instead of plunging on
+            // the idle 0 the engine reports. Feeding raw 2 Hz values made the top row of
+            // bubbles dance at the poll rate while every printed value stayed put.
+            state.store.push(`${id_}.${k}`, o.t, seriesSample(k, o[k], o, (e._held || (e._held = {}))));
         } else if (ev === 'events' && o.type === 'node_down') {
           const n = state.nodes && state.nodes[o.node];
           if (n) { n.alive = false; n.error = o.error; }
