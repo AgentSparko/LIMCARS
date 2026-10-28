@@ -606,6 +606,20 @@ function eventLines(text, fromLen) {
   return { events: out, consumed: consumed > fromLen ? consumed : 0 };
 }
 
+/* /main-transcript sends one lines[] entry per message, and a message body
+   (a multi-line prompt, a tool result) can itself contain newlines. Match each
+   entry whole: joining them and re-splitting on \n dropped every body line
+   after the first, and a body line shaped like "HH:MM:SS final | ..." turned
+   into an event of its own. */
+function entryEvents(entries) {
+  const out = [];
+  for (const e of entries) {
+    const m = LINE_RE.exec(e);
+    if (m) out.push({ ts: m[1] + ':' + m[2] + ':' + m[3], kind: m[4], text: m[5] });
+  }
+  return out;
+}
+
 function parseHeader(text) {
   const g = text.match(/^goal:\s?([\s\S]*?)\nstarted:/m);
   const s = text.match(/^started:\s(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/m);
@@ -843,9 +857,9 @@ async function renderSummary(id, idx, text) {
 
 /* ── main-agent transcripts (state.db) ───────────────────────────── */
 /* /main-transcript returns {lines:[...]} in the SAME "HH:MM:SS kind | body"
-   shape as subagent task logs, so the existing eventLines/makeEvent
-   pipeline renders them unchanged. No "final | end status" line ever
-   appears — liveness comes from the session's last_activity instead. */
+   shape as subagent task logs, so makeEvent renders them unchanged (via
+   entryEvents, since one entry can span lines). No "final | end status" line
+   ever appears — liveness comes from the session's last_activity instead. */
 let mainFollow = null; // {profile, sid, url, count, live}
 
 async function loadMainTranscript(profile, sid, fresh) {
@@ -876,7 +890,7 @@ async function loadMainTranscript(profile, sid, fresh) {
   state.logCache['main:' + profile + ':' + sid] = (data.lines || []).join('\n');
   const tl = $('timeline');
   const frag = document.createDocumentFragment();
-  for (const ev of eventLines((data.lines || []).join('\n'), 0).events) frag.appendChild(makeEvent(ev));
+  for (const ev of entryEvents(data.lines || [])) frag.appendChild(makeEvent(ev));
   /* Re-loading a main transcript REPLACES the events (the server always
      returns the current tail), so clear first — but ONLY when switching
      sessions, not when the periodic main-sessions refresh re-pulls the same
@@ -900,7 +914,7 @@ function startMainFollow() {
     const lines = data.lines || [];
     state.logCache['main:' + mainFollow.profile + ':' + mainFollow.sid] = lines.join('\n');
     if (lines.length > mainFollow.count) {
-      const add = eventLines(lines.slice(mainFollow.count).join('\n'), 0).events;
+      const add = entryEvents(lines.slice(mainFollow.count));
       for (const ev of add) $('timeline').appendChild(makeEvent(ev));
       mainFollow.count = lines.length;
       lastGrow = Date.now();
