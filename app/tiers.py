@@ -440,10 +440,12 @@ def tier_minute_rows(con, engine: str, before_ts: int) -> list[tuple]:
     Minute granularity no longer exists below the horizon, so the measured busy-minute count
     travels with the row instead of being guessed: an hour that saw traffic in 40 minutes says
     40, and occupancy statistics stay measured rather than assumed.
+
+    Measured columns only, like the minute rows above the horizon (Store.minute_rows): these
+    feed the best-hour scan, and a restart gap bucket in a busy hour would otherwise become
+    the best hour the moment that hour aged out.
     """
-    q = ("SELECT hour, real_prompt + COALESCE(synth_prompt,0),"
-         " real_cached + COALESCE(synth_cached,0),"
-         " real_gen + COALESCE(synth_gen,0), busy_minutes FROM counter_hour"
+    q = ("SELECT hour, real_prompt, real_cached, real_gen, busy_minutes FROM counter_hour"
          " WHERE engine=? AND hour < ? AND COALESCE(real_rows,0) > 0 ORDER BY hour")
     return [(t, p, c, g, bm) for t, p, c, g, bm in
             con.execute(q, (engine, int(before_ts))).fetchall()]

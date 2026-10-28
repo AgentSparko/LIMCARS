@@ -10,6 +10,9 @@ engine connected and two minutes of data):
 Every test below therefore seeds a real hour of activity; the assertions are
 the same maths they always were, just no longer anchored on a lone minute.
 """
+import time
+
+from app import tiers
 from app.counters import lost_potential
 from app.store import Store
 
@@ -200,6 +203,25 @@ def test_synthetic_excluded_from_window(tmp_path):
     assert r["ok"] is True
     assert r["peak_hour_tokens"] == 180_000_000   # the 3M/min hour, seed ignored
     assert r["total_tokens"] == 240_000_000
+
+
+def test_synthetic_stays_excluded_once_the_hour_ages_out(tmp_path):
+    """Below the minute horizon the scan reads hour rows, and those summed the synthetic
+    columns in: a restart gap bucket sharing a busy hour became the best hour the moment that
+    hour aged out of the minute table. The figures must not move when an hour ages."""
+    st = Store(str(tmp_path / "t.db"), minute_days=3650)
+    base = (int(time.time()) - 40 * 86400) // 3600 * 3600
+    for m in range(179):                     # three busy hours, all real
+        st.save_counter_bucket("e1", base + m * 60, _b(p=6e4, g=6e3))
+    # the gap bucket a restart leaves at the last minute before shutdown: 20 h of traffic
+    st.save_counter_bucket("e1", base + 179 * 60, _b(p=6e4 * 1200, g=6e3 * 1200, synthetic=1))
+    before = lost_potential(st, LIVE, PRICE)
+    tiers.rollup_all(st._con)
+    st.minute_days = 30                      # these hours are now below the minute horizon
+    after = lost_potential(st, LIVE, PRICE)
+    assert before["ok"] and after["ok"]
+    for k in ("peak_hour_tokens", "total_tokens", "best_hour_cost", "capacity_year_cost"):
+        assert after[k] == before[k], f"{k} moved when the hour aged out"
 
 
 def test_biggest_peak_wins_and_no_price(tmp_path, monkeypatch):
