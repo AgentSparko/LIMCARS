@@ -308,6 +308,24 @@ def test_daily_totals_survive_hour_pruning(tmp_path):
     assert after == before, "daily totals must not move when hourly rows age out"
 
 
+def test_the_day_holding_the_minute_horizon_is_charted_once(tmp_path):
+    """The minute horizon is hour-aligned, so it usually falls inside a day. That day's row
+    covers all 24 hours, and the chart added it below the horizon AND the same day's minutes
+    above it: the hours after the horizon were drawn twice."""
+    store = _mk(tmp_path)
+    now = int(time.time())
+    d = (now - 30 * DAY) // DAY * DAY
+    for h in range(24):
+        store.save_counter_bucket("e1", d + h * HOUR, _bkt(1000.0))
+    store.minute_days = (now - (d + 12 * HOUR)) / DAY        # the horizon lands mid-day on d
+    rep = tiers.enforce_retention(store._con, minute_days=store.minute_days,
+                                  history_years=store.history_years)
+    assert rep.get("blocked") is None and rep["pruned_buckets"] > 0, rep
+    rows = {r[0]: r[1] for r in store.daily_bucket_totals("e1", d)}
+    assert rows == {d // DAY: pytest.approx(24000.0)}, rows
+    assert store.counter_totals("e1", None)["prompt"] == pytest.approx(24000.0)
+
+
 def test_a_day_row_sums_every_hour_of_that_day(tmp_path):
     """Several busy hours in one UTC day must fold into one day row holding all of them, not
     just the last hour written. The test above seeds one hour per day, which can't tell."""

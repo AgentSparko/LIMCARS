@@ -460,16 +460,29 @@ def tier_daily(con, engine: str, since_ts: int, before_ts: int | None = None) ->
     """Day rows covering the aged-out range, shaped exactly like daily_bucket_totals().
 
     `before_ts` is the other half of the seam: the day query must stop where the minute query
-    starts, or a day that straddles the horizon would be counted from both sources.
+    starts, or a day that straddles the horizon would be counted from both sources. The horizon
+    is hour-aligned and a day row is the whole day, so day rows stop at the start of the day
+    the horizon falls in, and the hours of that day below the horizon come from counter_hour
+    (hour_horizon keeps them at least that far back).
     """
-    q = ("SELECT day, real_prompt, real_cached, real_gen, real_cost_hot, real_cost_base,"
-         " real_cost_nocache, priced_rows, unpriced_rows, unp_prompt, unp_cached, unp_gen"
+    cols = ("real_prompt", "real_cached", "real_gen", "real_cost_hot", "real_cost_base",
+            "real_cost_nocache", "priced_rows", "unpriced_rows", "unp_prompt", "unp_cached",
+            "unp_gen")
+    q = (f"SELECT day, {', '.join(cols)}"
          " FROM counter_day WHERE engine=? AND day * 86400 >= ?")
     params: list = [engine, int(since_ts)]
-    if before_ts is not None:
-        q += " AND day * 86400 < ?"
-        params.append(int(before_ts))
-    return con.execute(q, tuple(params)).fetchall()
+    if before_ts is None:
+        return con.execute(q, tuple(params)).fetchall()
+    day0 = (int(before_ts) // DAY) * DAY
+    q += " AND day * 86400 < ?"
+    params.append(day0)
+    rows = con.execute(q, tuple(params)).fetchall()
+    sums = ", ".join(f"COALESCE(SUM({c}),0)" for c in cols)
+    rows += con.execute(
+        f"SELECT hour / {int(DAY)}, {sums} FROM counter_hour"
+        f" WHERE engine=? AND hour >= ? AND hour < ? GROUP BY hour / {int(DAY)}",
+        (engine, max(int(since_ts), day0), int(before_ts))).fetchall()
+    return rows
 
 
 def horizon_ts(now: float, minute_days: float) -> int:
