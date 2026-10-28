@@ -1,0 +1,86 @@
+// Regression: the bubble sparklines must not contradict the number above them.
+//
+// Owner's report (video): "the small charts ... dance, the ones on the first line the most,
+// like at 1 fps". Measured live, the printed values were STATIC while the curves moved:
+// the engine reports kv_pct = 0 and decode_tps_now = 0 between bursts, the card layer holds
+// the last real reading for the number ("14.8% · held, cache resident") but the SERIES was
+// fed the raw 2 Hz value — so the last point fell to 0 and back at the poll rate, and since
+// spark()'s min is pinned at 0 that swing is the full 24 px.
+//
+// Run: node tests/js/series_sample.mjs   (also driven by tests/test_web_charts.py)
+
+import { seriesSample, RATE_WHILE_ACTIVE, HOLD_LAST_NONZERO, spark } from '../../web/js/charts.js';
+
+let fails = 0;
+const eq = (label, got, want) => {
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  if (g !== w) { fails++; console.log(`FAIL  ${label}\n        got  ${g}\n        want ${w}`); }
+  else console.log(`ok    ${label}  ->  ${g}`);
+};
+
+// --- 1. kv_pct: the false idle zero must not drag the curve down ---------------
+const held = {};
+eq('kv_pct records a real reading', seriesSample('kv_pct', 14.7541, { kv_pct: 14.7541 }, held), 14.7541);
+eq('kv_pct holds it when the engine reports its idle 0',
+   seriesSample('kv_pct', 0, { kv_pct: 0 }, held), 14.7541);
+eq('...and still holds on the next idle frame',
+   seriesSample('kv_pct', 0, { kv_pct: 0 }, held), 14.7541);
+eq('a fresh reading replaces the held one',
+   seriesSample('kv_pct', 22.5, { kv_pct: 22.5 }, held), 22.5);
+
+// --- 2. no reading, no invention ------------------------------------------------
+eq('kv_pct with no history keeps the honest 0',
+   seriesSample('kv_pct', 0, {}, {}), 0);
+
+// --- 3. rate fields: not measurable is a gap, not a measured zero ---------------
+eq('decode_tps_now while not decoding -> null',
+   seriesSample('decode_tps_now', 0, { decode_active: false }, {}), null);
+eq('decode_tps_now while decoding -> the value',
+   seriesSample('decode_tps_now', 72.2, { decode_active: true }, {}), 72.2);
+eq('decode_tps_avg follows the same sticky flag',
+   seriesSample('decode_tps_avg', 0, { decode_active: false }, {}), null);
+eq('prefill fields key off prefill_active, not decode_active',
+   seriesSample('prefill_tps_avg', 0, { prefill_active: false, decode_active: true }, {}), null);
+eq('prefill passes through while prefilling',
+   seriesSample('prefill_tps_avg', 1950.4, { prefill_active: true }, {}), 1950.4);
+// the flag must say false: a missing flag means "engine does not report it", and
+// inventing gaps for an engine that never sends the flag would blank the chart
+eq('a frame without the flag is left alone (older/other engines)',
+   seriesSample('decode_tps_now', 0, {}, {}), 0);
+eq('undefined flag (engine never sends it) is left alone',
+   seriesSample('decode_tps_now', 5.5, { decode_active: undefined }, {}), 5.5);
+
+// --- 4. nothing else is touched -------------------------------------------------
+for (const f of ['running', 'waiting', 'ttft_p50_ms', 'e2e_p50_ms', 'gen_peak', 'spec_accept_len'])
+  eq(`${f} passes through, zeros included`, seriesSample(f, 0, { decode_active: false }, {}), 0);
+eq('genuine measured 0 on a hold field is never held before a real reading',
+   seriesSample('running', 0, {}, { running: 7 }), 0);   // 'running' is not a hold field
+eq('a real zero is not swallowed by the policy tables',
+   HOLD_LAST_NONZERO.has('running'), false);
+
+// --- 5. held values are per engine, never shared --------------------------------
+const e1 = {}, e2 = {};
+seriesSample('kv_pct', 11.0, {}, e1);
+eq('engine 2 has no idea what engine 1 saw', seriesSample('kv_pct', 0, {}, e2), 0);
+eq('engine 1 still holds its own', seriesSample('kv_pct', 0, {}, e1), 11.0);
+eq('policy tables stay small and explicit',
+   [Object.keys(RATE_WHILE_ACTIVE).sort(), [...HOLD_LAST_NONZERO].sort()],
+   [['decode_tps_avg', 'decode_tps_now', 'prefill_tps_avg', 'prefill_tps_now'], ['kv_pct']]);
+
+// --- 6. the renderer: a gap must not become a plunge ----------------------------
+// spark() draws only finite samples, so a null leaves the shape (and the y range)
+// exactly as it was instead of dropping a spike to the floor.
+const stub = { clientWidth: 150, _attrs: {}, setAttribute(k, v) { this._attrs[k] = v; } };
+spark(stub, [14.75, 14.75, 14.75, 14.75]);
+const clean = stub._spark;
+spark(stub, [14.75, 14.75, 14.75, null]);
+const gapped = stub._spark;
+eq('null is skipped, not drawn at the floor', gapped.idxs, [0, 1, 2]);
+eq('so the y range does not move', [gapped.min, gapped.max], [clean.min, clean.max]);
+eq('and the curve does not change shape', gapped.n, 4);
+// what the OLD code did with the raw idle zero, for the record:
+spark(stub, [14.75, 14.75, 14.75, 0]);
+eq('a raw 0 WOULD have stretched the scale (this was the dance)', [stub._spark.min, stub._spark.max], [0, 14.75]);
+
+console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
+process.exit(fails ? 1 : 0);
