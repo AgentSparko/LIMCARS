@@ -218,7 +218,8 @@ def report(path: str) -> dict:
         con.close()
 
 
-def run(db: str, apply: bool, keep_backup: bool, allow_live: bool, quiet: bool) -> int:
+def run(db: str, apply: bool, keep_backup: bool, allow_live: bool, quiet: bool,
+        folded: bool = False) -> int:
     if not os.path.exists(db):
         print(f"no database at {db}", file=sys.stderr)
         return 3
@@ -249,7 +250,9 @@ def run(db: str, apply: bool, keep_backup: bool, allow_live: bool, quiet: bool) 
 
     if not apply:
         gain = rep.get("dead_pages_mb", 0) * 1048576
-        print(f"\n[dry run] nothing written. VACUUM would return about {human(gain)} "
+        # --tier has already committed its fold by now; only the VACUUM is a dry run
+        done = "only the --tier fold above was written" if folded else "nothing written"
+        print(f"\n[dry run] {done}. VACUUM would return about {human(gain)} "
               f"({100*gain/max(before_size,1):.0f}%).")
         print(f"[dry run] to do it: {os.path.basename(sys.argv[0])} --apply --db {db}")
         return 0
@@ -348,8 +351,11 @@ def run_tier(db: str, minute_days: float, history_years: float,
         s = Store(db, persist_seconds=172800, minute_days=minute_days_eff,
                   history_years=history_years)
         try:
+            # every rung, not just the minutes: an engine whose minutes have all aged out lives
+            # only in the ladder after the fold, and leaving it out reads its history as 0
             engines = [r[0] for r in s._con.execute(
-                "SELECT DISTINCT engine FROM counter_buckets")]
+                "SELECT engine FROM counter_buckets UNION SELECT engine FROM counter_hour"
+                " UNION SELECT engine FROM counter_day")]
             out: dict[str, float] = {}
             for k in ("prompt", "cached", "gen", "reqs", "iters", "cost_hot"):
                 out[k] = round(sum(
@@ -465,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
         if rc:
             return rc
     return run(a.db, apply=apply, keep_backup=not a.delete_backup,
-               allow_live=a.allow_live, quiet=a.quiet)
+               allow_live=a.allow_live, quiet=a.quiet, folded=a.tier)
 
 
 if __name__ == "__main__":
