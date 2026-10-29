@@ -82,5 +82,29 @@ eq('and the curve does not change shape', gapped.n, 4);
 spark(stub, [14.75, 14.75, 14.75, 0]);
 eq('a raw 0 WOULD have stretched the scale (this was the dance)', [stub._spark.min, stub._spark.max], [0, 14.75]);
 
+// --- 7. smoothing the RECORDED idle zeros (display only, never invents) ---------
+import { fillIdleZeros } from '../../web/js/charts.js';
+
+const T = 1_000_000;
+const src = [[T, 14.75], [T + 1, 0], [T + 2, 0], [T + 3, 22], [T + 4, 0]];
+const nz = fillIdleZeros(src);
+eq('interior idle zeros take the last real reading', nz.map(r => r[1]), [14.75, 14.75, 14.75, 22, 22]);
+eq('timestamps are never disturbed', nz.map(r => r[0]), [T, T + 1, T + 2, T + 3, T + 4]);
+eq('the input rows are NOT mutated — the ring keeps what the engine said',
+   src.map(r => r[1]), [14.75, 0, 0, 22, 0]);
+eq('and it returns a new array, not the same object', nz === src, false);
+eq('leading zeros are left alone — nothing to borrow from',
+   fillIdleZeros([[T, 0], [T + 1, 0], [T + 2, 5]]).map(r => r[1]), [0, 0, 5]);
+eq('nulls are gaps, not zeros: untouched',
+   fillIdleZeros([[T, 9], [T + 1, null], [T + 2, 0]]).map(r => r[1]), [9, null, 9]);
+eq('a series of all zeros is reported as it was recorded',
+   fillIdleZeros([[T, 0], [T + 1, 0]]).map(r => r[1]), [0, 0]);
+eq('garbage in is passed through, not crashed on', fillIdleZeros(undefined), undefined);
+// The accepted blind spot, written down as a test so nobody "fixes" it silently:
+// a genuine "the cache really emptied" looks identical to an idle false zero in
+// recorded data, so it gets smoothed too. Display-only; the stored row is intact.
+eq('known trade-off: a real empty-cache moment is smoothed as well',
+   fillIdleZeros([[T, 30], [T + 1, 0]]).map(r => r[1]), [30, 30]);
+
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);

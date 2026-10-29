@@ -93,6 +93,33 @@ export function seriesSample(field, raw, frame, held) {
   return raw;
 }
 
+/**
+ * Smooth the false zeros in ALREADY-RECORDED history for display.
+ *
+ * An idle engine reports kv_cache_usage_perc = 0 while the prefix-cached blocks are
+ * still resident (its own tooltip says so), so old samples dip to 0% on every idle
+ * stretch. Live samples are handled by seriesSample; this covers what the ring
+ * already holds, so the chart reads true end to end instead of only from now on.
+ *
+ * Display-only on purpose: the stored rows are never rewritten. A genuine
+ * "the cache really emptied" moment is indistinguishable from the idle false zero
+ * in that data, and inventing history is worse than showing a dip — so anything
+ * without a previous positive reading is left exactly as it was.
+ *
+ * @param {Array<[number, number|null]>} rows  [timestamp, value] pairs, oldest first
+ * @returns {Array<[number, number|null]>}     new array; only interior zeros change
+ */
+export function fillIdleZeros(rows) {
+  if (!Array.isArray(rows)) return rows;
+  let last = null;
+  return rows.map(r => {
+    const v = r && r[1];
+    if (typeof v === 'number' && v > 0) { last = v; return r; }
+    if (v === 0 && typeof last === 'number') return [r[0], last];
+    return r;                        // leading zeros and nulls are left alone
+  });
+}
+
 export class LineChart {
   /**
    * @param {HTMLElement} host

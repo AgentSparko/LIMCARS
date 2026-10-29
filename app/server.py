@@ -28,10 +28,12 @@ import urllib.parse
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config
+from . import config, __version__ as VERSION
 from .sse import Broker
 
-VERSION = "1.1.0"
+# Single source of truth for the version string: app/__init__.py. The tag is what
+# a third party pins; this string is what they paste into a bug report — the two
+# disagreeing costs an hour someday, so it is not spelled out twice any more.
 _START_T = time.time()
 
 # Panel settings — same spirit/keys as old LIMCARS dash_settings.json:
