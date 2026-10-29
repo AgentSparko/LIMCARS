@@ -120,6 +120,24 @@ export function fillIdleZeros(rows) {
   });
 }
 
+/**
+ * Recorded rate zeros are gaps, not measured zeros.
+ *
+ * seriesSample turns a rate into null while the sticky activity flag says
+ * nothing is running — but the ring stores the RAW sampler rows, so a page
+ * load seeds the curve with those zeros anyway and the bubble plunges again
+ * (#28 fixed the live layer only). Ring rows carry no flags, and inventing
+ * history is worse than showing a gap, so every recorded 0 on a rate field
+ * becomes "not measurable" — we only ever subtract displayed data.
+ */
+export function rateZerosToGaps(rows) {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map(r => (r && r[1] === 0 ? [r[0], null] : r));
+}
+
+// Fields whose 0 means "rate not measurable" (same set seriesSample gates).
+export const RATE_FIELDS = new Set(Object.keys(RATE_WHILE_ACTIVE));
+
 export class LineChart {
   /**
    * @param {HTMLElement} host
