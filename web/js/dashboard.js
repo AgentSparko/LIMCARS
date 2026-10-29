@@ -1669,8 +1669,11 @@ async function prSave() {
   let r;
   // the POST guard demands application/json on any request with a body: a browser
   // cannot forge that cross-site without a preflight this server never answers
-  try { r = await (await fetch('/api/config', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json(); }
+  // pricing in this body is password-gated (_require_write), so this must go
+  // through authFetch or every remote save dies with an empty password
+  try { r = await (await authFetch('/api/config', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    '🔒 Editing the price table is password-protected')).json(); }
   catch (e) { r = { ok: false, error: String(e) }; }
   if (r.ok) {
     state.pricing = r.config.pricing; await seed(false);
@@ -1988,7 +1991,8 @@ async function loadEngines() {
     const label = row.querySelector('.rec-name').textContent;
     if (!(await confirmDialog(`Stop ${label} (pid ${pid})?\nThis SIGTERMs → SIGKILLs its whole process group.`, '■ Stop'))) return;
     b.disabled = true; b.textContent = 'stopping…';
-    const res = await fetch(`/api/engines-live/${pid}/stop`, { method: 'POST' })
+    const res = await authFetch(`/api/engines-live/${pid}/stop`, { method: 'POST' },
+                                '🔒 Stopping an engine is password-protected')
       .then(r => r.json()).catch(err => ({ ok: false, error: String(err) }));
     if (res.ok === false) { b.disabled = false; b.textContent = '■ Stop'; toast('⚠ ' + (res.error || 'stop failed'), 'err'); }
     loadEngines();
@@ -2034,13 +2038,12 @@ function pwDialog(title, fields) {
   });
 }
 
-async function authFetch(url, opts = {}) {
+async function authFetch(url, opts = {}, label = '🔒 This action is password-protected') {
   opts.headers = Object.assign({}, opts.headers || {});
   if (state.pw) opts.headers['X-Limcars-Pw'] = state.pw;
   let r = await fetch(url, opts);
   if (r.status === 401) {
-    const v = await pwDialog('🔒 Editing recipes is password-protected',
-                             [{ label: 'Password' }]);
+    const v = await pwDialog(label, [{ label: 'Password' }]);
     const p = v && v[0];
     if (p) {
       state.pw = p; sessionStorage.setItem('lc-pw', p);

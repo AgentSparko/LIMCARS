@@ -474,3 +474,59 @@ def test_reaching_the_dashboard_by_lan_address_still_works(live):
     port, lan = live, _lan_ip()
     code, body = _req_raw(port, "GET", "/api/health", {"Host": f"{lan}:{port}"})
     assert code == 200, f"LAN access by address broke: {code} {body}"
+
+
+# ------------------------------------------------- control-plane password gate --
+# Engine Stop and the price-table save are password-gated server-side, but their
+# frontend call sites used plain fetch() and never attached X-Limcars-Pw. Every
+# remote operator was therefore told "wrong password" about a password that was
+# never compared, while the same button worked on the box itself (localhost is the
+# admin domain). Pinned at both ends so neither half can regress silently.
+
+def _gated(ip="192.168.1.50", pw="s3cret", good="s3cret"):
+    h = _handler(ip, _Auth(enabled=True, good=good))
+    h.headers = _Hdrs({"X-Limcars-Pw": [pw]} if pw is not None else {})
+    return h
+
+
+def test_remote_control_with_the_right_password_is_not_refused():
+    h = _gated()
+    assert h._require_control() is True, "the correct password must open the control gate"
+    assert h.responses == [], h.responses
+
+
+def test_remote_control_with_a_wrong_password_is_401_wrong_password():
+    h = _gated(pw="nope")
+    assert h._require_control() is False
+    assert h.responses[0][0] == 401, h.responses
+    assert "wrong password" in str(h.responses[0][1]), h.responses
+
+
+def test_a_missing_password_says_none_was_sent_instead_of_wrong_password():
+    """The wording that made this bug look like a bad password: an absent header is
+    not a failed comparison, and must not spend the lockout budget either."""
+    for gate, what in (("_require_control", "Engine and service control"),
+                       ("_require_write", "Editing recipes"),
+                       ("_require_read_traces", "Reading traces")):
+        h = _gated(pw=None)
+        call = getattr(h, gate)
+        verdict = call({"pw": []}) if gate == "_require_read_traces" else call()
+        assert verdict is False, gate
+        code, payload = h.responses[0]
+        assert code == 401, (gate, h.responses)
+        text = str(payload)
+        assert "wrong password" not in text, (gate, text)
+        assert "needs the dashboard password" in text and what in text, (gate, text)
+        assert h.app.auth.attempts == [], \
+            f"{gate}: an absent password must never even reach the verifier"
+
+
+def test_frontend_attaches_the_password_on_every_gated_verb():
+    """A plain fetch() on a gated route is invisible to a server-side test suite —
+    which is precisely how this shipped."""
+    js = open(os.path.join(os.path.dirname(__file__), "..", "web", "js", "dashboard.js"),
+              encoding="utf-8").read()
+    assert "authFetch(`/api/engines-live/${pid}/stop`" in js, \
+        "engine Stop must go through authFetch or remote operators cannot stop an engine"
+    assert "authFetch('/api/config'" in js, \
+        "the price-table save is gated by _require_write and must send the header"
