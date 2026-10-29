@@ -15,7 +15,7 @@ publish it. Please do not open a public issue, discussion or PR for a vulnerabil
 
 What makes a report actionable:
 
-- **Version**: output of `GET /api/health` (`{"ok":true,"version":"1.1.0",...}`) **and**
+- **Version**: output of `GET /api/health` (`{"ok":true,"version":"1.1.2",...}`) **and**
   `git rev-parse HEAD` of the checkout you tested.
 - **How it is running**: the `host`/`port` in `data/config.json` (or `LIMCARS_HOST` /
   `LIMCARS_PORT`), whether a password was set, and whether `LIMCARS_TOKEN` is in use.
@@ -57,6 +57,17 @@ credit reporters in the advisory unless you ask not to be.
 | DoS on your own instance, or locking yourself out with wrong passwords | Operator self-harm; the lockout ladder is tunable (`auth_max_attempts`, `auth_lock_steps`, `auth_quiet_reset_s`). |
 | Vulnerabilities in the engines it watches | vLLM, SGLang, llama.cpp, TandemLLM etc. are third-party — report upstream. LIMCARS-side bugs in how it parses or exposes them are in scope. |
 | Anything needing existing shell/user access to the box | At that point the attacker already owns the process and its files. |
+
+## Acknowledgements
+
+- **Joey ([@joeynyc](https://github.com/joeynyc))** reported, through GitHub's private
+  vulnerability reporting, the three issues closed in **v1.1.2** ([#30](https://github.com/AgentSparko/LIMCARS/pull/30)):
+  a `Host` validation gap that let DNS rebinding borrow the loopback exemption all the way into
+  the recipe runner, `Origin: null` and cross-port localhost requests that slipped the write
+  checks, and a remote client being able to create the **first** password. Each was reproduced
+  against a throwaway instance before being fixed, and each now has a regression test.
+- Everyone who has filed a bug report, and everyone who has read the sampler, the history ladder
+  or the auth gate line by line and told us what they found.
 
 ## Hardening already in place (so you know where to look)
 
