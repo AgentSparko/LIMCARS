@@ -50,7 +50,11 @@ python3 -m app          # → http://localhost:8951
 > reserved on the GPU.
 - **Honest lights**: prefill/decode bubbles glow only while the engine is
   genuinely in that phase; idle latency holds its last real value instead of
-  lying with a fat zero.
+  lying with a fat zero. And when a rate is genuinely unmeasurable, every curve
+  — bubbles and charts alike — shows a **blank gap**: never a plunge to zero,
+  and never a straight connector drawn across terrain nobody measured. Seeded
+  history and live pushes follow the same policy by construction, with a
+  parity test that fails CI if the two ever disagree.
 - 🎯 **Engine probe**: run a real streamed completion and see true TTFT,
   prefill and decode speed — measured, not estimated.
 
@@ -68,8 +72,22 @@ python3 -m app          # → http://localhost:8951
 ### 🍳 Recipe server
 - Save each engine launch command as an emoji-named recipe and
   **Start / Stop from the sidebar** — per-recipe detached logs included.
+  Recipes run in the foreground under the manager, so Stop really kills the
+  engine — and a containerised engine is stopped with `docker stop`, not by
+  signalling a PID that belongs to the daemon.
+- 🧾 **Launch-recipe box**: open Server config on any running engine and LIMCARS
+  shows the **complete, copy-pasteable `docker run`** behind it — mounts, ports,
+  GPU flags, caps, env, entrypoint override included — reconstructed from
+  `docker inspect`, not guessed from argv. Engines you started elsewhere are
+  covered: with no container to read, the box falls back to the raw process
+  cmdline and **names its source** so you never save a half-truth as a recipe.
+  One click turns a running engine into a launchable recipe.
 - 🛰️ **Live engine detection** scans GPU compute apps, listening ports and
-  process groups, so stray engines show up with their own Stop button.
+  process groups, so stray engines show up with their own Stop button — and
+  detected engines **auto-connect to the sampler**, metrics and all.
+- 🤖 Fully scriptable: `POST /api/recipes` (plus `update`/`delete`/`start`/
+  `stop`), `GET /api/engines-live` with a per-engine stop — everything the UI
+  does, your agent can do.
 
 ### 🕵️ Hermes Traces (bonus)
 If [Hermes Agent](https://hermes-agent.nousresearch.com) sessions live on your
@@ -89,7 +107,7 @@ configuration. Missing metrics degrade to `–`, never to fake zeros.
 | 🔶 SGLang | full — true live prefill rate |
 | 🧊 exl3 | full — exact prefill/generate pairing |
 | 🧮 TensorFold | full — dual metric families, spec decode |
-| 🦙 llama.cpp | basic — running requests + token counters |
+| 🦙 llama.cpp | basic — running requests + token counters (start the server with `--metrics`; TTS-only builds count too) |
 | 🔁 TandemLLM-family | **work in progress** — inflight + token counters |
 
 > **TandemLLM detection is still work in progress.** It is recognised only when
@@ -110,7 +128,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 311 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 333 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -138,14 +156,19 @@ Handy environment variables:
 
 ### systemd (recommended)
 
+A per-user template unit ships in the repo:
+
 ```bash
-sudo cp scripts/limcars.service /etc/systemd/system/
-sudo nano /etc/systemd/system/limcars.service   # set User= and WorkingDirectory= to your clone path
-sudo systemctl enable --now limcars
+sudo cp scripts/limcars-next@.service /etc/systemd/system/
+# the unit runs scripts/start.sh as user %i; if the clone does not live at
+# /home/<user>/projects/LIMCARS, adjust WorkingDirectory= and ExecStart= first
+sudo systemctl enable --now limcars-next@$(whoami)
 ```
 
 Starts at boot ✅ restarts itself on failure ✅ plays nice under load (`Nice=5`) ✅
-Watch it with `systemctl status limcars` or `journalctl -u limcars -f`.
+`scripts/start.sh` is also the manual foreground entry point — it `cd`s to the
+repo and execs `python3 -m app`. Watch it with
+`systemctl status limcars-next@$(whoami)` or `journalctl -u limcars-next@$(whoami) -f`.
 
 ### cron @reboot (no systemd?)
 
@@ -155,9 +178,9 @@ crontab -e
 @reboot cd /path/to/LIMCARS && /usr/bin/python3 -m app >> data/server.log 2>&1
 ```
 
-Want a dry run before installing anything system-wide?
-`bash scripts/boot-test.sh` boots LIMCARS on a scratch port and asserts the
-health endpoint and dashboard answer. 🔍
+Want a dry run before installing anything system-wide? Boot it on a scratch
+port — `LIMCARS_PORT=8999 python3 -m app` — and check
+`curl -s localhost:8999/api/health` answers `{"ok": true, "version": …, "uptime": …}`. 🔍
 
 ## 🧬 Had another dashboard before? Bring your history
 
@@ -223,9 +246,11 @@ outbound requests except to the inference engines you point it at. 🏠
 
 | data | resolution | retention | default |
 |---|---|---|---|
-| engine samples | per tick (`live_hz`, 2.0/s) | `persist_seconds` | 48 h |
-| hardware samples | per tick (`hw_hz`, 1.0/s) | `persist_seconds` | 48 h |
-| counter buckets (the money history) | per busy minute, per engine | 366 d | — |
+| engine samples | per tick (`live_hz`, 2.0/s) | `persist_seconds` | 1 h |
+| hardware samples | per tick (`hw_hz`, 1.0/s) | `persist_seconds` | 1 h |
+| bubble lifetime curves (`spark_stats`) | 60–120 s | `spark_hours` | 8 d |
+| counter buckets (the money history) | per busy minute, per engine | `minute_bucket_days` | 30 d |
+| hourly / daily totals | 1 h / 1 d | `history_years` / forever | 1 y / ∞ |
 
 Pruning runs on every write, so the 1-second rings stay a ring and never a year of them. The
 charts cap at one hour and the money math reads the buckets, so nothing is lost from the
@@ -273,7 +298,7 @@ what the dashboard reads from it:
 
 | Rung | Granularity | Kept | Measured cost |
 |---|---|---|---|
-| `engine_samples` / `hw_samples` | 1 s | `persist_seconds` (default 48 h) | ~242 MB/day — charts never zoom past 1 h, so nothing older needs it |
+| `engine_samples` / `hw_samples` | 1 s | `persist_seconds` (default 1 h) | ~242 MB/day — charts never zoom past 1 h, so nothing older needs it |
 | `counter_buckets` | 1 min | `minute_bucket_days` (default **30 d**) | ~14 KB/day |
 | `counter_hour` | 1 h | `history_years` (default **1 y**, set it to 6) | ~12 KB/day |
 | `counter_day` | 1 day | **forever** | ~40 B/day |
@@ -305,7 +330,7 @@ with:
 python3 scripts/limcars_tidy.py --tier --history-years 6
 ```
 
-In plain words: the dashboard keeps a 1-second memory for two days, a minute-by-minute memory
+In plain words: the dashboard keeps a 1-second memory for one hour, a minute-by-minute memory
 for a month, an hourly memory for as long as you ask (six years costs about 48 MB), and a daily
 memory forever — and it is not allowed to forget anything until it has proven it can remember it
 another way.
