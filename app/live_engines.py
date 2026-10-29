@@ -34,6 +34,11 @@ import psutil
 from . import procs
 
 MIN_GPU_MIB = 1024          # "over 1 GB of GPU memory" per spec
+# A containerised engine's inner process belongs to root, so the dashboard cannot
+# signal it; `docker stop` is the primitive that can. Grace is generous enough for
+# an engine to release the GPU cleanly, the timeout is a hard ceiling on the CLI.
+DOCKER_STOP_GRACE_S = 15
+DOCKER_STOP_TIMEOUT_S = 90
 _SCAN_TTL = 5.0
 # argv tokens that mean "this process IS the server" (matched exactly,
 # case-insensitive: argv0 basename or a --flag)
@@ -370,6 +375,48 @@ class LiveEngines:
             self._cache = (now, out)
             return out
 
+    def _stop_container(self, pid: int) -> dict | None:
+        """Stop a containerised engine whose process we are not allowed to signal.
+
+        `docker run` without a user namespace puts root's process behind the pid we
+        scan, so killpg raises PermissionError for a dashboard running as a normal
+        user — even one whose operator is in the `docker` group, which is the case
+        that matters. Docker has the right primitive and `docker stop` lets the
+        engine let go of the GPU instead of being SIGKILLed mid-request.
+
+        The container identity comes ONLY from /proc/<pid>/cgroup for the pid the
+        operator clicked; the request carries a pid and nothing else, so this stays
+        an engine-stop button and not a "stop any container" endpoint. Returns None
+        when the pid is not a container or docker cannot be reached, so the caller
+        still gets the honest 'stop it where it was started' answer.
+        """
+        try:
+            from . import docker_recipe
+            cid = docker_recipe.container_id(pid)
+        except Exception:  # noqa: BLE001 — no docker, no perms, weird cgroup: old answer
+            return None
+        if not cid:
+            return None
+        name = ""
+        try:                      # cosmetic label only; failure must not block the stop
+            name = subprocess.run(["docker", "inspect", "-f", "{{.Name}}", cid],
+                                  capture_output=True, text=True,
+                                  timeout=DOCKER_STOP_TIMEOUT_S).stdout.strip().lstrip("/")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            r = subprocess.run(["docker", "stop", "--time", str(DOCKER_STOP_GRACE_S), cid],
+                               capture_output=True, text=True, timeout=DOCKER_STOP_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            return None          # docker missing / not permitted for this service user
+        if r.returncode != 0:
+            detail = (r.stderr or r.stdout or "").strip()[:200]
+            return {"ok": False, "error": f"docker stop failed: {detail or 'unknown error'}"}
+        self._last_by_pid.pop(pid, None)
+        self.scan(force=True)
+        return {"ok": True, "killed_pid": pid, "stopped_container": name or cid[:12],
+                "via": "docker stop"}
+
     def stop(self, pid) -> dict:
         """SIGTERM→KILL an engine pid with guardrails (port rows refuse)."""
         if pid is None:
@@ -417,6 +464,9 @@ class LiveEngines:
             try:
                 procs.kill_tree(pid)
             except PermissionError:
+                stopped = self._stop_container(pid)
+                if stopped is not None:
+                    return stopped
                 return {"ok": False,
                         "error": "process belongs to another user/admin — stop it where it was started"}
             self._last_by_pid.pop(pid, None)
@@ -425,8 +475,12 @@ class LiveEngines:
         try:
             os.killpg(pgid, signal.SIGTERM)
         except PermissionError:
+            # a container the CLI never supervised: ask docker, which can
+            stopped = self._stop_container(pid)
+            if stopped is not None:
+                return stopped
             return {"ok": False,
-                    "error": "process is root-owned — stop it where it was started (docker/systemd)"}
+                    "error": "process is root-owned — stop it where it was started (systemd?)"}
         except ProcessLookupError:
             return {"ok": False, "error": "process vanished"}
         deadline = time.time() + 10
