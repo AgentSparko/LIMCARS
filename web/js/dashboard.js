@@ -1664,7 +1664,10 @@ async function prSave() {
         provider: 'manual override',
         cache_write: +w || 0, cache_read: +prVal('#pr-r') || 0, output: +out || 0 } };
   let r;
-  try { r = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(body) })).json(); }
+  // the POST guard demands application/json on any request with a body: a browser
+  // cannot forge that cross-site without a preflight this server never answers
+  try { r = await (await fetch('/api/config', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json(); }
   catch (e) { r = { ok: false, error: String(e) }; }
   if (r.ok) {
     state.pricing = r.config.pricing; await seed(false);
