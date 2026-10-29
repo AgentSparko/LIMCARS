@@ -338,6 +338,15 @@ class Handler(BaseHTTPRequestHandler):
         return (hdrs[0] if hdrs else "") or self.headers.get(
             "Authorization", "").removeprefix("Bearer ") or default
 
+    def _pw_missing_error(self, what: str) -> None:
+        """401 for a gated verb that carried no password at all.
+
+        Every gate used to answer 'wrong password' here. Nothing was compared — the
+        header was simply absent — and that wording sent an operator off to retype a
+        password that was correct all along (the Stop-engine button never sent one)."""
+        self._json({"ok": False,
+                    "error": f"{what} needs the dashboard password; none was sent"}, code=401)
+
     def _is_local(self) -> bool:
         return self._client_ip() in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
@@ -420,6 +429,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
         ip = self._client_ip()
         pw = self._pw_from_headers()
+        if not pw:
+            self._pw_missing_error("Editing recipes")
+            return False
         # single atomic gate (lockout check + verify + ladder in one lock hold)
         ok, rem = self.app.auth.attempt(ip, pw)
         if ok:
@@ -446,7 +458,11 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "a password is required before remote engine or "
                                 "service control; set one in Settings"}, code=428)
             return False
-        ok, rem = self.app.auth.attempt(self._client_ip(), self._pw_from_headers())
+        pw = self._pw_from_headers()
+        if not pw:
+            self._pw_missing_error("Engine and service control")
+            return False
+        ok, rem = self.app.auth.attempt(self._client_ip(), pw)
         if ok:
             return True
         if rem > 0:
@@ -472,6 +488,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
         ip = self._client_ip()
         pw = self._pw_from_headers((qs.get("pw") or [""])[0])
+        if not pw:
+            self._pw_missing_error("Reading traces")
+            return False
         ok, rem = self.app.auth.attempt(ip, pw)
         if ok:
             return True
