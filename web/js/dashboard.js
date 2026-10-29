@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, HOLD_LAST_NONZERO } from './charts.js?v=20261028d';
+import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, rateZerosToGaps, RATE_FIELDS, HOLD_LAST_NONZERO } from './charts.js?v=20261029a';
 
 const state = {
   store: new SeriesStore(4000),
@@ -728,7 +728,10 @@ async function seed(reseedWindow = true) {
     for (const [key, raw] of Object.entries(e.series || {})) {
       // Smooth the recorded idle zeros for display only (see fillIdleZeros) — the
       // ring keeps what the engine said, the chart stops showing a false 0%.
-      const rows = HOLD_LAST_NONZERO.has(key) ? fillIdleZeros(raw) : raw;
+      // Rate fields get the #28 treatment on the seeded side too: a recorded 0
+      // is an unmeasurable rate, so it seeds as a gap, never as a plunging point.
+      const rows = HOLD_LAST_NONZERO.has(key) ? fillIdleZeros(raw)
+        : RATE_FIELDS.has(key) ? rateZerosToGaps(raw) : raw;
       state.store.seed(`${id}.${key}`, rows);
       // Prime the hold pad from history. Without this a reload forgets the last real
       // reading, and an idle engine's DOCUMENTED false zero (kv_cache_usage_perc = 0

@@ -106,5 +106,24 @@ eq('garbage in is passed through, not crashed on', fillIdleZeros(undefined), und
 eq('known trade-off: a real empty-cache moment is smoothed as well',
    fillIdleZeros([[T, 30], [T + 1, 0]]).map(r => r[1]), [30, 30]);
 
+// ---- rateZerosToGaps: the SEEDED side of the #28 policy ----------------
+// The live push gates rates with the frame's sticky flags; ring rows carry no
+// flags, so a seeded 0 on a rate field is "not measurable" and must become a
+// gap. Otherwise page-load replays the exact square wave #28 removed.
+import { rateZerosToGaps, RATE_FIELDS } from '../../web/js/charts.js';
+eq('recorded rate 0 seeds as a gap, not a plunge',
+   rateZerosToGaps([[T, 40.2], [T + 1, 0], [T + 2, 0], [T + 3, 38.1]]).map(r => r[1]),
+   [40.2, null, null, 38.1]);
+eq('a genuine mid-burst stall also reads as a gap on reload (accepted: subtract, never invent)',
+   rateZerosToGaps([[T, 60], [T + 1, 0]]).map(r => r[1]), [60, null]);
+eq('nulls already recorded stay null',
+   rateZerosToGaps([[T, null], [T + 1, 0]]).map(r => r[1]), [null, null]);
+eq('timestamps preserved',
+   rateZerosToGaps([[T, 0]])[0][0], T);
+eq('garbage in is passed through, not crashed on', rateZerosToGaps(undefined), undefined);
+eq('RATE_FIELDS matches exactly what seriesSample gates',
+   [...RATE_FIELDS].sort().join(','),
+   'decode_tps_avg,decode_tps_now,prefill_tps_avg,prefill_tps_now');
+
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);
