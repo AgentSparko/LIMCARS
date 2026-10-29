@@ -319,3 +319,158 @@ def test_pricing_values_are_validated_not_trusted(live):
     assert st == 400, "non-numeric price must be rejected"
     st, _ = _req(live, "127.0.0.1", "POST", "/api/config", {"pricing": {"m": 2.5}})
     assert st == 200, "valid price must be accepted"
+
+
+# ------------------------------------------- GHSA-p9fw / GHSA-cwj4 / GHSA-gjf8 --
+# Three reports from the private intake, each reproduced against a throwaway
+# instance before being fixed, and pinned here afterwards. Two layers again:
+# pure logic on the guard's helpers, then the headers a browser or a rebinding
+# page actually sends, over a real socket.
+
+def test_split_host_understands_ipv6_and_ports():
+    assert srv._split_host("127.0.0.1:8951") == ("127.0.0.1", "8951")
+    assert srv._split_host("[::1]:8951") == ("::1", "8951")
+    assert srv._split_host("[::1]") == ("::1", None)
+    assert srv._split_host("LocalHost") == ("localhost", None)
+    assert srv._split_host("") == ("", None)
+    assert srv._split_host(None) == ("", None)
+
+
+def test_origin_tuple_refuses_the_values_the_old_check_skipped_on():
+    """`urlparse("null").hostname` is None, so the old `if oh and ...` guard fell
+    through and let a sandboxed iframe or a data: page post as localhost."""
+    assert srv.origin_tuple("null") is None
+    assert srv.origin_tuple("http://null") is None
+    assert srv.origin_tuple("") is None
+    assert srv.origin_tuple("ftp://127.0.0.1") is None
+    assert srv.origin_tuple("http://127.0.0.1:8951") == ("http", "127.0.0.1", 8951)
+    assert srv.origin_tuple("http://[::1]:8951") == ("http", "::1", 8951)
+    assert srv.origin_tuple("https://limcars.home") == ("https", "limcars.home", 443)
+
+
+def test_host_allowlist_covers_loopback_bind_and_operator_names():
+    got = srv.host_allowlist({"host": "0.0.0.0", "allowed_hosts": ["limcars.home"]})
+    assert {"localhost", "127.0.0.1", "::1", "limcars.home"} <= got
+    # the address this machine answers on must be in there, or LAN access breaks
+    assert srv.own_addresses() <= got
+    assert "evil.example" not in got
+    bound = srv.host_allowlist({"host": "10.1.2.3"})
+    assert "10.1.2.3" in bound and "0.0.0.0" not in bound
+
+
+def _guarded(ip, headers, cfg=None):
+    h = _handler(ip, _Auth(enabled=False))
+    h.app.cfg = cfg if cfg is not None else {"host": "127.0.0.1"}
+    h.headers = _Hdrs(headers)
+    return h
+
+
+def test_guard_refuses_a_host_that_is_not_this_machine():
+    h = _guarded(LOCAL, {"Host": ["evil.example:8951"]})
+    assert h._guard_request(unsafe=False) is False
+    assert h.responses and h.responses[0][0] == 421, h.responses
+
+
+def test_guard_refuses_a_missing_host_header():
+    h = _guarded(LOCAL, {})
+    assert h._guard_request(unsafe=False) is False
+    assert h.responses[0][0] == 400, h.responses
+
+
+def test_guard_refuses_rebinding_where_host_equals_origin():
+    """The exact pair the old check let through: both headers invented by the
+    caller, both identical, TCP peer loopback."""
+    h = _guarded(LOCAL, {"Host": ["rebind.example:8951"],
+                         "Origin": ["http://rebind.example:8951"]})
+    assert h._guard_request(unsafe=True) is False
+    assert h.responses[0][0] in (421, 403), h.responses
+
+
+def test_guard_refuses_null_origin_and_cross_port_localhost_origin():
+    for origin in ("null", "http://127.0.0.1:1234", "http://localhost"):
+        h = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"], "Origin": [origin],
+                             "Content-Type": ["application/json"], "Content-Length": ["2"]})
+        assert h._guard_request(unsafe=True) is False, origin
+        assert h.responses[0][0] == 403, (origin, h.responses)
+
+
+def test_guard_demands_json_for_a_body_but_not_for_body_less_verbs():
+    h = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"], "Origin": ["http://127.0.0.1:8951"],
+                         "Content-Type": ["text/plain"], "Content-Length": ["14"]})
+    assert h._guard_request(unsafe=True) is False
+    assert h.responses[0][0] == 415, h.responses          # the shape a cross-site form sends
+    ok = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"], "Origin": ["http://127.0.0.1:8951"],
+                          "Content-Type": ["application/json"], "Content-Length": ["14"]})
+    assert ok._guard_request(unsafe=True) is True and ok.responses == []
+    start = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"], "Origin": ["http://127.0.0.1:8951"]})
+    assert start._guard_request(unsafe=True) is True, "start/stop send no body"
+    cli = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"], "Content-Type": ["application/json"],
+                           "Content-Length": ["14"]})
+    assert cli._guard_request(unsafe=True) is True, "curl and agents send no Origin"
+
+
+def _req_raw(port, method, path, headers=None, body=None):
+    """A request whose Host/Origin we choose ourselves -- http.client only fills
+    Host in when the caller does not supply it."""
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse()
+    data = r.read()[:300].decode("utf-8", "replace")
+    c.close()
+    return r.status, data
+
+
+def test_a_rebinding_pair_cannot_add_a_recipe(live):
+    port = live
+    H = {"Host": f"rebind.example:{port}", "Origin": f"http://rebind.example:{port}",
+         "Content-Type": "application/json"}
+    code, body = _req_raw(port, "POST", "/api/recipes", H,
+                          json.dumps({"name": "rebind-poc", "cmd": "touch /tmp/limcars-rebind-poc"}))
+    assert code in (421, 403), f"rebinding write was accepted: {code} {body}"
+    code, body = _req_raw(port, "GET", "/api/recipes", {"Host": f"rebind.example:{port}"})
+    assert code == 421, f"GET must fail the Host check too (command lines leak there): {code}"
+    code, body = _req_raw(port, "GET", "/api/recipes", {"Host": f"127.0.0.1:{port}"})
+    assert "rebind-poc" not in body, "the refused recipe must not have been stored"
+
+
+def test_a_null_origin_form_cannot_add_a_recipe(live):
+    port = live
+    for headers in ({"Origin": "null", "Content-Type": "text/plain"},
+                    {"Origin": f"http://127.0.0.1:1234", "Content-Type": "application/json"}):
+        h = dict(headers, Host=f"127.0.0.1:{port}")
+        code, body = _req_raw(port, "POST", "/api/recipes", h,
+                              json.dumps({"name": "form-poc", "cmd": "touch /tmp/limcars-form-poc"}))
+        assert code in (403, 415), f"{headers} was accepted: {code} {body}"
+    # the real dashboard, same origin + json, must still be able to write
+    ok = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}",
+          "Content-Type": "application/json"}
+    code, body = _req_raw(port, "POST", "/api/recipes", ok,
+                          json.dumps({"name": "legit", "cmd": "true"}))
+    assert code == 200, f"a same-origin write from the UI was locked out: {code} {body}"
+
+
+@pytest.mark.skipif(_lan_ip() is None, reason="no non-loopback IPv4 on this box")
+def test_the_first_password_cannot_be_created_from_the_lan(live):
+    """GHSA-cwj4-xcmw-gpxp. /api/auth/set only asked for the current password once
+    one existed, so before that any LAN peer could set it -- then own every gated
+    write, while the owner found the network side locked with a password they
+    never chose."""
+    port, lan = live, _lan_ip()
+    code, body = _req(port, lan, "POST", "/api/auth/set", {"new": "attacker-pw"})
+    assert code == 428, f"remote first-password accepted: {code} {body}"
+    assert "password" in body.lower() and "box" in body.lower(), f"refusal must say what to do: {body}"
+    # and the gate it protects is still fail-closed for that peer
+    code, body = _req(port, lan, "POST", "/api/recipes", {"name": "x", "cmd": "true"})
+    assert code == 428, f"remote write without a password must stay closed: {code}"
+    # the box itself may still bootstrap
+    code, body = _req(port, "127.0.0.1", "POST", "/api/auth/set", {"new": "owner-pw"})
+    assert code == 200, f"loopback bootstrap broke: {code} {body}"
+
+
+@pytest.mark.skipif(_lan_ip() is None, reason="no non-loopback IPv4 on this box")
+def test_reaching_the_dashboard_by_lan_address_still_works(live):
+    """The regression that gets a Host allowlist reverted: it must accept the
+    addresses this machine actually owns, not just the word 'localhost'."""
+    port, lan = live, _lan_ip()
+    code, body = _req_raw(port, "GET", "/api/health", {"Host": f"{lan}:{port}"})
+    assert code == 200, f"LAN access by address broke: {code} {body}"

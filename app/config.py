@@ -33,6 +33,13 @@ DEFAULTS = {
     # subprocess must not be reachable by the whole LAN unless the operator
     # asks. Expose via data/config.json "host" or LIMCARS_HOST=0.0.0.0.
     "host": "127.0.0.1",
+    # Names a request may put in its Host header, on top of localhost, the bound
+    # address and every address this machine owns. The Host check is what stops
+    # DNS rebinding from borrowing the loopback exemption, so it has to be an
+    # allowlist; this is the knob for reaching the dashboard by a name the box
+    # does not answer for itself (a local DNS name, a reverse proxy's Host).
+    # Example: ["limcars.home", "limcars.local"].
+    "allowed_hosts": [],
     "live_hz": 2.0,          # engine sampler ticks per second (1-4)
     "hw_hz": 1.0,            # hardware sampler ticks per second
     "ring_seconds": 3900,    # in-memory ring depth (65 min — supports the 1 h window)

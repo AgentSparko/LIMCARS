@@ -22,6 +22,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import socket
 import threading
 import time
 import urllib.parse
@@ -199,6 +200,92 @@ def _sse_format(topic: str, sid: int, data: str) -> bytes:
     return f"id: {topic}:{sid}\nevent: {topic}\ndata: {data}\n\n".encode()
 
 
+# ---------------------------------------------------------------- HTTP identity
+# Both Host and Origin arrive from whoever sent the request, so comparing them
+# against each other -- the first attempt at a rebinding guard -- proves nothing:
+# a page whose name resolves to 127.0.0.1 simply sends its own invented name in
+# both and they match. They have to be compared against *this machine*, which is
+# the only thing in the exchange the caller does not choose.
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _split_host(value):
+    """Split an authority into (lowercased host, port or None), unwrapping the
+    brackets IPv6 requires, so '[::1]:8951', '::1' and '127.0.0.1:8951' compare
+    on equal terms."""
+    v = (value or "").strip().lower()
+    if not v:
+        return "", None
+    if v.startswith("["):
+        host, _, rest = v[1:].partition("]")
+        return host, (rest.lstrip(":") or None)
+    host, sep, rest = v.partition(":")
+    return host, (rest if sep else None)
+
+
+def own_addresses():
+    """Every IPv4 this machine answers on, so reaching the dashboard by LAN
+    address keeps working once Host is allowlisted. Best effort and never
+    raises: a UDP socket that is 'connected' but never written to reveals the
+    chosen route address without sending a packet; the name lookups fill in the
+    rest. A miss is not fatal -- config 'allowed_hosts' is the operator's knob."""
+    found = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            found.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    for grab in (
+        lambda: [i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)],
+        lambda: list(socket.gethostbyname_ex(socket.gethostname())[2]),
+    ):
+        try:
+            found.update(grab())
+        except OSError:
+            continue
+    return {a for a in found if a}
+
+
+def host_allowlist(cfg):
+    """Names a Host header may carry: the loopback names, the bound address when
+    it is a real one (not 0.0.0.0/::), every address this machine owns, plus
+    anything the operator adds under allowed_hosts."""
+    allowed = set(_LOCAL_HOSTS)
+    bind = str(cfg.get("host") or "").strip().lower()
+    if bind and bind not in ("0.0.0.0", "::", "*"):
+        allowed.add(bind)
+    for extra in (cfg.get("allowed_hosts") or []):
+        name = _split_host(str(extra).strip().lower())[0]
+        if name:
+            allowed.add(name)
+    return allowed | own_addresses()
+
+
+def origin_tuple(origin):
+    """(scheme, host, port) for an Origin header, or None when it cannot stand as
+    same-origin evidence: 'null' (sandboxed iframe, data: or blob: page), an
+    empty or unparseable host, a non-http scheme. None must be read as
+    cross-site, not as 'absent' -- urlparse('null').hostname is None, which is
+    exactly how the old check was skipped."""
+    if origin is None:
+        return None
+    try:
+        p = urllib.parse.urlparse(origin.strip())
+        host = p.hostname
+        port = p.port
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not host or host == "null":
+        return None
+    if port is None:
+        port = 443 if p.scheme == "https" else 80
+    return p.scheme, host, port
+
+
 class Handler(BaseHTTPRequestHandler):
     # audit: thread-per-connection with no socket timeout let slow-loris
     # sockets pin threads forever. 30 s per read; SSE disables it (write-only).
@@ -253,6 +340,68 @@ class Handler(BaseHTTPRequestHandler):
 
     def _is_local(self) -> bool:
         return self._client_ip() in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+    def _allowed_hosts(self):
+        """host_allowlist(), cached on the app so the socket probes run once."""
+        cached = getattr(self.app, "_host_allowlist", None)
+        if cached is None:
+            cached = host_allowlist(self.app.cfg)
+            try:
+                self.app._host_allowlist = cached
+            except Exception:  # noqa: BLE001 - a stub app in tests just recomputes
+                pass
+        return cached
+
+    def _guard_request(self, unsafe: bool) -> bool:
+        """Refuse a Host that is not this machine, and -- on writes -- an Origin
+        that is not this exact origin. Runs before routing and on GET as well as
+        POST: under rebinding the read side is what hands over the recipe command
+        lines, so checking only writes would still leak the plan. True = proceed.
+
+        A port is deliberately NOT part of the Host test (people reach this box
+        through the hub on another port), but it IS part of the Origin test, which
+        is what closes 'any port on localhost used to pass'. A blank Origin counts
+        as absent -- that is the curl/agent path; 'null' is a browser value and is
+        refused, because it is what a sandboxed iframe or a data: page sends."""
+        host, port = _split_host(self.headers.get("Host"))
+        if not host:
+            self._err(400, "missing Host header")
+            return False
+        if host not in self._allowed_hosts():
+            self._err(421, "unknown host")
+            return False
+        if not unsafe:
+            return True
+        org = self.headers.get("Origin")
+        if org is not None and org.strip():
+            got = origin_tuple(org)
+            if got is None:
+                self._err(403, "cross-origin write refused")
+                return False
+            _scheme, ohost, oport = got
+            try:
+                rport = int(port) if port else 80
+            except ValueError:
+                rport = 80
+            if ohost != host or oport != rport:
+                self._err(403, "cross-origin write refused")
+                return False
+        # A body must arrive as JSON. Browsers can send text/plain, urlencoded or
+        # multipart cross-site without a preflight; they cannot send
+        # application/json, nor a custom header, without one -- and nothing here
+        # answers with CORS headers, so the preflight never succeeds. Body-less
+        # POSTs (start/stop/probe) are exempt: the browser still sends Origin for
+        # those, and the check above covers them.
+        try:
+            has_body = int(self.headers.get("Content-Length") or 0) > 0
+        except ValueError:
+            has_body = False
+        if has_body:
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype not in ("application/json", "text/json"):
+                self._err(415, "this API takes application/json")
+                return False
+        return True
 
     def _require_write(self) -> bool:
         """Gate recipe add/edit/delete: password + escalating per-IP lockout.
@@ -344,6 +493,8 @@ class Handler(BaseHTTPRequestHandler):
             self._head_only = False
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._guard_request(unsafe=False):
+            return
         u = urllib.parse.urlparse(self.path)
         path, qs = u.path, urllib.parse.parse_qs(u.query)
         try:
@@ -378,21 +529,16 @@ class Handler(BaseHTTPRequestHandler):
         # audit: an unhandled exception in a POST branch used to escape to
         # BaseHTTPRequestHandler (dropped connection, no response) — every
         # client now gets a clean 500 and the traceback goes to the log
-        # audit: DNS-rebinding / cross-site forms would arrive with peer
-        # 127.0.0.1 and ride the localhost exemption straight past the recipe
-        # gate. A browser always sends Origin on cross-site POSTs — reject
-        # any whose host is not the host the client asked for. (CLI/agents
-        # send no Origin and are unaffected.)
-        org = self.headers.get("Origin")
-        if org:
-            try:
-                oh = urllib.parse.urlparse(org).hostname or ""
-            except ValueError:
-                oh = "?"
-            host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-            if oh and host and oh not in ("localhost", "127.0.0.1", "::1") \
-                    and oh != host:
-                return self._err(403, "cross-origin write refused")
+        # audit: DNS-rebinding and cross-site forms arrive with peer 127.0.0.1 and
+        # ride the localhost exemption past every gate. (GHSA-gjf8-v96h-xxg8,
+        # GHSA-p9fw-7wq3-mq28) The previous guard here compared Origin against the
+        # Host header, and skipped itself for 'Origin: null' -- both headers are
+        # chosen by the caller, and a rebinding page sends the same name in each,
+        # so the comparison passed by construction. _guard_request compares them
+        # against this machine instead. (CLI/agents send no Origin and are
+        # unaffected, as long as they post application/json.)
+        if not self._guard_request(unsafe=True):
+            return
         try:
             self._dispatch_post()
         except BrokenPipeError:
@@ -419,6 +565,16 @@ class Handler(BaseHTTPRequestHandler):
             new = (body.get("new") or "").strip()
             cur = body.get("current")
             gate = self.app.auth
+            if not gate.enabled and not self._is_local():
+                # Fail closed on the FIRST password. While none exists nothing can
+                # prove who is asking, so a LAN peer used to be able to set it and
+                # then own every gated write -- and leave the owner locked out of
+                # the network with a password they never chose. The box itself is
+                # the only place that may create it. (GHSA-cwj4-xcmw-gpxp)
+                return self._json({"ok": False,
+                                   "error": "the first password must be set on the "
+                                            "box itself; open the dashboard there"},
+                                  code=428)
             if gate.enabled and not self._is_local():
                 # changing an existing password over the network proves knowledge of it
                 # first. Its OWN lockout budget (auth.CHANGE): burning the write gate's
