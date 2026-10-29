@@ -1085,7 +1085,7 @@ async function renderInfo() {
   const cfg = Object.entries(d.config || {}).map(([k, v]) =>
     `<tr><td class="muted">${escH(k)}</td><td class="mono">${escH(String(v))}</td></tr>`).join('');
   const launch = d.launch
-    ? `<div class="side-lbl" style="margin-top:10px">launch recipe (process cmdline)</div>
+    ? `<div class="side-lbl" style="margin-top:10px">launch recipe (${escH(d.launch_source || 'process cmdline')})</div>
        <pre class="mono small" style="white-space:pre-wrap;word-break:break-all;max-height:150px;overflow:auto;background:#0b1322;padding:8px;border-radius:6px">${escH(d.launch)}</pre>
        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
          <button class="pill" id="rec-qs">＋ Add Quickstart</button>

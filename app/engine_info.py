@@ -33,13 +33,29 @@ def _val_labeled(text: str, metric: str, **match) -> float | None:
     return None
 
 
-def _launch_cmd(port: int | None) -> str | None:
+def _docker_or(pid, fallback_cmd):
+    """Full `docker run` if the serving pid lives in a container, else the
+    plain process cmdline. Returns (cmd, source_label)."""
+    if pid:
+        try:
+            from . import docker_recipe
+            full = docker_recipe.build_for_pid(int(pid))
+        except Exception:  # noqa: BLE001 — docker missing/permission: fallback
+            full = None
+        if full:
+            return full, "docker run (complete)"
+    return fallback_cmd, "process cmdline"
+
+
+def _launch_cmd(port: int | None):
     """Full launch 'recipe' = the serving process command line, read from
-    /proc (same-user). Match: mentions vllm AND the engine's --port."""
+    /proc (same-user). Match: mentions vllm AND the engine's --port.
+    Containerised engines return the reconstructed `docker run` instead."""
     import glob
 
     from . import procs
     best = None
+    best_pid = None
     if not procs.LINUX_PROC:
         # sorted(): psutil's pid order is arbitrary, and the port-less path kept
         # overwriting `best`, so "the launch recipe" was last-seen-wins.
@@ -50,11 +66,12 @@ def _launch_cmd(port: int | None) -> str | None:
             joined = " ".join(parts)
             if port and f"--port {port}" not in joined and f"--port={port}" not in joined:
                 continue
-            best = joined
+            best, best_pid = joined, pid
             break                      # first match in pid order, not last-seen
-        return best
+        return _docker_or(best_pid, best) if best else (None, None)
     for cl in sorted(glob.glob("/proc/[0-9]*/cmdline"),
                      key=lambda p: int(p.split("/")[2])):   # pid order, not glob order
+        pid = int(cl.split("/")[2])
         try:
             raw = open(cl, "rb").read()
         except OSError:
@@ -68,24 +85,26 @@ def _launch_cmd(port: int | None) -> str | None:
         if port and f"--port {port}" not in joined and f"--port={port}" not in joined:
             continue
         best = joined
+        best_pid = pid
         break                          # first match in pid order, not last-seen
-    return best
+    return _docker_or(best_pid, best) if best else (None, None)
 
 
-def _launch_cmd_any(port: int | None) -> str | None:
+def _launch_cmd_any(port: int | None):
     """The serving process's command line for a port, engine-agnostic.
 
     The vLLM-only matcher above looks for the string 'vllm' in the argv;
     TandemLLM's argv says 'server/app.py', so the panel showed no launch
     recipe for it. Here the live-engine detector (which already maps
     ports to processes) is the source of truth, and /proc is the fallback.
+    Containerised engines return the reconstructed `docker run`.
     """
     if port:
         try:
             from .live_engines import LiveEngines
             for row in LiveEngines().scan():
                 if port in (row.get("ports") or []) and row.get("cmd"):
-                    return row["cmd"]
+                    return _docker_or(row.get("pid"), row["cmd"])
         except Exception:  # noqa: BLE001 — the fallback below still works
             pass
     try:
@@ -94,6 +113,7 @@ def _launch_cmd_any(port: int | None) -> str | None:
         if procs.LINUX_PROC:
             for cl in sorted(glob.glob("/proc/[0-9]*/cmdline"),
                              key=lambda p: int(p.split("/")[2])):
+                pid = int(cl.split("/")[2])
                 try:
                     raw = open(cl, "rb").read()
                 except OSError:
@@ -105,10 +125,10 @@ def _launch_cmd_any(port: int | None) -> str | None:
                 if port and not (f"--port {port}" in joined or f"--port={port}" in joined):
                     continue
                 if port or "server/app.py" in joined:
-                    return joined
+                    return _docker_or(pid, joined)
     except Exception:  # noqa: BLE001
         pass
-    return None
+    return (None, None)
 
 
 def _tandem_info(url: str, text: str) -> dict:
@@ -147,9 +167,10 @@ def _tandem_info(url: str, text: str) -> dict:
     cfg.update({"build": bi.get("version", ""), "git_sha": bi.get("git_sha", ""),
                 "code_sha256": (bi.get("code_sha256") or "")[:16],
                 "flags_sha256": (bi.get("flags_sha256") or "")[:16]})
+    lc, lsrc = _launch_cmd_any(port)
     return {
         "healthy": True, "kind": "tandemllm", "model": model or ei.get("model"),
-        "version": version, "launch": _launch_cmd_any(port),
+        "version": version, "launch": lc, "launch_source": lsrc,
         "config": cfg, "rows_extra": rows,
         "ctx": int(ei["max_len"]) if ei.get("max_len", "").isdigit() else None,
         "pool_tokens": None, "block_size": None, "num_gpu_blocks": None,
@@ -195,9 +216,12 @@ def info(url: str) -> dict:
                 ver = body[:40]
         except Exception:  # noqa: BLE001
             pass
+        port = url.rsplit(":", 1)[-1].rstrip("/")
+        port = int(port) if port.isdigit() else None
+        lc, lsrc = _launch_cmd(port)
         out.update({
             "healthy": True, "model": model, "version": ver,
-            "launch": _launch_cmd(int(url.rsplit(":", 1)[-1].rstrip("/")) if url.rsplit(":", 1)[-1].rstrip("/").isdigit() else None),
+            "launch": lc, "launch_source": lsrc,
             "config": {k: v for k, v in labels.items() if k not in ("model_name", "created")},
             "ctx": int(float(labels.get("max_model_len", 0))) or None,
             "pool_tokens": int(float(labels["kv_cache_size_tokens"])) if labels.get("kv_cache_size_tokens") else None,
