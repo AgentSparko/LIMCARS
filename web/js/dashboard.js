@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, HOLD_LAST_NONZERO } from './charts.js?v=20261028c';
+import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, HOLD_LAST_NONZERO } from './charts.js?v=20261028d';
 
 const state = {
   store: new SeriesStore(4000),
@@ -725,17 +725,20 @@ async function seed(reseedWindow = true) {
     const eng = { meta: e, latest: e.latest || {},
       rx: e.last_scrape ? Date.now() - Math.max(0, (snap.ts || 0) - e.last_scrape) * 1000 : 0 };
     state.engines[id] = eng;
-    for (const [k, rows] of Object.entries(e.series || {})) {
-      state.store.seed(`${id}.${k}`, rows);
+    for (const [key, raw] of Object.entries(e.series || {})) {
+      // Smooth the recorded idle zeros for display only (see fillIdleZeros) — the
+      // ring keeps what the engine said, the chart stops showing a false 0%.
+      const rows = HOLD_LAST_NONZERO.has(key) ? fillIdleZeros(raw) : raw;
+      state.store.seed(`${id}.${key}`, rows);
       // Prime the hold pad from history. Without this a reload forgets the last real
       // reading, and an idle engine's DOCUMENTED false zero (kv_cache_usage_perc = 0
       // while prefix-cached blocks are still resident) would then print and draw as
       // "cache empty" for the whole session — the two layers agreeing only by being
       // both wrong. The truth is already in the rows we just seeded, so borrow it.
-      if (HOLD_LAST_NONZERO.has(k)) {
+      if (HOLD_LAST_NONZERO.has(key)) {
         for (let i = rows.length - 1; i >= 0; i--) {
           const v = rows[i] && rows[i][1];
-          if (typeof v === 'number' && v > 0) { (eng._held || (eng._held = {}))[k] = v; break; }
+          if (typeof v === 'number' && v > 0) { (eng._held || (eng._held = {}))[key] = v; break; }
         }
       }
     }
