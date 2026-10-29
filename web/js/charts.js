@@ -181,8 +181,11 @@ export class LineChart {
 
   _visible() {
     const now = Date.now() / 1000;
+    // nulls are KEPT as gap markers (draw() breaks the polyline on them);
+    // filtering them here is what let the old renderer bridge gaps with
+    // straight connectors.
     return this.opts.series.map(s => {
-      return this.store.at(s.key).filter(([t, v]) => t >= now - this.win && v !== null && Number.isFinite(v));
+      return this.store.at(s.key).filter(([t, v]) => t >= now - this.win && (v === null || Number.isFinite(v)));
     });
   }
 
@@ -206,8 +209,10 @@ export class LineChart {
     } else {
       // AUTO Y: fit BOTH ends to the visible data — a 60–70 °C series gets a
       // 58–72 scale, not a 0–70 one that draws a flat line at the top.
+      // Null gap markers are skipped: `null < mn` coerces to 0 and would
+      // silently pin the floor to zero.
       let mn = Infinity, mx = 0;
-      for (const pts of data) for (const [, v] of pts) { if (v < mn) mn = v; if (v > mx) mx = v; }
+      for (const pts of data) for (const [, v] of pts) { if (v === null) continue; if (v < mn) mn = v; if (v > mx) mx = v; }
       if (!Number.isFinite(mn)) { mn = 0; mx = 1; }
       if (mx <= mn) mx = mn + (Math.abs(mn) * 0.1 || 1);
       const pad = (mx - mn) * 0.10 || Math.abs(mx) * 0.05 || 1;
@@ -244,15 +249,32 @@ export class LineChart {
     this.opts.series.forEach((s, si) => {
       const pts = data[si];
       if (!pts.length) return;
-      const d = pts.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
+      // Break the polyline on null gap markers — one path per finite run, so
+      // an unmeasurable stretch renders BLANK instead of as a straight
+      // connector between the samples on either side.
+      const segs = [];
+      let cur = null;
+      for (const [t, v] of pts) {
+        if (v === null) { cur = null; continue; }
+        if (!cur) { cur = []; segs.push(cur); }
+        cur.push([t, v]);
+      }
+      if (!segs.length) return;
+      let d = '', area = '';
+      const base = y(Math.max(min, 0));
+      for (const seg of segs) {
+        d += seg.map(([t, v], k) => `${k ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
+        if (s.fill) area += `M${x(seg[0][0]).toFixed(1)},${base.toFixed(1)}`
+          + seg.map(([t, v]) => `L${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('')
+          + `L${x(seg[seg.length - 1][0]).toFixed(1)},${base.toFixed(1)}Z`;
+      }
       if (s.fill) {
-        const base = y(Math.max(min, 0));
-        const area = d + `L${x(pts[pts.length - 1][0]).toFixed(1)},${base}L${x(pts[0][0]).toFixed(1)},${base}Z`;
         out += `<path d="${area}" fill="${scol(s.color)}" opacity="0.10"/>`;
       }
       out += `<path d="${d}" fill="none" stroke="${scol(s.color)}" stroke-width="1.6" ${s.dash ? 'stroke-dasharray="4 3"' : ''} stroke-linejoin="round"/>`;
-      const last = pts[pts.length - 1];
-      out += `<circle cx="${x(last[0])}" cy="${y(last[1])}" r="3" fill="${COLORS.now}"/>`;
+      let last = null;
+      for (let i = pts.length - 1; i >= 0; i--) if (pts[i][1] !== null) { last = pts[i]; break; }
+      if (last) out += `<circle cx="${x(last[0])}" cy="${y(last[1])}" r="3" fill="${COLORS.now}"/>`;
     });
     // hover crosshair
     if (this.hoverX != null && this.hoverX > PL && this.hoverX < W - PR) {
@@ -316,13 +338,32 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
     if (kept[kept.length - 1] !== idxs[idxs.length - 1]) kept.push(idxs[idxs.length - 1]);
     idxs = kept;
   }
-  let d = '';
-  for (const i of idxs) d += (d ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(values[i]).toFixed(1);
+  // A null is an unmeasurable stretch (the #28 gap policy), so the polyline
+  // must BREAK there. The old builder filtered non-finite values and drew the
+  // kept samples as ONE path — which stitched a straight line across every
+  // gap, connecting distant real samples through invisible terrain (owner
+  // screenshot: prefill curve "long perfectly straight diagonals").
+  // Consecutive kept indices separated only by THINNING skips (finite values)
+  // do not break; only true non-finite terrain does.
+  const segs = [];
+  let cur = null, prev = -2;
+  for (const i of idxs) {
+    let gap = false;
+    for (let j = prev + 1; j < i; j++) if (!Number.isFinite(values[j])) { gap = true; break; }
+    if (!cur || gap) { cur = []; segs.push(cur); }
+    cur.push(i); prev = i;
+  }
+  let d = '', fillD = '';
+  for (const seg of segs) {
+    d += seg.map((i, k) => (k ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(values[i]).toFixed(1)).join('');
+    fillD += `M${x(seg[0])},${H}`
+      + seg.map(i => 'L' + x(i).toFixed(1) + ',' + y(values[i]).toFixed(1)).join('')
+      + `L${x(seg[seg.length - 1])},${H}Z`;
+  }
   const lastIdx = idxs.length ? idxs[idxs.length - 1] : -1;
-  const firstIdx = idxs.length ? idxs[0] : 0;
   let out = '';
   if (d) {
-    out += `<path d="${d}L${x(lastIdx)},${H}L${x(firstIdx)},${H}Z" fill="${color}" opacity="0.10"/>`;
+    out += `<path d="${fillD}" fill="${color}" opacity="0.10"/>`;
     out += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.4"/>`;
     const lv = values[lastIdx];
     if (Number.isFinite(lv)) out += `<circle cx="${x(lastIdx)}" cy="${y(lv)}" r="2.4" fill="${COLORS.now}"/>`;

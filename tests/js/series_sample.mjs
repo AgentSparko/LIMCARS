@@ -82,6 +82,22 @@ eq('and the curve does not change shape', gapped.n, 4);
 spark(stub, [14.75, 14.75, 14.75, 0]);
 eq('a raw 0 WOULD have stretched the scale (this was the dance)', [stub._spark.min, stub._spark.max], [0, 14.75]);
 
+// --- 6b. gaps render BLANK, never as straight connectors ------------------------
+// The gap policy (#28/#33) made idle stretches null; the renderer still
+// filtered them and drew the kept samples as ONE path, stitching long
+// straight diagonals across the invisible terrain (owner screenshot:
+// "straight lines that look horrible"). Each finite run must be its own
+// subpath: stroke M + fill M per run.
+spark(stub, [10, 20, 30]);
+eq('a solid series = one polyline (1 stroke M + 1 fill M)', (stub.innerHTML.match(/M/g) || []).length, 2);
+spark(stub, [10, null, null, 20]);
+eq('a gapped series = one polyline PER run (2+2)', (stub.innerHTML.match(/M/g) || []).length, 4);
+spark(stub, [10, null, 20, null, 30]);
+eq('three runs -> three breaks', (stub.innerHTML.match(/M/g) || []).length, 6);
+// CAP thinning skips indices too — it must NOT read as a gap:
+spark(stub, Array.from({ length: 300 }, (_, i) => i));
+eq('thinning is not a gap', (stub.innerHTML.match(/M/g) || []).length, 2);
+
 // --- 7. smoothing the RECORDED idle zeros (display only, never invents) ---------
 import { fillIdleZeros } from '../../web/js/charts.js';
 
