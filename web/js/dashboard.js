@@ -1989,12 +1989,13 @@ async function loadEngines() {
     const row = b.closest('.eng-row');
     const pid = row.dataset.pid;
     const label = row.querySelector('.rec-name').textContent;
-    if (!(await confirmDialog(`Stop ${label} (pid ${pid})?\nThis SIGTERMs → SIGKILLs its whole process group.`, '■ Stop'))) return;
+    if (!(await confirmDialog(`Stop ${label} (pid ${pid})?\nThis SIGTERMs → SIGKILLs its whole process group.\nA containerised engine is stopped with \u2018docker stop\u2019 so it can release the GPU cleanly.`, '■ Stop'))) return;
     b.disabled = true; b.textContent = 'stopping…';
     const res = await authFetch(`/api/engines-live/${pid}/stop`, { method: 'POST' },
                                 '🔒 Stopping an engine is password-protected')
       .then(r => r.json()).catch(err => ({ ok: false, error: String(err) }));
     if (res.ok === false) { b.disabled = false; b.textContent = '■ Stop'; toast('⚠ ' + (res.error || 'stop failed'), 'err'); }
+    else if (res.stopped_container) toast('■ stopped ' + res.stopped_container + ' (docker stop)');
     loadEngines();
   });
 }
