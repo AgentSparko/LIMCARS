@@ -129,8 +129,8 @@ html[data-theme="light"] .st-bar{background:#dbe3f0}
 
 /* pricing editor feedback */
 .pr-err { color: var(--rose); }
-#pricing-edit input[aria-invalid="true"] { border-color: var(--rose); }
-#pr-save:disabled { opacity: .5; cursor: not-allowed; }
+#btn-price-mgr { margin-left: 10px; font-size: 12px; font-weight: 700; padding: 5px 14px;
+  color: var(--accent); border-color: var(--accent); text-transform: none; letter-spacing: 0; vertical-align: middle; }
 
 /* collapsible sidebar sections: display:contents keeps the expanded layout
    identical to the flat original */

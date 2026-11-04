@@ -90,7 +90,7 @@ const SIDE_TILES = [
       : ['–', '–'],
     { duo: true, wide: true }],
   ['SSD I/O', h => h.ssd_r_mbs != null
-      ? [`↓ ${mbs(h.ssd_r_mbs)} MB/s`, `↑ ${mbs(h.ssd_w_mbs ?? 0)} MB/s`]
+      ? [`R ${mbs(h.ssd_r_mbs)} MB/s`, `W ${mbs(h.ssd_w_mbs ?? 0)} MB/s`]
       : ['–', '–'],
     { duo: true, wide: true, id: 'st-ssd-io' }],
 ];
@@ -193,7 +193,7 @@ function buildCards() {
   const p = state.pricing;
   document.querySelector('#pricing-note').textContent = p
     ? `· vs ${p.display_name || p.slug || 'API'} @ $${p.cache_write} w / $${p.cache_read} read / $${p.output} out per Mtok` +
-      (p.provider ? ` (${p.provider})` : '') + (p.fetched_at ? ` · prices ${String(p.fetched_at).slice(0, 10)}` : '')
+      (p.provider ? ` (${p.provider})` : '')
     : '· no pricing entry for this model';
 }
 
@@ -1734,72 +1734,6 @@ document.querySelectorAll('[data-win]').forEach(btn => btn.addEventListener('cli
 }));
 
 document.querySelector('#btn-refresh').addEventListener('click', () => seed(false));
-
-// pricing editor — manual override of the pricing.json resolution (null = clear)
-document.querySelector('#btn-pricing').addEventListener('click', () => {
-  const ed = document.querySelector('#pricing-edit');
-  const p = state.pricing || {};
-  document.querySelector('#pr-name').value = p.display_name || '';
-  document.querySelector('#pr-w').value = p.cache_write ?? '';
-  document.querySelector('#pr-r').value = p.cache_read ?? '';
-  document.querySelector('#pr-out').value = p.output ?? '';
-  ed.style.display = ed.style.display === 'none' ? 'block' : 'none';
-  if (ed.style.display === 'block') { prValidate(); document.querySelector('#pr-name').focus(); }
-});
-const PR_IDS = ['#pr-w', '#pr-r', '#pr-out'];
-const prVal = id => document.querySelector(id).value.trim();
-// inline validation: numbers >= 0; write/out both blank = clear the override
-function prValidate() {
-  const msg = document.querySelector('#pr-msg');
-  let ok = true, text = '';
-  for (const id of PR_IDS) {
-    const v = prVal(id);
-    // type=number reports half-typed input like "1e" as value '' + badInput
-    const bad = document.querySelector(id).validity.badInput ||
-      (v !== '' && !(Number.isFinite(+v) && +v >= 0));
-    document.querySelector(id).setAttribute('aria-invalid', String(bad));
-    if (bad) { ok = false; text = 'Prices must be numbers ≥ 0.'; }
-  }
-  const w = prVal('#pr-w'), out = prVal('#pr-out');
-  if (ok && w === '' && out === '') text = 'Write and out blank → saving clears the override (back to data/pricing.json).';
-  else if (ok && !(+w > 0) && !(+out > 0)) { ok = false; text = 'Need a write or out price above 0.'; }
-  msg.textContent = text;
-  msg.className = 'small ' + (ok ? 'muted' : 'pr-err');
-  document.querySelector('#pr-save').disabled = !ok;
-  return ok;
-}
-async function prSave() {
-  if (!prValidate()) return;
-  const w = prVal('#pr-w'), out = prVal('#pr-out');
-  const body = { pricing: w === '' && out === ''
-    ? null
-    : { display_name: prVal('#pr-name') || 'manual override',
-        provider: 'manual override',
-        cache_write: +w || 0, cache_read: +prVal('#pr-r') || 0, output: +out || 0 } };
-  let r;
-  // the POST guard demands application/json on any request with a body: a browser
-  // cannot forge that cross-site without a preflight this server never answers
-  // pricing in this body is password-gated (_require_write), so this must go
-  // through authFetch or every remote save dies with an empty password
-  try { r = await (await authFetch('/api/config', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
-    '🔒 Editing the price table is password-protected')).json(); }
-  catch (e) { r = { ok: false, error: String(e) }; }
-  if (r.ok) {
-    state.pricing = r.config.pricing; await seed(false);
-    document.querySelector('#pricing-edit').style.display = 'none';
-    toast(body.pricing ? 'Pricing override saved ✓' : 'Pricing override cleared ✓', 'ok');
-  } else {
-    const msg = document.querySelector('#pr-msg');
-    msg.textContent = 'Save failed: ' + (r.error || '?'); msg.className = 'small pr-err';
-  }
-}
-document.querySelector('#pr-save').addEventListener('click', prSave);
-document.querySelector('#pricing-edit').addEventListener('input', prValidate);
-document.querySelector('#pricing-edit').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); prSave(); }
-  if (e.key === 'Escape') document.querySelector('#pricing-edit').style.display = 'none';
-});
 
 // ---------------- price manager: every model LIMCARS has recorded, editable (data/pricing.json) ----------------
 

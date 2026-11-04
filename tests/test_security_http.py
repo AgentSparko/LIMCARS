@@ -548,5 +548,5 @@ def test_frontend_attaches_the_password_on_every_gated_verb():
               encoding="utf-8").read()
     assert "authFetch(`/api/engines-live/${pid}/stop`" in js, \
         "engine Stop must go through authFetch or remote operators cannot stop an engine"
-    assert "authFetch('/api/config'" in js, \
-        "the price-table save is gated by _require_write and must send the header"
+    assert "authFetch('/api/pricing-models'" in js, \
+        "the price-manager save is gated by _require_write and must send the header"
