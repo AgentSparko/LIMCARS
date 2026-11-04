@@ -1039,6 +1039,7 @@ const SET_OPTS = {
   ssd_io_tile: 'Sidebar · SSD I/O tile',
   ssd_chart: 'Sidebar · SSD read/write chart',
   ssd_usage: 'Sidebar · SSD usage box',
+  cold_usage: 'Sidebar · SSD cold experts & reserve box',
 };
 function applySettings(s) {
   sideSettings = s || {};
@@ -1059,6 +1060,7 @@ function applySettings(s) {
   hide('#sch-ssd', sideSettings.ssd_chart === false, '.side-chart');
   hide('#ssd-usage', sideSettings.ssd_usage === false);
   hide('#st-ssd-io', sideSettings.ssd_io_tile === false);
+  renderColdset();
   const rsel = document.querySelector('#refresh-sel');
   if (rsel && document.activeElement !== rsel) rsel.value = String(sideSettings.refresh_s ?? 1);
   const box = document.querySelector('#side-settings');
@@ -1598,6 +1600,48 @@ async function renderSsd() {
     (d.since_boot ? row('since boot', d.since_boot.read_gb, d.since_boot.written_gb) : '') + `</table>` + bars;
 }
 
+// SSD cold-expert set + memory reserve (/api/coldset): what the serving recipe's permanent
+// route record and boot-time cold-set rebuild left on disk, and the reserve cgroup's use.
+const fmtGiB = b => b == null ? '–' : (b / 2 ** 30).toFixed(b < 10 * 2 ** 30 ? 2 : 1) + ' GiB';
+const fmtAgo = s => s == null ? '' : s < 120 ? `${s} s ago` : s < 7200 ? `${Math.round(s / 60)} min ago`
+  : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+async function renderColdset() {
+  const card = document.getElementById('cold-usage');
+  const host = card && card.querySelector('.cold-body');
+  if (!host) return;
+  let d;
+  try { d = await (await fetch('/api/coldset')).json(); } catch (e) { return; }
+  card.style.display = d && d.available && sideSettings.cold_usage !== false ? '' : 'none';
+  if (!d || !d.available) return;
+  const row = (l, v, t) => `<tr${t ? ` title="${escH(t)}"` : ''}><td>${l}</td><td style="text-align:right">${v}</td></tr>`;
+  let h = '<table class="mono" style="width:100%">';
+  for (const r of d.records || []) {
+    const sh = r.recent_cold_share;
+    h += `<tr><th colspan="2" style="text-align:left">${escH(r.name.replace(/^route-heat-/, ''))}${r.paused ? ' · <span style="color:var(--amber, #f59e0b)">paused</span>' : ''}</th></tr>` +
+      row('routes to SSD', sh == null ? '–' : `<b style="font-size:14px">${(100 * sh).toFixed(2)} %</b>`,
+          `share of expert routes that went to SSD experts over the last ${r.recent_routes ?? 0} routes`) +
+      row('route record', `${((r.routes || 0) / 1e6).toFixed(1)} M · ${r.boots} boots`,
+          `${fmtGiB(r.record_bytes)} on disk (fixed size); saved ${fmtAgo(r.age_s)}`) +
+      row('record size', r.record_bytes == null ? '–' : (r.record_bytes / 1024).toFixed(0) + ' KiB');
+  }
+  const a = d.auto_cold;
+  if (a) {
+    const what = { rebuilt: 'rebuilt', kept: 'kept', 'no-disk-space': 'kept (no disk space)', 'no-record': 'kept (no record yet)' }[a.decision] || a.decision;
+    h += row('cold set at boot', `${what} · ${fmtAgo(a.age_s)}`,
+      a.gain != null ? `cold experts touched per step ${a.touched_now} now vs ${a.touched_new} re-picked (${(100 * a.gain).toFixed(1)} %, threshold ${(100 * a.min_gain).toFixed(0)} %); ${a.gib} GiB on SSD` : '');
+  }
+  const r = d.reserve;
+  if (r) {
+    const pct = r.max_bytes ? Math.round(100 * r.current_bytes / r.max_bytes) : null;
+    h += `<tr><th colspan="2" style="text-align:left">reserve (${escH(r.cgroup)})</th></tr>` +
+      row('in use', `${(r.current_bytes / 2 ** 30).toFixed(2)}${r.max_bytes ? ` / ${fmtGiB(r.max_bytes)}` : ' GiB'}${pct != null ? ` (${pct} %)` : ''}`,
+          (r.tenants || []).join(', ')) +
+      row('highest seen', fmtGiB(r.peak_ever_bytes),
+          r.watched_since ? `watched since ${new Date(r.watched_since * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '');
+  }
+  host.innerHTML = h + '</table>';
+}
+
 async function renderLostPotential() {
   const host = document.getElementById('bub-potential');
   if (!host) return;
@@ -1670,6 +1714,7 @@ async function renderLostPotential() {
 renderSavingsChart(); setInterval(renderSavingsChart, 60000);
 renderLostPotential(); setInterval(renderLostPotential, 60000);
 renderSsd(); setInterval(renderSsd, 60000);
+setInterval(renderColdset, 60000);
 // debug handle (module scope is otherwise unreachable from the console)
 window.__pot = {render: renderLostPotential, ss: () => sideSettings};
 renderCounters(); setInterval(renderCounters, 30000);

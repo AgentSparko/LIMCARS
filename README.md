@@ -40,6 +40,11 @@ python3 -m app          # → http://localhost:8951
   7 days / since boot, per-day bars, and the drive temperature against its own warning
   and critical limits. Model downloads, n-gram tables and SSD-offloaded experts all
   show up here as one total.
+- **SSD cold experts & reserve box** (shown only when its files exist): for a recipe that keeps
+  part of a MoE model's experts on the SSD with a permanent per-expert route record (e.g. the
+  DSV4.1 EXL3 recipe), the share of expert routes that went to SSD experts recently, the record's
+  routes / boots / size, the last boot-time cold-set decision (rebuilt or kept, and why), and the
+  memory reserve cgroup that caps Hermes and other tenants: in use, cap, highest seen.
 
 > ⚠️ **Hardware scope**: the hardware tiles are designed for a **single
 > DGX Spark** (GB10 unified memory, local `nvidia-smi`/hwmon). Everything
@@ -157,6 +162,8 @@ Handy environment variables:
 | `LIMCARS_DB` | `data/limcars.db` | history database path |
 | `LIMCARS_TOKEN` | unset | shared token required by the read/trace endpoints (`app/config.py`); the password in the header is the usual way to get the same protection -- this exists so a headless box can be gated before anyone opens the UI |
 | `LIMCARS_SSD_DEV` | disk holding `/` | block device the SSD panel watches (e.g. `nvme0n1`) |
+| `LIMCARS_ROUTE_HEAT_DIR` | `~/.cache/dsv41-ds41f/route-heat` | folder with a serving recipe's route-record `*.status.json` and `auto_cold-last.json` (SSD cold experts box; also `route_heat_dir` in config.json) |
+| `LIMCARS_RESERVE_CGROUP` | `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/reserve.slice` | cgroup capping non-engine tenants (Hermes); its memory now / max / highest seen is shown (also `reserve_cgroup`) |
 | `LIMCARS_DATA` | `<repo>/data` | directory holding every runtime state file -- `config.json`, `auth.json`, `recipes.json`, `pricing.json`, the ssh control dir and the default database. Relocate it in one knob (a read-only or shared-state install, or a test suite that must not touch the live dashboard's files) |
 
 ## 🔁 Autorun — survive reboots, forget about it

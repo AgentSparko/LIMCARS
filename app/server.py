@@ -983,6 +983,9 @@ class Handler(BaseHTTPRequestHandler):
                                "override": app.cfg.get("pricing")})
         if path == "/api/ssd":
             return self._json(self.app.hw.ssd_report())
+        if path == "/api/coldset":
+            from . import coldset
+            return self._json(coldset.report(self.app.cfg, config.DATA))
         m = re.fullmatch(r"/api/stat-models/?", path)
         if m:
             smp = self._picked_sampler(qs)

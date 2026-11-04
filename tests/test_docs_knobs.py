@@ -21,8 +21,10 @@ DOCS = [ROOT / "README.md", ROOT / "docs" / "CODEMAP.md", ROOT / "docs" / "AUDIT
 # config.json/auth.json, which let one security test set a production password. A
 # knob that exists only to make tests honest is still a knob, so it is documented.
 # LIMCARS_SSD_DEV: the SSD panel watches the disk holding /; this names another one.
+# LIMCARS_ROUTE_HEAT_DIR / LIMCARS_RESERVE_CGROUP: where the cold-experts & reserve box reads
+# the serving recipe's route-record status and the reserve cgroup (host-specific, $HOME/uid defaults).
 EXPECTED = {"LIMCARS_HOST", "LIMCARS_PORT", "LIMCARS_DB", "LIMCARS_TOKEN", "LIMCARS_DATA",
-            "LIMCARS_SSD_DEV"}
+            "LIMCARS_SSD_DEV", "LIMCARS_ROUTE_HEAT_DIR", "LIMCARS_RESERVE_CGROUP"}
 
 
 def _knobs_in(root, suffix="*.py"):
