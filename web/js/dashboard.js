@@ -69,6 +69,7 @@ const BUBS = {
   ],
 };
 
+const mbs = v => v >= 100 ? v.toFixed(0) : v.toFixed(1);   // keeps the SSD duo on one line
 const SIDE_TILES = [
   ['CPU', h => [num(h.cpu_pct, 0) + '%']],
   ['GPU util', h => [num(h.gpu_util, 0) + '%']],
@@ -88,6 +89,10 @@ const SIDE_TILES = [
       ? [`↓ ${h.net_r_mbs.toFixed(2)} MB/s`, `↑ ${(h.net_w_mbs ?? 0).toFixed(2)} MB/s`]
       : ['–', '–'],
     { duo: true, wide: true }],
+  ['SSD I/O', h => h.ssd_r_mbs != null
+      ? [`↓ ${mbs(h.ssd_r_mbs)} MB/s`, `↑ ${mbs(h.ssd_w_mbs ?? 0)} MB/s`]
+      : ['–', '–'],
+    { duo: true, wide: true, id: 'st-ssd-io' }],
 ];
 
 const _fin = v => v != null && Number.isFinite(v);
@@ -183,7 +188,7 @@ function buildCards() {
     cardRefs.push({ el, d, hero: true, v: el.querySelector('.v'), sub: el.querySelector('.sub'), sp: el.querySelector('.spark') });
   }
   document.querySelector('#side-tiles').innerHTML = SIDE_TILES.map(([l, , opt]) =>
-    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"${opt?.vram && !hwLatest().vram_total_gb ? ' hidden' : ''}>` +
+    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"${opt?.id ? ` id="${opt.id}"` : ''}${opt?.vram && !hwLatest().vram_total_gb ? ' hidden' : ''}>` +
     `<div class="l">${typeof l === 'function' ? l(hwLatest()) : l}</div><div class="v">–</div></div>`).join('');
   const p = state.pricing;
   document.querySelector('#pricing-note').textContent = p
@@ -346,6 +351,10 @@ function buildCharts() {
   side('#sch-clock', [{ key: 'hw.gpu_clock_mhz', label: 'MHz', color: () => COLORS.teal, fill: true }], v => v != null ? Math.round(v) + ' MHz' : '', { yCeil: 3003 });
   side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: () => COLORS.rose, fill: true }],
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
+  // SSD: an hour, not 3 min — expert offload and downloads come in long runs
+  side('#sch-ssd', [{ key: 'hw.ssd_r_mbs', label: 'read', color: () => COLORS.teal, fill: true },
+                    { key: 'hw.ssd_w_mbs', label: 'write', color: () => COLORS.rose }],
+    v => v != null ? v.toFixed(0) + ' MB/s' : '', { window: 3600 });
   gpuSig = null;
   ensureGpuCards();
 }
@@ -1027,6 +1036,9 @@ const SET_OPTS = {
   chart_per_model: 'Table · stats by model',
   chart_savings_daily: 'Chart · daily money saved',
   requests_feed: 'Table · recent requests',
+  ssd_io_tile: 'Sidebar · SSD I/O tile',
+  ssd_chart: 'Sidebar · SSD read/write chart',
+  ssd_usage: 'Sidebar · SSD usage box',
 };
 function applySettings(s) {
   sideSettings = s || {};
@@ -1044,6 +1056,9 @@ function applySettings(s) {
   hide('#sav-card', sideSettings.chart_savings_daily === false);
   hide('#cc-card', sideSettings.chart_per_client === false);
   hide('#req-feed', sideSettings.requests_feed === false, '.chart-card');
+  hide('#sch-ssd', sideSettings.ssd_chart === false, '.side-chart');
+  hide('#ssd-usage', sideSettings.ssd_usage === false);
+  hide('#st-ssd-io', sideSettings.ssd_io_tile === false);
   const rsel = document.querySelector('#refresh-sel');
   if (rsel && document.activeElement !== rsel) rsel.value = String(sideSettings.refresh_s ?? 1);
   const box = document.querySelector('#side-settings');
@@ -1549,6 +1564,40 @@ const fmtTokShort = n => {
 const fmtUsd0 = n => n == null || !isFinite(n) ? null
   : n < 10 ? '$' + n.toFixed(2)                      // cents matter at the hour
   : '$' + Math.round(n).toLocaleString('en-US');      // scale up, drop cents
+// Whole-drive SSD view (/api/ssd): GB moved in the last hour, today, 7 days and per
+// day, plus the NVMe temperature against the drive's own warning/critical limits.
+const fmtGB = v => v == null ? '–' : v >= 1000 ? (v / 1000).toFixed(2) + ' TB' : v.toFixed(v < 10 ? 2 : 1) + ' GB';
+async function renderSsd() {
+  const host = document.querySelector('#ssd-usage .ssd-body');
+  if (!host) return;
+  let d;
+  try { d = await (await fetch('/api/ssd')).json(); } catch (e) { return; }
+  if (!d || !d.disk) { host.textContent = 'no SSD found'; return; }
+  const days = d.days || [];
+  const today = Math.floor(Date.now() / 86400000);
+  const td = days.find(x => x.day === today) || { read_gb: 0, written_gb: 0 };
+  const wk = days.filter(x => x.day > today - 7).reduce((a, x) =>
+    ({ r: a.r + x.read_gb, w: a.w + x.written_gb }), { r: 0, w: 0 });
+  const t = d.temp_c, warn = d.temp_max_c, crit = d.temp_crit_c;
+  const tcol = t == null ? '' : crit && t >= crit ? 'var(--rose)' : warn && t >= warn - 5 ? 'var(--amber, #f59e0b)' : '';
+  const row = (l, r, w) => `<tr><td>${l}</td><td style="text-align:right">${fmtGB(r)}</td><td style="text-align:right">${fmtGB(w)}</td></tr>`;
+  const n = Math.min(14, days.length), shown = days.slice(-n);
+  const mx = Math.max(1, ...shown.map(x => Math.max(x.read_gb, x.written_gb)));
+  const bw = 100 / Math.max(1, n);
+  const bars = n ? `<svg viewBox="0 0 100 34" preserveAspectRatio="none" style="width:100%;height:46px;margin-top:6px">` +
+    shown.map((x, i) => {
+      const hr = 30 * x.read_gb / mx, hw = 30 * x.written_gb / mx;
+      return `<rect x="${i * bw + bw * 0.1}" y="${32 - hr}" width="${bw * 0.38}" height="${hr}" fill="${COLORS.teal}"><title>${new Date(x.day * 86400000).toISOString().slice(0, 10)} read ${fmtGB(x.read_gb)}</title></rect>` +
+             `<rect x="${i * bw + bw * 0.52}" y="${32 - hw}" width="${bw * 0.38}" height="${hw}" fill="${COLORS.rose}"><title>${new Date(x.day * 86400000).toISOString().slice(0, 10)} written ${fmtGB(x.written_gb)}</title></rect>`;
+    }).join('') + `</svg><div class="muted" style="font-size:10px">per day, last ${n} day${n === 1 ? '' : 's'} recorded (read teal, written rose)</div>` : '';
+  host.innerHTML = `<div>${escH(d.disk)} · <span style="color:${tcol || 'var(--text)'};font-size:16px;font-weight:700">${t != null ? t.toFixed(0) + ' °C' : '–'}</span>` +
+    (warn ? ` <span class="muted">(warn ${warn.toFixed(0)} · crit ${(crit || 0).toFixed(0)} °C)</span>` : '') + `</div>` +
+    `<table class="mono" style="width:100%;margin-top:4px"><tr><th></th><th style="text-align:right">read</th><th style="text-align:right">written</th></tr>` +
+    row(d.hour.span_s >= 3500 ? 'last hour' : `last ${Math.round(d.hour.span_s / 60)} min`, d.hour.read_gb, d.hour.written_gb) +
+    row('today', td.read_gb, td.written_gb) + row('7 days', wk.r, wk.w) +
+    (d.since_boot ? row('since boot', d.since_boot.read_gb, d.since_boot.written_gb) : '') + `</table>` + bars;
+}
+
 async function renderLostPotential() {
   const host = document.getElementById('bub-potential');
   if (!host) return;
@@ -1620,6 +1669,7 @@ async function renderLostPotential() {
 }
 renderSavingsChart(); setInterval(renderSavingsChart, 60000);
 renderLostPotential(); setInterval(renderLostPotential, 60000);
+renderSsd(); setInterval(renderSsd, 60000);
 // debug handle (module scope is otherwise unreachable from the console)
 window.__pot = {render: renderLostPotential, ss: () => sideSettings};
 renderCounters(); setInterval(renderCounters, 30000);

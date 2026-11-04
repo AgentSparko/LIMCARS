@@ -115,6 +115,10 @@ class Store:
             CREATE INDEX IF NOT EXISTS ix_cb_ts ON counter_buckets(ts);
             CREATE TABLE IF NOT EXISTS counter_raw(
               engine TEXT PRIMARY KEY, t REAL, raw TEXT);
+            CREATE TABLE IF NOT EXISTS ssd_days(
+              day INTEGER PRIMARY KEY, read_b REAL, written_b REAL);
+            CREATE TABLE IF NOT EXISTS ssd_raw(
+              id INTEGER PRIMARY KEY CHECK (id = 1), boot TEXT, read_b REAL, written_b REAL);
             CREATE TABLE IF NOT EXISTS spark_stats(
               engine TEXT, key TEXT, t INTEGER, v REAL,
               PRIMARY KEY(engine, key, t));
@@ -704,6 +708,36 @@ class Store:
                 tiers.rollup_all(self._con)
         except Exception:                                   # noqa: BLE001 - a read must not die
             pass
+
+    def ssd_add(self, now: float, read_b: float, written_b: float, boot: str) -> None:
+        """Book the drive's bytes moved since the last call onto today (UTC day). The
+        counters are since-boot, so a new boot id restarts from zero, not from the delta."""
+        day = int(now // 86400)
+        with self._lock:
+            prev = self._con.execute("SELECT boot, read_b, written_b FROM ssd_raw WHERE id=1").fetchone()
+            if prev and prev[0] == boot and read_b >= prev[1] and written_b >= prev[2]:
+                dr, dw = read_b - prev[1], written_b - prev[2]
+            elif prev and prev[0] != boot:
+                dr, dw = read_b, written_b
+            else:
+                dr = dw = 0.0          # first sight: no history to attribute
+            self._con.execute(
+                "INSERT INTO ssd_raw(id, boot, read_b, written_b) VALUES (1,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET boot=excluded.boot, read_b=excluded.read_b,"
+                " written_b=excluded.written_b", (boot, read_b, written_b))
+            if dr or dw:
+                self._con.execute(
+                    "INSERT INTO ssd_days(day, read_b, written_b) VALUES (?,?,?)"
+                    " ON CONFLICT(day) DO UPDATE SET read_b=read_b+excluded.read_b,"
+                    " written_b=written_b+excluded.written_b", (day, dr, dw))
+            self._con.commit()
+
+    def ssd_days(self, n: int) -> list[dict]:
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT day, read_b, written_b FROM ssd_days ORDER BY day DESC LIMIT ?", (n,)).fetchall()
+        return [{"day": d, "read_gb": round(r / 2**30, 2), "written_gb": round(w / 2**30, 2)}
+                for d, r, w in reversed(rows)]
 
     def stat_keys(self, engine: str) -> list[dict]:
         """Stats keys stored for one engine: ``id`` (minutes recorded before the

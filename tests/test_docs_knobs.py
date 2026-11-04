@@ -20,7 +20,9 @@ DOCS = [ROOT / "README.md", ROOT / "docs" / "CODEMAP.md", ROOT / "docs" / "AUDIT
 # data-dir override, any process booted with cwd=<repo> writes the live dashboard's
 # config.json/auth.json, which let one security test set a production password. A
 # knob that exists only to make tests honest is still a knob, so it is documented.
-EXPECTED = {"LIMCARS_HOST", "LIMCARS_PORT", "LIMCARS_DB", "LIMCARS_TOKEN", "LIMCARS_DATA"}
+# LIMCARS_SSD_DEV: the SSD panel watches the disk holding /; this names another one.
+EXPECTED = {"LIMCARS_HOST", "LIMCARS_PORT", "LIMCARS_DB", "LIMCARS_TOKEN", "LIMCARS_DATA",
+            "LIMCARS_SSD_DEV"}
 
 
 def _knobs_in(root, suffix="*.py"):

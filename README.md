@@ -35,6 +35,11 @@ python3 -m app          # → http://localhost:8951
 - **Hardware sidebar**: CPU/GPU utilization, temperatures, power, clocks,
   unified RAM, SSD and network ↓↑ — each with its own sparkline, smart axes
   and hover readouts.
+- **SSD panel** (whole drive, from `/proc/diskstats` and the NVMe hwmon sensor, no root):
+  read/write MB/s over the last hour, GB read and written in the last hour / today /
+  7 days / since boot, per-day bars, and the drive temperature against its own warning
+  and critical limits. Model downloads, n-gram tables and SSD-offloaded experts all
+  show up here as one total.
 
 > ⚠️ **Hardware scope**: the hardware tiles are designed for a **single
 > DGX Spark** (GB10 unified memory, local `nvidia-smi`/hwmon). Everything
@@ -151,6 +156,7 @@ Handy environment variables:
 | `LIMCARS_PORT` | `8951` | dashboard port |
 | `LIMCARS_DB` | `data/limcars.db` | history database path |
 | `LIMCARS_TOKEN` | unset | shared token required by the read/trace endpoints (`app/config.py`); the password in the header is the usual way to get the same protection -- this exists so a headless box can be gated before anyone opens the UI |
+| `LIMCARS_SSD_DEV` | disk holding `/` | block device the SSD panel watches (e.g. `nvme0n1`) |
 | `LIMCARS_DATA` | `<repo>/data` | directory holding every runtime state file -- `config.json`, `auth.json`, `recipes.json`, `pricing.json`, the ssh control dir and the default database. Relocate it in one knob (a read-only or shared-state install, or a test suite that must not touch the live dashboard's files) |
 
 ## 🔁 Autorun — survive reboots, forget about it

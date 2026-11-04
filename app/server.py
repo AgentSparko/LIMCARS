@@ -52,6 +52,9 @@ SETTINGS_DEFAULTS = {
     "chart_per_model": True,     # stats-by-model table
     "chart_savings_daily": True,  # daily money-saved chart (real usage)
     "requests_feed": True,      # recent completed requests table
+    "ssd_io_tile": True,        # sidebar SSD read/write tile
+    "ssd_chart": True,          # sidebar SSD MB/s chart (1 h)
+    "ssd_usage": True,          # sidebar SSD usage box (GB per hour/day, temperature)
     "refresh_s": 1.0,           # base UI refresh interval (0.5-30 s)
     "stats_scope": "all",       # all | active engine
     # theme + palette are NOT server settings: per-browser cookie (limcars_ui)
@@ -932,6 +935,8 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(rep, dict):
                 rep["audit"] = getattr(smp, "counter_audit", None)
             return self._json(rep)
+        if path == "/api/ssd":
+            return self._json(self.app.hw.ssd_report())
         m = re.fullmatch(r"/api/stat-models/?", path)
         if m:
             smp = self._picked_sampler(qs)

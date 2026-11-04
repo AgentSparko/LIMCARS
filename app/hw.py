@@ -107,6 +107,61 @@ def _nvidia_query() -> list[dict]:
     return _parse_nvidia(out)
 
 
+def _ssd_disk() -> str | None:
+    """Block device holding / (e.g. nvme0n1), or $LIMCARS_SSD_DEV."""
+    dev = os.environ.get("LIMCARS_SSD_DEV")
+    if dev:
+        return dev
+    try:
+        src = next((ln.split()[0] for ln in open("/proc/mounts", encoding="utf-8")
+                    if ln.split()[1:2] == ["/"] and ln.startswith("/dev/")), None)
+    except OSError:
+        return None
+    if not src:
+        return None
+    name = os.path.basename(os.path.realpath(src))
+    part = f"/sys/class/block/{name}/partition"
+    if os.path.exists(part):
+        name = os.path.basename(os.path.dirname(os.path.realpath(f"/sys/class/block/{name}")))
+    return name
+
+
+def _ssd_bytes(disk: str) -> tuple[int, int] | None:
+    """(read, written) bytes since boot for one disk; /proc/diskstats sectors are 512 B."""
+    try:
+        for ln in open("/proc/diskstats", encoding="utf-8"):
+            f = ln.split()
+            if len(f) > 9 and f[2] == disk:
+                return int(f[5]) * 512, int(f[9]) * 512
+    except OSError:
+        pass
+    return None
+
+
+def _ssd_temps(disk: str) -> dict:
+    """NVMe composite temperature plus its warning (max) and critical limits, °C."""
+    out: dict[str, float] = {}
+    base = f"/sys/class/block/{disk}/device"
+    try:
+        hws = [h for h in os.listdir(base) if h.startswith("hwmon")]
+    except OSError:
+        return out
+    for h in hws:
+        for k, f in (("temp", "temp1_input"), ("max", "temp1_max"), ("crit", "temp1_crit")):
+            try:
+                out[k] = int(open(f"{base}/{h}/{f}", encoding="utf-8").read()) / 1000.0
+            except (OSError, ValueError):
+                pass
+    return out
+
+
+def _boot_id() -> str:
+    try:
+        return open("/proc/sys/kernel/random/boot_id", encoding="utf-8").read().strip()
+    except OSError:
+        return ""
+
+
 def _hwmon_temp() -> dict:
     """Best-effort package temps from /sys/class/hwmon (no `sensors` dep)."""
     temps: dict[str, float] = {}
@@ -134,7 +189,7 @@ def _hwmon_temp() -> dict:
 _BASE_KEYS = ("cpu_pct", "cpu_temp_c", "load1", "load5", "mem_used_gb", "mem_total_gb",
               "mem_avail_gb", "swap_used_gb", "gpu_util", "gpu_temp_c",
               "gpu_power_w", "gpu_clock_mhz", "disk_r_mbs", "disk_w_mbs",
-              "net_r_mbs", "net_w_mbs")
+              "net_r_mbs", "net_w_mbs", "ssd_r_mbs", "ssd_w_mbs", "ssd_temp_c")
 
 
 def series_keys(last: dict) -> tuple:
@@ -158,6 +213,11 @@ class HwSampler(threading.Thread):
         self._stop = threading.Event()
         self._last_net = None
         self._persist_acc: list[tuple[float, dict]] = []
+        self.ssd_disk = _ssd_disk()
+        self.ssd_limits: dict = {}
+        self._ssd_prev = None          # (t, read, written) at the last tick
+        self._ssd_day_prev = None      # (read, written) at the last per-day flush
+        self._ssd_day_t = 0.0
         self.gpus: list[dict] = []   # static identity per card: index, name, vram
         psutil.cpu_percent(interval=None)  # prime
         psutil.net_io_counters()
@@ -170,6 +230,50 @@ class HwSampler(threading.Thread):
         keys = series_keys(self.ring.last() or {})
         return {"hz": self.hz, "latest": self.ring.last(), "gpus": self.gpus,
                 "series": {k: [[t, r.get(k)] for t, r in rows] for k in keys}}
+
+    def _ssd_tick(self, now: float, row: dict) -> None:
+        if not self.ssd_disk:
+            return
+        b = _ssd_bytes(self.ssd_disk)
+        if b is None:
+            return
+        if self._ssd_prev is not None:
+            dt = now - self._ssd_prev[0]
+            dr, dw = b[0] - self._ssd_prev[1], b[1] - self._ssd_prev[2]
+            if dt > 0 and dr >= 0 and dw >= 0:
+                row["ssd_r_mbs"] = round(dr / dt / 2**20, 2)
+                row["ssd_w_mbs"] = round(dw / dt / 2**20, 2)
+        self._ssd_prev = (now, b[0], b[1])
+        t = _ssd_temps(self.ssd_disk)
+        if "temp" in t:
+            row["ssd_temp_c"] = round(t["temp"], 1)
+        self.ssd_limits = {k: t[k] for k in ("max", "crit") if k in t}
+        # per-day totals: flushed once a minute; the raw counters are saved with the boot
+        # id, so a LIMCARS restart still books the bytes moved while it was down
+        if self.store and now - self._ssd_day_t >= 60.0:
+            self._ssd_day_t = now
+            self.store.ssd_add(now, b[0], b[1], _boot_id())
+
+    def ssd_report(self) -> dict:
+        """Whole-drive view: last hour from the 1 s ring, per day from the store."""
+        rows = self.ring.window(3600.0)
+        r = w = 0.0
+        prev_t = None
+        for t, x in rows:
+            if prev_t is not None and x.get("ssd_r_mbs") is not None:
+                dt = min(t - prev_t, 5.0)
+                r += x["ssd_r_mbs"] * dt
+                w += (x.get("ssd_w_mbs") or 0.0) * dt
+            prev_t = t
+        span = (rows[-1][0] - rows[0][0]) if len(rows) > 1 else 0.0
+        last = self.ring.last() or {}
+        b = _ssd_bytes(self.ssd_disk) if self.ssd_disk else None
+        return {"disk": self.ssd_disk, "temp_c": last.get("ssd_temp_c"),
+                "temp_max_c": self.ssd_limits.get("max"), "temp_crit_c": self.ssd_limits.get("crit"),
+                "hour": {"read_gb": round(r / 1024, 2), "written_gb": round(w / 1024, 2),
+                         "span_s": round(span)},
+                "since_boot": b and {"read_gb": round(b[0] / 2**30, 1), "written_gb": round(b[1] / 2**30, 1)},
+                "days": self.store.ssd_days(30) if self.store else []}
 
     def run(self) -> None:
         interval = 1.0 / max(0.25, self.hz)
@@ -234,6 +338,8 @@ class HwSampler(threading.Thread):
             row["cpu_temp_c"] = round(cpu_t, 1)
         for k, v in list(temps.items())[:6]:
             row[f"temp_{k}"] = round(v, 1)
+
+        self._ssd_tick(now, row)
 
         self.ring.append(row, now)
         self.broker.publish("hw", json.dumps({"t": now, **row}))
