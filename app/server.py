@@ -912,9 +912,11 @@ class Handler(BaseHTTPRequestHandler):
             if not smp or not self.app.store:
                 return self._json({"empty": True})
             win = (qs.get("window") or ["all"])[0]
-            return self._json(counters_mod.report(
-                self.app.store, smp.id, win, smp.model,
-                override=self.app.cfg.get("pricing")))
+            rep = counters_mod.report(self.app.store, smp.id, win, smp.model,
+                                      override=self.app.cfg.get("pricing"))
+            if isinstance(rep, dict):
+                rep["audit"] = getattr(smp, "counter_audit", None)
+            return self._json(rep)
         m = re.fullmatch(r"/api/engine-info/?", path)
         if m:
             from . import engine_info

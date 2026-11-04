@@ -920,6 +920,15 @@ async function renderCounters() {
     ['Spec accept (avg)', w.spec != null ? w.spec.toFixed(2) : '–'],
     ['All-time prefill / gen', fmtK(a.uncached) + ' / ' + fmtK(a.gen) + ' tok'],
   ];
+  const au = d.audit;
+  if (au) {
+    const since = new Date(au.since * 1000).toLocaleString('en-GB', {day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'});
+    const off = Object.entries(au.off || {});
+    rows.push(['Ledger check vs engine totals', au.ok
+      ? `<span style="color:var(--teal)">✓ matches</span> <span class="muted">· ${fmtK(au.engine.prompt)} prompt / ${fmtK(au.engine.gen)} gen since ${since}</span>`
+      : `<b style="color:var(--yellow)">⚠ ${off.map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${fmtK(v)}`).join(' · ')} tok</b>` +
+        ` <span class="muted">stored vs engine since ${since}</span>`]);
+  }
   rows.push([`<span class="muted">API · cache write · ${fmtK(w.uncached)} tok @ ${pf(p.cache_write)}</span>`, usd(w.uncached/1e6*p.cache_write)]);
   rows.push([`<span class="muted">API · cache read · ${fmtK(w.cached)} tok @ ${pf(p.cache_read_hot)}</span>`, usd(w.cached/1e6*p.cache_read_hot)]);
   rows.push([`<span class="muted">API · output · ${fmtK(w.gen)} tok @ ${pf(p.output)}</span>`, usd(w.gen/1e6*p.output)]);

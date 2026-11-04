@@ -144,6 +144,7 @@ class EngineSampler(threading.Thread):
             "id": self.id, "url": self.url, "kind": self.kind, "model": self.model,
             "alive": self.alive, "last_scrape": self.last_scrape,
             "proc_start": getattr(self, "proc_start_t", None),
+            "counter_audit": getattr(self, "counter_audit", None),
             "hz": self.hz, "window_s": self.window_s,
             "latest": self.ring.last(),
             "series": {k: [[t, r.get(k)] for t, r in rows] for k in SERIES_KEYS},
@@ -461,6 +462,7 @@ class EngineSampler(threading.Thread):
                 self._rate_prev = {k: float(saved[1].get(k, v)) if k in live else v
                                    for k, v in base.items()}
                 self._rate_prev_t = saved[0]
+                self._audit_anchor(saved[0], self._rate_prev)
             else:
                 # First-ever tracking run: credit the engine's lifetime totals
                 # in a seed bucket parked just OUTSIDE the 1 h window — old-dash
@@ -478,6 +480,7 @@ class EngineSampler(threading.Thread):
                         "synthetic": 1, "synth_kind": 1})   # estimate: hidden from totals
                 self._rate_prev = base
                 self._rate_prev_t = now
+                self._audit_anchor(now, base)
             self._rate_live = live
             return
         if now - self._rate_prev_t < 60.0:
@@ -499,6 +502,7 @@ class EngineSampler(threading.Thread):
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
             self._kv_pool = None    # new block config → re-parse pool
+            self._audit_anchor(now, base)
             return
         if _ps:
             self._ps_seen = _ps
@@ -517,6 +521,7 @@ class EngineSampler(threading.Thread):
         if dp < 0 or dg < 0 or dc < 0:              # engine restart → rebuild base
             self._rate_prev = base
             self._rate_prev_t = now
+            self._audit_anchor(now, base)
             self._rate_live = live
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
@@ -559,9 +564,46 @@ class EngineSampler(threading.Thread):
                 "synthetic": 1 if _gap else 0,
                 "synth_kind": 2 if _gap else 0,
                 **_money})
+        self._audit_check(now, base)
         self._rate_prev = base
         self._rate_prev_t = now
         self._rate_live = live
+
+    # --- ledger check: stored minutes vs the engine's own lifetime counters ---
+
+    def _audit_anchor(self, t: float, base: dict, since: float | None = None) -> None:
+        """Start a span (a fresh baseline: first sight, restore, engine restart). The next
+        bucket closed is keyed at this minute, so every bucket from it on belongs to the span."""
+        self._audit = {"t": t, "ts": int(t // 60) * 60, "base": dict(base),
+                       "since": t if since is None else since}
+        if since is None:
+            self.counter_audit = None
+
+    def _audit_check(self, now: float, base: dict) -> None:
+        """Do the minutes stored since the anchor add up to how far the engine's own counters
+        moved over the same span? The minutes are cut from those counters, so any difference
+        means traffic was lost or counted twice (a failed write, an import colliding with live
+        minutes, a reset misread). Measured and gap minutes count; lifetime seeds do not."""
+        a = getattr(self, "_audit", None)
+        if not a or not self.store:
+            return
+        tot = self.store.counter_totals(self.id, a["ts"], real_only=True)
+        keys = (("prompt", "prompt_tokens"), ("cached", "cached_tokens"), ("gen", "gen_tokens"))
+        eng = {k: base.get(c, 0.0) - a["base"].get(c, 0.0) for k, c in keys}
+        got = {k: 0.0 if tot.get("empty") else float(tot.get(k) or 0.0) for k, _ in keys}
+        off = {k: got[k] - eng[k] for k, _ in keys
+               if abs(got[k] - eng[k]) > max(1.0, 1e-6 * abs(eng[k]))}
+        prev = getattr(self, "counter_audit", None) or {}
+        done = {k: v for k, v in (prev.get("verified") or {}).items()} if a["since"] != a["t"] else {}
+        self.counter_audit = {"since": a["since"], "checked_at": now, "ok": not off, "off": off,
+                              "engine": {k: done.get(k, 0.0) + eng[k] for k, _ in keys},
+                              "stored": {k: done.get(k, 0.0) + got[k] for k, _ in keys},
+                              "verified": done}
+        # roll a verified span forward daily: old minutes fold into hourly rows whose hour can
+        # straddle the anchor, and a span that already matched has nothing left to prove
+        if not off and now - a["t"] > 86400:
+            self.counter_audit["verified"] = dict(self.counter_audit["engine"])
+            self._audit_anchor(now, base, since=a["since"])
 
     def _compute_savings(self, now: float, counters: dict) -> dict | None:
         """Cost of the same tokens via cloud API. IDENTICAL code path to the
