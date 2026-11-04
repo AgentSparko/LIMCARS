@@ -926,10 +926,21 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             if hit and now - hit[0] < 60.0:
                 return self._json(hit[1])
-            # every model each engine has served gets its own bars
-            engines = [{"id": k["key"], "model": k["model"] or s.model}
-                       for s in app.engines.all()
-                       for k in (app.store.stat_keys(s.id) or [{"key": s.skey, "model": s.model}])]
+            # every model each engine has served gets its own bars; the rows from
+            # before the per-model split are not the model served NOW, so they keep
+            # the engine's configured name (what was labelled/priced then)
+            engines = []
+            for s in app.engines.all():
+                keys = app.store.stat_keys(s.id) or [{"key": s.skey, "model": s.model}]
+                for k in keys:
+                    if k["model"]:
+                        engines.append({"id": k["key"], "model": k["model"]})
+                    elif len(keys) == 1:   # never re-served: its one history is the current model
+                        engines.append({"id": k["key"], "model": s.model or getattr(s, "label", None)})
+                    else:
+                        old = getattr(s, "label", None)
+                        engines.append({"id": k["key"], "model": old or s.model,
+                                        "label": f"{old or s.id} (before model split)"})
             payload = {"ok": True, **counters_mod.daily_savings(
                 app.store, engines, app.cfg.get("pricing"), days)}
             cache[days] = (now, payload)

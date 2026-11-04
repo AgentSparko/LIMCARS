@@ -13,6 +13,7 @@ helper nobody calls is exactly how the original bug survived review.
 """
 import inspect
 import pathlib
+import time
 
 from app.server import Handler
 
@@ -127,3 +128,20 @@ def test_sampler_stats_key_includes_the_model():
     assert s.skey == "p"
     s.model = "dsv41"
     assert s.skey == "p@dsv41"
+
+
+def test_savings_legend_keeps_pre_split_rows_off_the_current_model(tmp_path):
+    """Rows recorded before the per-model split are not the model served now (a port
+    re-served Qwen -> dsv41 showed months of Qwen days as dsv41 in the chart hover)."""
+    from app.counters import daily_savings
+    from app.store import Store
+    st = Store(str(tmp_path / "s.db"))
+    now = int(time.time()) // 60 * 60
+    st.save_counter_bucket("flashnext", now - 86400, _b(1000))
+    st.save_counter_bucket("flashnext@dsv41", now, _b(1000))
+    price = {"default": {"input": 1.0, "output": 1.0, "cache_read": 0.1}}
+    r = daily_savings(st, [{"id": "flashnext", "model": "Qwen3.8-Flash-Next",
+                            "label": "Qwen3.8-Flash-Next (before model split)"},
+                           {"id": "flashnext@dsv41", "model": "dsv41"}], price, 7)
+    assert r["models"]["flashnext"] == "Qwen3.8-Flash-Next (before model split)"
+    assert r["models"]["flashnext@dsv41"] == "dsv41"

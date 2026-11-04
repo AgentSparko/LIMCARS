@@ -90,6 +90,7 @@ class EngineSampler(threading.Thread):
         self.alive = False
         self.last_scrape = 0.0
         self.kind = eng.get("kind")
+        self.label = eng.get("label")   # configured name; the served one is self.model
         self.model = None
         self._prev: dict | None = None          # counters at last tick
         self._prev_t = 0.0

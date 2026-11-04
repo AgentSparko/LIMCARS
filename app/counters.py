@@ -187,7 +187,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
         if not price or not (price.get("output") or price.get("cache_write")
                              or price.get("cache_read") or price.get("input")):
             continue
-        models[eid] = model or eid
+        models[eid] = eng.get("label") or model or eid
         # machine occupancy for this window, straight from the minute rows:
         # hours a day the box was actually producing tokens (the stat the user
         # asked to see next to the money line — measured, never assumed)
