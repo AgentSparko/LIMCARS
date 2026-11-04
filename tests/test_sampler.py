@@ -207,3 +207,14 @@ def test_engine_restart_re_reads_the_model_at_once():
     s._rate_minute(t0, {"prompt_tokens": 900.0, "gen_tokens": 90.0, "cached_tokens": 0.0})
     s._rate_minute(t0 + 60.5, {"prompt_tokens": 10.0, "gen_tokens": 1.0, "cached_tokens": 0.0})
     assert s._models_next == 0.0
+
+
+def test_decode_avg_leaves_idle_ticks_out():
+    """User report: the Gen speed avg moved too fast and counted idle time. 20 s decoding at
+    30 tok/s then 60 s idle must still read 30, and keep reading it inside the 5 min window."""
+    s = _mk()
+    now = time.time() - 80
+    for i in range(40):
+        s._gen_ticks.append((now + i * 0.5, 15, 0.5))
+    assert abs(s._gen_active_rate(now + 80) - 30.0) < 1e-6
+    assert s._gen_active_rate(now + 20 + s.decode_avg_win_s + 1) is None

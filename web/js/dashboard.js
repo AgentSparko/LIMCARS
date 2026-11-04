@@ -20,7 +20,7 @@ const HERO = [];
 
 const BUBS = {
   'bub-main': [
-    { label: 'Gen speed', series: 'decode_tps_now', tip: 'Generated tokens per second right now, plus the average. Dims while the engine is not decoding.', color: () => COLORS.green,
+    { label: 'Gen speed', series: 'decode_tps_now', tip: 'Generated tokens per second right now, plus the average over the last 5 min of decoding (idle time left out). Dims while the engine is not decoding.', color: () => COLORS.green,
       dimWhen: 'decode_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.decode_tps_now), sub: l => `tok/s now · avg ${tps(l.decode_tps_avg)}` },

@@ -11,7 +11,8 @@ near-real-time rates by differencing:
                                                           below is the truth)
     prefill_tps_avg  Σ(Δprompt − Δprefix_hits) / ΣΔprefill_time over window_s
                      (uncached tokens per second of ACTUAL prefill compute)
-    decode_tps_avg   ΣΔgen    / ΣΔt over window_s
+    decode_tps_avg   ΣΔgen / ΣΔt over the ticks that generated, last
+                     decode_avg_window_s (5 min): idle time is not averaged in
     cache_hit_pct    Δprefix_hits / Δprefix_queries over window_s
     spec_accept_pct  Δaccepted / Δdraft over window_s
     ttft_p50_ms …    linear-interpolated quantiles over the DELTA of histogram
@@ -86,6 +87,10 @@ class EngineSampler(threading.Thread):
         # settle window (2 min by default) — which also keeps this gauge slow,
         # the standing rule for any speed/latency bubble.
         self.prefill_win_s = float(cfg.get("prefill_window_s", 120.0))
+        # decode average: only ticks that generated count, over a longer window than
+        # window_s so the "avg" next to the live number does not chase it
+        self.decode_avg_win_s = float(cfg.get("decode_avg_window_s", 300.0))
+        self._gen_ticks: list = []
         self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
         self.alive = False
         self.last_scrape = 0.0
@@ -263,6 +268,9 @@ class EngineSampler(threading.Thread):
                 row[key] = None if (key == "prefill_tps_now"
                                     and v > PREFILL_MAX) else v
             self._win_delta(logical, cur, old, now, dt)
+            if logical == "gen_tokens" and cur is not None and old is not None and dt > 0 and cur > old:
+                self._gen_ticks.append((now, cur - old, dt))
+                _trim(self._gen_ticks, now - self.decode_avg_win_s)
         for logical in ("drafts", "draft_tokens", "accepted_tokens", "spec_steps_ok", "spec_steps",
                         "prefix_hits", "prefix_queries",
                         "prefill_tokens", "prefill_seconds",
@@ -325,7 +333,7 @@ class EngineSampler(threading.Thread):
             row["decode_active"] = (now - self._gen_last_move) < 1.5
         row["decode_tps_avg"] = (self._paired_rate("gen_tokens", "decode_seconds")
                                  if dial.get("gen_completion_charged")
-                                 else self._win_rate("gen_tokens"))
+                                 else self._gen_active_rate(now))
         if row["decode_tps_avg"] is None and dial.get("gen_completion_charged"):
             # no decode-seconds counter to pair with: fall back to the plain
             # window token rate (aggregate incl. idle gaps — the same
@@ -710,6 +718,14 @@ class EngineSampler(threading.Thread):
         self._pf_last_sum = None
         self._pf_last_move = 0.0
         self._gen_last_move = 0.0
+        self._gen_ticks = []
+
+    def _gen_active_rate(self, now: float) -> float | None:
+        """Tokens per second of the ticks that generated, over decode_avg_window_s."""
+        floor_t = now - self.decode_avg_win_s
+        ticks = [(d, dt) for t, d, dt in self._gen_ticks if t >= floor_t]
+        span = sum(dt for _, dt in ticks)
+        return sum(d for d, _ in ticks) / span if span else None
 
     # --- windowed counter deltas ---
 
