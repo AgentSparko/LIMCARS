@@ -244,3 +244,33 @@ def test_loop_warning_needs_every_draft_accepted_for_loop_warn_s():
     for i in range(1, 12):
         r = tick(t1 + 41 + i * 0.5, 0.5)
     assert r["loop_suspect"] is False
+
+
+def test_kv_tile_holds_the_peak_only_for_listed_models():
+    """DSV4.1 flips 0.70 <-> 1.02 % for ~1 s every 128 tokens: its tile shows the 10 s peak,
+    every other model keeps the raw reading."""
+    for model, want in (("dsv41", 1.02), ("Qwen3.8-Flash-Next", 0.7)):
+        s = _mk()
+        s.model = model
+        t0 = time.time()
+        for i, v in enumerate((0.70, 1.02, 0.70, 0.70)):
+            row = {"kv_pct": v}
+            s._kv_peak(t0 + i * 0.5, row)
+        assert row["kv_pct_shown"] == want, (model, row)
+        assert (row["kv_pct_peak_s"] is not None) == (model == "dsv41")
+    row = {"kv_pct": 0.70}
+    s = _mk(); s.model = "dsv41"
+    s._kv_peak(t0, {"kv_pct": 1.02})
+    s._kv_peak(t0 + 11, row)                       # the spike left the 10 s window
+    assert row["kv_pct_shown"] == 0.70
+
+
+def test_kv_pool_uses_vllms_own_token_capacity_when_published():
+    """Hybrid models: blocks x block_size said 603K tokens, vLLM's own figure is 959,768."""
+    import re
+    body = ('vllm:cache_config_info{block_size="128",kv_cache_size_tokens="959768",'
+            'num_gpu_blocks="4712"} 1.0\n')
+    m_tok = re.search(r'kv_cache_size_tokens="(\d+)"', body)
+    assert m_tok and int(m_tok.group(1)) == 959768
+    src = open("app/sampler.py", encoding="utf-8").read()
+    assert src.index("kv_cache_size_tokens") < src.index("int(m_nb.group(1)) * int(m_bs.group(1))")

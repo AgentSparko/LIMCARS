@@ -65,7 +65,7 @@ eq('engine 2 has no idea what engine 1 saw', seriesSample('kv_pct', 0, {}, e2), 
 eq('engine 1 still holds its own', seriesSample('kv_pct', 0, {}, e1), 11.0);
 eq('policy tables stay small and explicit',
    [Object.keys(RATE_WHILE_ACTIVE).sort(), [...HOLD_LAST_NONZERO].sort()],
-   [['decode_tps_avg', 'decode_tps_now', 'prefill_tps_avg', 'prefill_tps_now'], ['kv_pct']]);
+   [['decode_tps_avg', 'decode_tps_now', 'prefill_tps_avg', 'prefill_tps_now'], ['kv_pct', 'kv_pct_shown']]);
 
 // --- 6. the renderer: a gap must not become a plunge ----------------------------
 // spark() draws only finite samples, so a null leaves the shape (and the y range)

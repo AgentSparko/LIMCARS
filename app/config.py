@@ -71,6 +71,9 @@ DEFAULTS = {
     # a curve the user can see. Store warns when this is too low; keep it at 8 days or more.
     "spark_hours": 192,
     "window_s": 30.0,        # window for p50 / avg derived stats
+    # served-model regex -> N s: the KV tile shows the highest reading of the last N s for these
+    # models only (DSV4.1 on vLLM reports a 1 s sawtooth every 128 tokens); {} = raw everywhere
+    "kv_peak_models": {"dsv4|deepseek-v4": 10.0},
     "pricing": None,         # None -> resolve model against data/pricing.json
     "engines": [
         {"id": "flashnext", "url": "http://127.0.0.1:8000", "kind": None,

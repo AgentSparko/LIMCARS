@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, rateZerosToGaps, RATE_FIELDS, HOLD_LAST_NONZERO } from './charts.js?v=20261029b';
+import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, rateZerosToGaps, RATE_FIELDS, HOLD_LAST_NONZERO } from './charts.js?v=20261104h';
 
 const state = {
   store: new SeriesStore(4000),
@@ -32,10 +32,12 @@ const BUBS = {
       dimWhen: 'prefill_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.prefill_tps_avg), sub: l => `uncached tok / prefill-sec · burst ${tps(l.prefill_tps_now)}` },
-    { label: 'KV cache used', hot: true, tip: "Share of the engine's KV token pool in use. Idle vLLM reports 0 while prefix-cached blocks stay resident, so the last non-zero reading is held.", series: 'kv_pct', color: () => COLORS.yellow, holdZero: true,
+    { label: 'KV cache used', hot: true, tip: "Share of the engine's KV token pool in use. Idle vLLM reports 0 while prefix-cached blocks stay resident, so the last non-zero reading is held. For models listed in kv_peak_models (DeepSeek V4.1, whose reading jumps for ~1 s every 128 tokens) it is the highest reading of the last few seconds, and says so.", series: 'kv_pct_shown', color: () => COLORS.yellow, holdZero: true,
       sparkFmt: v => v.toFixed(1) + ' %',
-      main: l => pct(l.kv_pct),
-      sub: l => l.kv_pool_tokens
+      main: l => pct(l.kv_pct_shown ?? l.kv_pct),
+      sub: l => l.kv_pct_peak_s
+        ? `highest of last ${Math.round(l.kv_pct_peak_s)} s · now ${pct(l.kv_pct)} · ${fmtK(l.kv_pool_tokens ?? 0)} tok pool`
+        : l.kv_pool_tokens
         ? `${fmtK(l.kv_used_tokens ?? 0)} / ${fmtK(l.kv_pool_tokens)} tok used · ${fmtK(l.kv_free_tokens ?? 0)} free`
         : '% of token pool' },
     { label: 'Running reqs', series: 'running', tip: "Requests being decoded now; 'waiting' are queued for a slot.", color: () => COLORS.green,
@@ -874,7 +876,7 @@ async function connect() {
           e.latest = o; e.rx = Date.now();
           if (e.meta) { e.meta.latest = o; e.meta.alive = true; }
           for (const k of ['prefill_tps_now','decode_tps_now','prefill_tps_avg','decode_tps_avg',
-                           'running','waiting','kv_pct','ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
+                           'running','waiting','kv_pct','kv_pct_shown','ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
                            'e2e_p50_ms','cache_hit_pct','spec_accept_pct','spec_step_accept_pct','spec_accept_len',
                            'draft_tok_per_step','gen_peak','prompt_total','gen_total'])
             // seriesSample keeps the curve honest about what the number above it says:

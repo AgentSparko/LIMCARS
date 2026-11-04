@@ -40,6 +40,9 @@ from . import dialects, prom
 from .rings import Ring
 from .sse import Broker
 
+# models whose KV usage reading flips on every block boundary (see EngineSampler._kv_peak)
+DEFAULT_KV_PEAK_MODELS = {r"dsv4|deepseek-v4": 10.0}
+
 
 _HIST_LOGICALS = ("ttft", "itl", "prefill_time", "decode_time", "queue_time", "e2e")
 _HIST_KEYS = {lg: (f"{lg}_p50_ms", f"{lg}_avg_ms", f"{lg}_n",
@@ -47,6 +50,7 @@ _HIST_KEYS = {lg: (f"{lg}_p50_ms", f"{lg}_avg_ms", f"{lg}_n",
               for lg in _HIST_LOGICALS}
 SERIES_KEYS = ("prefill_tps_now", "decode_tps_now", "prefill_tps_avg",
                "decode_tps_avg", "running", "waiting", "kv_pct",
+               "kv_pct_shown", "kv_pct_peak_s",
                "kv_pool_tokens", "kv_used_tokens", "kv_free_tokens",
                "ttft_p50_ms", "itl_p50_ms", "queue_time_p50_ms", "e2e_p50_ms",
                "cache_hit_pct", "cache_hit_life_pct",
@@ -94,6 +98,9 @@ class EngineSampler(threading.Thread):
         # loop warning: every MTP draft accepted, step after step, for loop_warn_s
         self.loop_win_s = float(cfg.get("loop_window_s", 5.0))
         self.loop_warn_s = float(cfg.get("loop_warn_s", 30.0))
+        # served-model regex -> seconds: the KV tile shows the highest reading of that window
+        self.kv_peak_models = cfg.get("kv_peak_models", DEFAULT_KV_PEAK_MODELS)
+        self._kv_hist: deque = deque()
         self._full_accept_since = None
         self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
         self.alive = False
@@ -226,9 +233,14 @@ class EngineSampler(threading.Thread):
         # KV pool size (tokens) is static config — parse once: the bubble then
         # can show used/free in TOKENS, not just percent
         if getattr(self, "_kv_pool", None) is None:
+            # vLLM's own token capacity when it publishes one: on a hybrid model (DSV4.1 has
+            # 17 KV cache groups) blocks x block_size undercounts it (603K vs 959,768)
+            m_tok = re.search(r'kv_cache_size_tokens="(\d+)"', body)
             m_nb = re.search(r'num_gpu_blocks="(\d+)"', body)
             m_bs = re.search(r'block_size="(\d+)"', body)
-            if m_nb and m_bs:
+            if m_tok:
+                self._kv_pool = int(m_tok.group(1))
+            elif m_nb and m_bs:
                 self._kv_pool = int(m_nb.group(1)) * int(m_bs.group(1))
         series = prom.parse(body)
         if not self.kind:
@@ -448,6 +460,7 @@ class EngineSampler(threading.Thread):
             pool = int(gauges["kv_pool_tokens"])
             used = int(gauges.get("kv_used_tokens") or 0)
             row["kv_pool_tokens"], row["kv_used_tokens"], row["kv_free_tokens"] = pool, used, max(0, pool - used)
+        self._kv_peak(now, row)
         ps = counters.get("proc_start")
         if ps:
             self.proc_start_t = ps
@@ -726,6 +739,29 @@ class EngineSampler(threading.Thread):
         self._gen_last_move = 0.0
         self._gen_ticks = []
         self._full_accept_since = None
+
+    def _kv_peak_window(self) -> float:
+        for pat, secs in (self.kv_peak_models or {}).items():
+            if self.model and re.search(pat, self.model, re.I):
+                return float(secs)
+        return 0.0
+
+    def _kv_peak(self, now: float, row: dict) -> None:
+        """kv_pct_shown: the raw reading, or for models listed in kv_peak_models the highest
+        reading of the last N s. DSV4.1 on vLLM flips 0.70 <-> 1.02 % for ~1 s every 128
+        generated tokens (a new block in each KV cache group, then the sliding-window groups
+        free theirs), which made the tile jump with one request running."""
+        raw = row.get("kv_pct")
+        win = self._kv_peak_window()
+        if not win or raw is None:
+            self._kv_hist.clear()
+            row["kv_pct_shown"], row["kv_pct_peak_s"] = raw, None
+            return
+        self._kv_hist.append((now, raw))
+        while self._kv_hist and self._kv_hist[0][0] < now - win:
+            self._kv_hist.popleft()
+        row["kv_pct_shown"] = max(v for _, v in self._kv_hist)
+        row["kv_pct_peak_s"] = win
 
     def _loop_signal(self, now: float, row: dict) -> None:
         """How long the speculative drafts have been accepted in full, step after step.

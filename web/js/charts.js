@@ -71,7 +71,7 @@ export const RATE_WHILE_ACTIVE = {
 // Fields that report a false 0 while idle (vLLM: kv_cache_usage_perc = 0 while the
 // prefix-cached blocks are still resident). The number holds the last real reading;
 // the curve must hold it too, or the two visibly contradict each other.
-export const HOLD_LAST_NONZERO = new Set(['kv_pct']);
+export const HOLD_LAST_NONZERO = new Set(['kv_pct', 'kv_pct_shown']);
 
 /**
  * The value to append for one engine field on one frame — pure, so it can be tested
