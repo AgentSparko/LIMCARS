@@ -253,6 +253,9 @@ def own_addresses():
     return {a for a in found if a}
 
 
+HOST_REPROBE_S = 30.0
+
+
 def host_allowlist(cfg):
     """Names a Host header may carry: the loopback names, the bound address when
     it is a real one (not 0.0.0.0/::), every address this machine owns, plus
@@ -353,13 +356,18 @@ class Handler(BaseHTTPRequestHandler):
     def _is_local(self) -> bool:
         return self._client_ip() in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
-    def _allowed_hosts(self):
-        """host_allowlist(), cached on the app so the socket probes run once."""
+    def _allowed_hosts(self, refresh=False):
+        """host_allowlist(), cached on the app so the socket probes run once.
+        refresh=True re-probes (at most every HOST_REPROBE_S): at boot the service
+        can start before the LAN link is up, and a list cached then would refuse
+        the machine's own LAN address until restart."""
         cached = getattr(self.app, "_host_allowlist", None)
-        if cached is None:
+        at = getattr(self.app, "_host_allowlist_at", 0.0)
+        if cached is None or (refresh and time.monotonic() - at >= HOST_REPROBE_S):
             cached = host_allowlist(self.app.cfg)
             try:
                 self.app._host_allowlist = cached
+                self.app._host_allowlist_at = time.monotonic()
             except Exception:  # noqa: BLE001 - a stub app in tests just recomputes
                 pass
         return cached
@@ -379,7 +387,7 @@ class Handler(BaseHTTPRequestHandler):
         if not host:
             self._err(400, "missing Host header")
             return False
-        if host not in self._allowed_hosts():
+        if host not in self._allowed_hosts() and host not in self._allowed_hosts(refresh=True):
             self._err(421, "unknown host")
             return False
         if not unsafe:

@@ -371,6 +371,26 @@ def test_guard_refuses_a_host_that_is_not_this_machine():
     assert h.responses and h.responses[0][0] == 421, h.responses
 
 
+def test_guard_reprobes_own_addresses_when_the_cached_list_predates_the_lan_link(monkeypatch):
+    """Boot race: the service starts before the LAN address exists, so the first
+    allowlist lacks it. A later request by that address must re-probe and pass,
+    and a stranger must still get 421 without re-probing more than once per window."""
+    addrs = {"127.0.0.1"}
+    probes = []
+    monkeypatch.setattr(srv, "own_addresses", lambda: (probes.append(1), set(addrs))[1])
+    h = _guarded(LOCAL, {"Host": ["127.0.0.1:8951"]}, cfg={"host": "0.0.0.0"})
+    assert h._guard_request(unsafe=False) is True
+    h.app._host_allowlist_at = -1e9  # pretend the boot-time probe is old
+    addrs.add("192.0.2.10")
+    h.headers = _Hdrs({"Host": ["192.0.2.10:8951"]})
+    assert h._guard_request(unsafe=False) is True
+    n = len(probes)
+    h.headers = _Hdrs({"Host": ["evil.example:8951"]})
+    assert h._guard_request(unsafe=False) is False
+    assert h.responses[-1][0] == 421
+    assert len(probes) == n  # inside the window: no second probe
+
+
 def test_guard_refuses_a_missing_host_header():
     h = _guarded(LOCAL, {})
     assert h._guard_request(unsafe=False) is False
