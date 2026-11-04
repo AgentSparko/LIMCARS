@@ -139,7 +139,7 @@ def test_savings_legend_keeps_pre_split_rows_off_the_current_model(tmp_path):
     now = int(time.time()) // 60 * 60
     st.save_counter_bucket("flashnext", now - 86400, _b(1000))
     st.save_counter_bucket("flashnext@dsv41", now, _b(1000))
-    price = {"default": {"input": 1.0, "output": 1.0, "cache_read": 0.1}}
+    price = {"input": 1.0, "output": 1.0, "cache_read": 0.1}   # manual override: no pricing.json on CI
     r = daily_savings(st, [{"id": "flashnext", "model": "Qwen3.8-Flash-Next",
                             "label": "Qwen3.8-Flash-Next (before model split)"},
                            {"id": "flashnext@dsv41", "model": "dsv41"}], price, 7)
