@@ -218,3 +218,29 @@ def test_decode_avg_leaves_idle_ticks_out():
         s._gen_ticks.append((now + i * 0.5, 15, 0.5))
     assert abs(s._gen_active_rate(now + 80) - 30.0) < 1e-6
     assert s._gen_active_rate(now + 20 + s.decode_avg_win_s + 1) is None
+
+
+def test_loop_warning_needs_every_draft_accepted_for_loop_warn_s():
+    """User report: an exact loop shows on the decode chart as a flat band at the ceiling. Its
+    cause is MTP acceptance pinned at the maximum; normal decode accepts about half the drafts."""
+    s = _mk()
+    t0 = time.time() - 100
+    def tick(t, acc_ratio):
+        row = {}
+        for lg, d in (("drafts", 8), ("draft_tokens", 40), ("accepted_tokens", 40 * acc_ratio)):
+            s._win_delta(lg, 1000 + d, 1000, t, 0.5)
+        s._loop_signal(t, row)
+        return row
+    for i in range(80):                       # 40 s of normal decode
+        r = tick(t0 + i * 0.5, 0.45)
+    assert r["spec_full_accept_s"] == 0.0 and r["loop_suspect"] is False
+    t1 = t0 + 40
+    for i in range(1, 81):                    # then 40 s of full acceptance
+        r = tick(t1 + i * 0.5, 1.0)
+        if i * 0.5 < 25:
+            assert r["loop_suspect"] is False
+    assert r["loop_suspect"] is True and 30 <= r["spec_full_accept_s"] <= 41
+    r = tick(t1 + 41, 0.5)                    # one ordinary stretch clears it once it fills the window
+    for i in range(1, 12):
+        r = tick(t1 + 41 + i * 0.5, 0.5)
+    assert r["loop_suspect"] is False

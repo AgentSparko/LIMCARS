@@ -91,6 +91,10 @@ class EngineSampler(threading.Thread):
         # window_s so the "avg" next to the live number does not chase it
         self.decode_avg_win_s = float(cfg.get("decode_avg_window_s", 300.0))
         self._gen_ticks: list = []
+        # loop warning: every MTP draft accepted, step after step, for loop_warn_s
+        self.loop_win_s = float(cfg.get("loop_window_s", 5.0))
+        self.loop_warn_s = float(cfg.get("loop_warn_s", 30.0))
+        self._full_accept_since = None
         self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
         self.alive = False
         self.last_scrape = 0.0
@@ -276,6 +280,8 @@ class EngineSampler(threading.Thread):
                         "prefill_tokens", "prefill_seconds",
                         "prefill_compute_tokens", "decode_seconds"):
             self._win_delta(logical, counters.get(logical), prev.get(logical), now, dt)
+
+        self._loop_signal(now, row)
 
         # --- window averages ---
         # Prefill truth: vLLM charges prompt_tokens at request COMPLETION, so a
@@ -719,6 +725,28 @@ class EngineSampler(threading.Thread):
         self._pf_last_move = 0.0
         self._gen_last_move = 0.0
         self._gen_ticks = []
+        self._full_accept_since = None
+
+    def _loop_signal(self, now: float, row: dict) -> None:
+        """How long the speculative drafts have been accepted in full, step after step.
+
+        A model stuck in an exact loop is predicted perfectly by its own draft head, so
+        acceptance pins at the maximum: on DSV4.1 (K=5) a real 9-minute Hermes reasoning
+        loop read 6.00 tokens/step every minute, normal reasoning 2-3. Judged over
+        loop_window_s of steps so one lucky stretch does not count.
+        """
+        since = now - self.loop_win_s
+        drafts = self._win_sum("drafts", since) or 0
+        dtok = self._win_sum("draft_tokens", since) or 0
+        acc = self._win_sum("accepted_tokens", since) or 0
+        if drafts >= 10 and dtok > 0 and acc >= 0.98 * dtok:
+            if self._full_accept_since is None:
+                self._full_accept_since = since
+        else:
+            self._full_accept_since = None
+        secs = now - self._full_accept_since if self._full_accept_since is not None else 0.0
+        row["spec_full_accept_s"] = round(secs, 1)
+        row["loop_suspect"] = secs >= self.loop_warn_s
 
     def _gen_active_rate(self, now: float) -> float | None:
         """Tokens per second of the ticks that generated, over decode_avg_window_s."""

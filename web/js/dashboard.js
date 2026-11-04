@@ -20,10 +20,14 @@ const HERO = [];
 
 const BUBS = {
   'bub-main': [
-    { label: 'Gen speed', series: 'decode_tps_now', tip: 'Generated tokens per second right now, plus the average over the last 5 min of decoding (idle time left out). Dims while the engine is not decoding.', color: () => COLORS.green,
+    { label: 'Gen speed', series: 'decode_tps_now', tip: 'Generated tokens per second right now, plus the average over the last 5 min of decoding (idle time left out). Dims while the engine is not decoding. Turns red with \'possible loop\' when every speculative draft has been accepted for 30 s straight: the signature of a model stuck repeating itself.', color: () => COLORS.green,
       dimWhen: 'decode_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
-      main: l => tps(l.decode_tps_now), sub: l => `tok/s now · avg ${tps(l.decode_tps_avg)}` },
+      alertWhen: 'loop_suspect',
+      main: l => tps(l.decode_tps_now),
+      sub: l => l.loop_suspect
+        ? `⚠ possible loop · every draft accepted for ${Math.round(l.spec_full_accept_s)} s`
+        : `tok/s now · avg ${tps(l.decode_tps_avg)}` },
     { label: 'Prefill speed', series: 'prefill_tps_avg', tip: 'Uncached prompt tokens per second of actual prefill time. Cache hits are excluded and attribution is capped, so prompt tokens charged at completion never read as a fake prefill burst.', color: () => COLORS.teal, dimZero: true,
       dimWhen: 'prefill_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
@@ -559,6 +563,7 @@ function refresh() {
       // instantaneous 2 Hz per-tick values flicker bright/dark mid-stream
       (!!ref.d.dimZero && l[ref.d.series] === 0) ||
       (!!ref.d.dimWhen && l[ref.d.dimWhen] === false));
+    if (ref.d.alertWhen) ref.el.classList.toggle('alert', l[ref.d.alertWhen] === true);
     if (ref.sp && ref.d.series) {
       if (ref.d.life) {
         spark(ref.sp, (state._cacheHitLife || []).map(r => r[1]), ref.d.color,
