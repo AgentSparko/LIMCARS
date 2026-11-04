@@ -390,7 +390,19 @@ def run_tier(db: str, minute_days: float, history_years: float,
         finally:
             s._con.close()
 
-    before = reader_total(1e6)          # nothing folded yet: the minutes are the whole truth
+    # Before the fold the minutes are the whole truth WHERE THEY EXIST. On an install that has
+    # already aged minutes out (the app's own retention does that nightly), the hours below the
+    # oldest minute are the only copy of that traffic: a reader with an infinite minute window
+    # skipped them, read the history as smaller than the dashboard does, and refused every fold
+    # (observed live: 42 hours / 350.8 M prompt tokens). Put the reader's horizon exactly at the
+    # oldest minute's hour: minutes above it, the ladder below it, no double count in between.
+    c0 = sqlite3.connect(db, timeout=120)
+    try:
+        oldest = c0.execute("SELECT MIN(ts) FROM counter_buckets").fetchone()[0]
+    finally:
+        c0.close()
+    before = reader_total(1e6 if oldest is None else
+                          max(1.0, (time.time() - int(oldest) // 3600 * 3600) / 86400))
     con = sqlite3.connect(db, timeout=120)
     try:
         tiers.ensure_schema(con)

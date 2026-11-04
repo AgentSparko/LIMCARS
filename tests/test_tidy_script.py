@@ -240,3 +240,28 @@ def test_tier_still_counts_an_engine_whose_minutes_all_aged_out(tmp_path, monkey
 
 def _diff(a, b):
     return {k: (a[k], b[k]) for k in a if a[k] != b[k]}
+
+
+def test_tier_counts_hours_whose_minutes_the_app_already_aged_out(tmp_path, monkeypatch, capsys):
+    """The app's own retention folds and trims minutes past minute_bucket_days. After that the
+    hour rows are the only copy of that traffic; the fold's 'before' reader used an infinite
+    minute window, skipped them, and refused every later fold (rc 4) on a healthy install."""
+    from app import tiers
+    db = str(tmp_path / "t.db")
+    Store(db)._con.close()
+    now = int(time.time())
+    old = (now - 40 * 86400) // 3600 * 3600
+    con = sqlite3.connect(db)
+    row = "INSERT INTO counter_buckets(engine, ts, prompt, cached, gen, reqs, iters) VALUES ('e1', ?, 1000, 0, 100, 1, 1)"
+    con.executemany(row, [(old + h * 3600 + m * 60,) for h in range(6) for m in range(5)])
+    con.commit()
+    tiers.enforce_retention(con, minute_days=30, history_years=6)
+    con.commit()
+    assert con.execute("SELECT COUNT(*) FROM counter_buckets").fetchone()[0] == 0
+    con.executemany(row, [((now - 3600) // 60 * 60 + m * 60,) for m in range(5)])
+    con.commit()
+    con.close()
+    monkeypatch.setattr(tidy, "server_holds", lambda p: None)
+    rc = tidy.main(["--db", db, "--tier", "--quiet", "--minute-days", "30", "--history-years", "6"])
+    _, err = capsys.readouterr()
+    assert rc == 0, err
