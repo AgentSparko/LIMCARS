@@ -142,6 +142,10 @@ const eng = () => {
   return ids.find(up) || sel || ids[0];
 };
 const latest = () => (state.engines[eng()] || {}).latest || {};
+// token counters for a model this engine served earlier (?model=; '-' = minutes stored
+// before stats were split per model); unset = the model it serves now
+state.statModel = {};
+const statQ = () => state.statModel[eng()] ? '&model=' + encodeURIComponent(state.statModel[eng()]) : '';
 // sidebar hardware source: this box, or a cluster node picked in the sidebar
 const hwNode = () => (state.nodeSel && state.nodes && state.nodes[state.nodeSel]) || null;
 const hwPrefix = () => hwNode() ? `hw@${state.nodeSel}` : 'hw';
@@ -610,8 +614,10 @@ function refresh() {
   const e = state.engines[eng()] || {};
   const meta = e.meta || {};
   document.querySelector('#engine-dot').className = 'dot ' + (meta.alive ? 'up' : 'down');
-  document.querySelector('#engine-name').textContent = `${meta.model || meta.kind || '–'} @ ${meta.url || ''}`;
-  document.querySelector('#engine-caret').hidden = Object.keys(state.engines).length < 2;
+  const sm = state.statModel[eng()];
+  document.querySelector('#engine-name').textContent = `${meta.model || meta.kind || '–'} @ ${meta.url || ''}` +
+    (sm ? ` · stats: ${sm === '-' ? 'before model split' : String(sm).split('/').pop()}` : '');
+  document.querySelector('#engine-caret').hidden = false;
   updateTabStatus(meta);
   renderStaleBanner(meta);
   adaptHwCharts(hwLatest());
@@ -903,7 +909,7 @@ async function renderCounters() {
     `<button class="pill tiny${l===cntLabel?' on':''}" data-l="${l}">${t}</button>`).join('');
   tabs.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { cntLabel = b.dataset.l; renderCounters(); });
   let d;
-  try { d = await (await fetch('/api/counters?window=' + cntLabel + '&engine=' + encodeURIComponent(eng()))).json(); }
+  try { d = await (await fetch('/api/counters?window=' + cntLabel + '&engine=' + encodeURIComponent(eng()) + statQ())).json(); }
   catch (e) { return; }  // audit: uncaught rejection every 30 s during outages
   state._savSparks = d.sparks || state._savSparks || {};
   const tbl = document.querySelector('#cnt-tbl');
@@ -1751,15 +1757,36 @@ function wireEngineSwitcher() {
     pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 280)) + 'px';
     pop.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
+    fetch('/api/stat-models?engine=' + encodeURIComponent(cur)).then(r => r.json()).then(d => {
+      const past = (d.models || []).filter(m => m.model !== d.current);
+      if (pop.hidden || !past.length) return;
+      const pick = state.statModel[cur];
+      const day = t => t ? new Date(t * 1000).toISOString().slice(0, 10) : '?';
+      pop.insertAdjacentHTML('beforeend', `<div class="eng-sec muted small">Token stats for</div>` +
+        [{ model: '', key: '' }, ...past].map(m => {
+          const v = m.key === '' ? '' : (m.model || '-');
+          const name = m.key === '' ? (d.current || 'current model') + ' (now)'
+            : m.model ? m.model : 'before model split';
+          return `<button role="option" data-stat="${escH(v)}" aria-selected="${(pick || '') === v}">` +
+            `<span class="mono">${escH(name)}</span>` +
+            (m.key ? `<span class="eng-url">${day(m.first)} → ${day(m.last)}</span>` : '') + `</button>`;
+        }).join(''));
+    }).catch(() => {});
     (pop.querySelector('[aria-selected="true"]') || pop.querySelector('button'))?.focus();
   };
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    if (Object.keys(state.engines).length < 2) return;
     pop.hidden ? open() : close();
   });
   pop.addEventListener('click', e => {
     e.stopPropagation();
+    const st = e.target.closest('button[data-stat]');
+    if (st) {
+      close(); btn.focus();
+      if (st.dataset.stat) state.statModel[eng()] = st.dataset.stat; else delete state.statModel[eng()];
+      renderCounters(); refresh();
+      return;
+    }
     const b = e.target.closest('button[data-eng]');
     if (!b) return;
     close(); btn.focus();

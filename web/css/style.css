@@ -186,6 +186,7 @@ html[data-theme="light"] .feed .row { border-bottom-color: #e3e8f2; }
 }
 .engine-pop button:hover, .engine-pop button:focus-visible { background: var(--panel-2); border-color: var(--line); }
 .engine-pop button[aria-selected="true"] { border-color: var(--accent-border); }
+.engine-pop .eng-sec { padding: 8px 10px 2px; border-top: 1px solid var(--line); margin-top: 4px; }
 .engine-pop .eng-url { color: var(--muted); font: 11px var(--mono); margin-left: auto; padding-left: 12px; }
 .feed .t { color: var(--muted); }
 .grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }

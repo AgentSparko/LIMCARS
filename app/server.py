@@ -769,6 +769,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------- API ----------------
 
+    @staticmethod
+    def _stats_key(smp, qs: dict) -> tuple[str, str | None]:
+        """(store key, model) for ?model=: a model this engine served before,
+        '-' for minutes stored before the per-model split; default = live model."""
+        want = (qs.get("model") or [""])[0]
+        if want == "-":
+            return smp.id, None
+        if want and want != smp.model:
+            return f"{smp.id}@{want}", want
+        return getattr(smp, "skey", smp.id), smp.model
+
     def _picked_sampler(self, qs: dict):
         """The engine the browser is actually showing (tests/test_engine_selection.py).
 
@@ -881,7 +892,10 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             if hit and now - hit[0] < 60.0:
                 return self._json(hit[1])
-            engines = [{"id": s.id, "model": s.model} for s in app.engines.all()]
+            # every model each engine has served gets its own bars
+            engines = [{"id": k["key"], "model": k["model"] or s.model}
+                       for s in app.engines.all()
+                       for k in (app.store.stat_keys(s.id) or [{"key": s.skey, "model": s.model}])]
             payload = {"ok": True, **counters_mod.daily_savings(
                 app.store, engines, app.cfg.get("pricing"), days)}
             cache[days] = (now, payload)
@@ -896,7 +910,7 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             if hit and now - hit[0] < 60.0:
                 return self._json(hit[1])
-            engines = [{"id": s.id, "model": s.model, "alive": bool(s.alive)}
+            engines = [{"id": getattr(s, "skey", s.id), "model": s.model, "alive": bool(s.alive)}
                        for s in app.engines.all()]
             # machine occupancy: only set this in config to PIN the hours/day;
             # left unset, the dash uses the hours a day it actually measured
@@ -912,11 +926,19 @@ class Handler(BaseHTTPRequestHandler):
             if not smp or not self.app.store:
                 return self._json({"empty": True})
             win = (qs.get("window") or ["all"])[0]
-            rep = counters_mod.report(self.app.store, smp.id, win, smp.model,
+            key, model = self._stats_key(smp, qs)
+            rep = counters_mod.report(self.app.store, key, win, model,
                                       override=self.app.cfg.get("pricing"))
             if isinstance(rep, dict):
                 rep["audit"] = getattr(smp, "counter_audit", None)
             return self._json(rep)
+        m = re.fullmatch(r"/api/stat-models/?", path)
+        if m:
+            smp = self._picked_sampler(qs)
+            if not smp or not self.app.store:
+                return self._json({"engine": None, "models": []})
+            return self._json({"engine": smp.id, "current": smp.model,
+                               "models": self.app.store.stat_keys(smp.id)})
         m = re.fullmatch(r"/api/engine-info/?", path)
         if m:
             from . import engine_info

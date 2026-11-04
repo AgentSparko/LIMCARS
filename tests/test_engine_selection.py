@@ -93,3 +93,37 @@ def test_client_names_the_engine_on_every_money_call():
         assert idx >= 0, f"{ep} fetch not found"
         window = js[idx:idx + 160]
         assert "engine=" in window, f"{ep} fetched without naming the selected engine"
+
+
+def _b(n):
+    return {"prompt": n, "cached": 0, "gen": n, "reqs": 1, "iters": 1, "dec_min": None,
+            "dec_peak": None, "spec_sum": 0, "spec_n": 0}
+
+
+def test_stats_key_follows_the_served_model_and_past_models_can_be_picked(tmp_path):
+    """A port re-served with another model keeps one token history per model."""
+    from app.store import Store
+    st = Store(str(tmp_path / "s.db"))
+    st.save_counter_bucket("flashnext", 600, _b(1))
+    st.save_counter_bucket("flashnext@Qwen/Qwen3.8-Flash-Next", 660, _b(2))
+    st.save_counter_bucket("flashnext@dsv41", 720, _b(3))
+    st.save_counter_bucket("other@dsv41", 720, _b(3))
+    keys = {k["key"]: k["model"] for k in st.stat_keys("flashnext")}
+    assert keys == {"flashnext": None, "flashnext@Qwen/Qwen3.8-Flash-Next": "Qwen/Qwen3.8-Flash-Next",
+                    "flashnext@dsv41": "dsv41"}
+    s = _Sampler("flashnext", "dsv41", "http://x:8000")
+    s.skey = "flashnext@dsv41"
+    assert Handler._stats_key(s, {}) == ("flashnext@dsv41", "dsv41")
+    assert Handler._stats_key(s, {"model": ["Qwen/Qwen3.8-Flash-Next"]}) == (
+        "flashnext@Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3.8-Flash-Next")
+    assert Handler._stats_key(s, {"model": ["-"]}) == ("flashnext", None)
+
+
+def test_sampler_stats_key_includes_the_model():
+    from app.sampler import EngineSampler
+    from app.sse import Broker
+    s = EngineSampler({"live_hz": 2.0, "window_s": 30.0, "ring_seconds": 900},
+                      {"id": "p", "url": "http://x", "kind": "vllm"}, Broker(), store=None)
+    assert s.skey == "p"
+    s.model = "dsv41"
+    assert s.skey == "p@dsv41"

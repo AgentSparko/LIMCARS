@@ -705,6 +705,27 @@ class Store:
         except Exception:                                   # noqa: BLE001 - a read must not die
             pass
 
+    def stat_keys(self, engine: str) -> list[dict]:
+        """Stats keys stored for one engine: ``id`` (minutes recorded before the
+        per-model split, model unknown) and ``id@model`` per served model."""
+        out: dict[str, dict] = {}
+        with self._lock:
+            # counter_day keys by day number, the others by epoch seconds
+            for tbl, col in (("counter_buckets", "ts"), ("counter_hour", "hour"),
+                             ("counter_day", "day * 86400")):
+                try:
+                    rows = self._con.execute(
+                        f"SELECT engine, MIN({col}), MAX({col}) FROM {tbl}"
+                        " WHERE engine=? OR engine LIKE ? GROUP BY engine",
+                        (engine, engine.replace("%", "") + "@%")).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                for k, lo, hi in rows:
+                    d = out.setdefault(k, {"key": k, "model": k.split("@", 1)[1] if "@" in k else None,
+                                           "first": lo, "last": hi})
+                    d["first"], d["last"] = min(d["first"], lo), max(d["last"], hi)
+        return sorted(out.values(), key=lambda d: -(d["last"] or 0))
+
     def counter_totals(self, engine: str, since_ts: int | None,
                        real_only: bool = False) -> dict:
         """Totals across BOTH the raw minutes and the aggregate ladder.

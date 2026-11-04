@@ -180,3 +180,30 @@ def test_a_counter_that_stays_missing_does_not_stall_the_ledger(tmp_path):
     p, cached = s.store._con.execute(
         "SELECT SUM(prompt), SUM(cached) FROM counter_buckets WHERE synthetic=0").fetchone()
     assert (p, cached) == (2 * 2000 * 60, 0)    # the two minutes after the rebuild at 300 s
+
+
+def test_served_model_is_re_detected_when_the_port_serves_another_model():
+    """A port re-served with a different model must not keep the first model's id."""
+    import json
+    s = _mk()
+    served = {"id": "Qwen/Qwen3.8-Flash-Next"}
+    s._fetch = lambda path, timeout=1.5: json.dumps({"data": [dict(served)]}).encode()
+    t0 = 1000.0
+    s._refresh_model(t0)
+    assert s.model == "Qwen/Qwen3.8-Flash-Next"
+    served["id"] = "dsv41"
+    s._refresh_model(t0 + 1)
+    assert s.model == "Qwen/Qwen3.8-Flash-Next", "re-read is rate-limited"
+    s._refresh_model(t0 + s.MODEL_REFRESH_S + 1)
+    assert s.model == "dsv41"
+
+
+def test_engine_restart_re_reads_the_model_at_once():
+    import json
+    s = _mk()
+    s._fetch = lambda path, timeout=1.5: json.dumps({"data": [{"id": "a"}]}).encode()
+    s._refresh_model(1000.0)
+    t0 = time.time() // 60 * 60
+    s._rate_minute(t0, {"prompt_tokens": 900.0, "gen_tokens": 90.0, "cached_tokens": 0.0})
+    s._rate_minute(t0 + 60.5, {"prompt_tokens": 10.0, "gen_tokens": 1.0, "cached_tokens": 0.0})
+    assert s._models_next == 0.0

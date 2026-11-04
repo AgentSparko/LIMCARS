@@ -171,6 +171,40 @@ class EngineSampler(threading.Thread):
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
             return r.read()
 
+    # A port can be re-served with another model (same URL, new engine): the
+    # served id is re-read every MODEL_REFRESH_S and right after a restart, so
+    # the engine pill and pricing follow what is actually loaded.
+    MODEL_REFRESH_S = 30.0
+
+    @property
+    def skey(self) -> str:
+        """Stats key: token minutes, savings and lost potential are kept per
+        (engine, served model), so a port re-served with another model starts
+        its own history instead of adding to the previous model's."""
+        return f"{self.id}@{self.model}" if self.model else self.id
+
+    def _refresh_model(self, now: float) -> None:
+        if now < getattr(self, "_models_next", 0.0):
+            return
+        try:
+            models = json.loads(self._fetch("/v1/models", timeout=3.0))
+            mid = (models.get("data") or [{}])[0].get("id")
+            self._models_fails = 0
+            self._models_next = now + self.MODEL_REFRESH_S
+        except Exception:  # noqa: BLE001 — cosmetic only
+            # audit: a wedged API layer turned this into a 2 Hz 3 s hang,
+            # collapsing the tick loop; back off exponentially instead.
+            fails = getattr(self, "_models_fails", 0) + 1
+            self._models_fails = fails
+            self._models_next = now + min(60.0, 2.0 ** fails)
+            return
+        if mid and mid != self.model:
+            if self.model is not None:
+                self._model_switch = True
+            self.model = mid
+            self.broker.publish("events", json.dumps(
+                {"t": now, "type": "engine_model", "engine": self.id, "model": mid}))
+
     def _tick(self) -> None:
         # 8 s, not 1.5 s: a loaded TandemLLM renders /metrics in 4-10 s
         # (it collects allocator, cache and disk-tier reports). A scrape
@@ -191,17 +225,7 @@ class EngineSampler(threading.Thread):
             self.kind = dialects.detect(body) or "vllm"
             self.broker.publish("events", json.dumps(
                 {"t": now, "type": "engine_kind", "engine": self.id, "kind": self.kind}))
-        if not self.model and now >= getattr(self, "_models_next", 0.0):
-            try:
-                models = json.loads(self._fetch("/v1/models", timeout=3.0))
-                self.model = (models.get("data") or [{}])[0].get("id")
-                self._models_next = 0.0
-            except Exception:  # noqa: BLE001 — cosmetic only
-                # audit: a wedged API layer turned this into a 2 Hz 3 s hang,
-                # collapsing the tick loop; back off exponentially instead.
-                fails = getattr(self, "_models_fails", 0) + 1
-                self._models_fails = fails
-                self._models_next = now + min(60.0, 2.0 ** fails)
+        self._refresh_model(now)
         dial = dialects.DIALECTS.get(self.kind, dialects.VLLM)
 
         gauges = dialects.read_gauges(series, dial)
@@ -468,12 +492,12 @@ class EngineSampler(threading.Thread):
                 # in a seed bucket parked just OUTSIDE the 1 h window — old-dash
                 # all-time semantics are engine-lifetime, not tracker uptime —
                 # without inflating current-hour rates or the savings rate basis.
-                if self.store and self.store.counter_totals(self.id, None).get("empty"):
+                if self.store and self.store.counter_totals(self.skey, None).get("empty"):
                     # minute-ALIGNED or the importer/live buckets can't see
                     # the collision and the same minute counts twice
                     # (observed: lifetime seed at ts%60=44 -> fake 311M peak
                     # hour in the lost-potential bubble)
-                    self.store.save_counter_bucket(self.id, int((now - 3660) // 60) * 60, {
+                    self.store.save_counter_bucket(self.skey, int((now - 3660) // 60) * 60, {
                         "prompt": cur_p, "cached": cur_c, "gen": cur_g,
                         "reqs": cur_r, "iters": cur_i, "dec_min": None,
                         "dec_peak": None, "spec_sum": None, "spec_n": 0,
@@ -502,6 +526,7 @@ class EngineSampler(threading.Thread):
             self._rate_min.clear()
             self._min_acc = {"dec": [], "spec": []}
             self._kv_pool = None    # new block config → re-parse pool
+            self._models_next = 0.0  # new process may serve another model
             self._audit_anchor(now, base)
             return
         if _ps:
@@ -518,7 +543,11 @@ class EngineSampler(threading.Thread):
         if (dp >= 0 and dg >= 0 and not self._rate_live <= live
                 and now - self._rate_prev_t < 300.0):
             return
+        if getattr(self, "_model_switch", False):   # new model: its own history
+            dp = -1.0
+            self._model_switch = False
         if dp < 0 or dg < 0 or dc < 0:              # engine restart → rebuild base
+            self._models_next = 0.0
             self._rate_prev = base
             self._rate_prev_t = now
             self._audit_anchor(now, base)
@@ -549,7 +578,7 @@ class EngineSampler(threading.Thread):
             # span since the last close, not since the shutdown: a 90 s restart can still
             # span >120 s wall-clock because the baseline is the previous minute's close.
             _gap = (now - self._rate_prev_t) > 120
-            self.store.save_counter_bucket(self.id, int(self._rate_prev_t // 60) * 60, {
+            self.store.save_counter_bucket(self.skey, int(self._rate_prev_t // 60) * 60, {
                 "prompt": max(0, dp), "cached": max(0, dc), "gen": max(0, dg),
                 "reqs": max(0, dr), "iters": max(0, di),
                 "dec_min": min([v for v in dec if v > 0], default=None),
@@ -587,7 +616,7 @@ class EngineSampler(threading.Thread):
         a = getattr(self, "_audit", None)
         if not a or not self.store:
             return
-        tot = self.store.counter_totals(self.id, a["ts"], real_only=True)
+        tot = self.store.counter_totals(self.skey, a["ts"], real_only=True)
         keys = (("prompt", "prompt_tokens"), ("cached", "cached_tokens"), ("gen", "gen_tokens"))
         eng = {k: base.get(c, 0.0) - a["base"].get(c, 0.0) for k, c in keys}
         got = {k: 0.0 if tot.get("empty") else float(tot.get(k) or 0.0) for k, _ in keys}
@@ -615,7 +644,7 @@ class EngineSampler(threading.Thread):
         if not price or not (price.get("output") or price.get("cache_write")
                              or price.get("input")):
             return None
-        ah = self.store.last_active_hour(self.id) if self.store else {"empty": True}
+        ah = self.store.last_active_hour(self.skey) if self.store else {"empty": True}
         if not ah.get("empty") and (ah["prompt"] + ah["cached"] + ah["gen"]) > 0:
             sum_p, sum_c, sum_g = ah["prompt"], ah["cached"], ah["gen"]
             per_hour = pricing_mod.hot_costs(sum_p, sum_c, sum_g, price)["hot"]
