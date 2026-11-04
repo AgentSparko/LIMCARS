@@ -619,6 +619,29 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "wrong password"},
                                       code=401)
             return self._json({"ok": gate.set_password(new or None, cur)})
+        if re.fullmatch(r"/api/pricing-models/?", u.path):
+            # prices turn tokens into "money saved": same gate + audit line as /api/config
+            if not self._require_write():
+                return
+            body = self._body_json()
+            if body is None:
+                return
+            from . import pricing as _pr
+            slug, entry = body.get("slug"), body.get("entry")
+            if not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9._/-]{1,80}", slug):
+                return self._err(400, "slug: 1-80 chars of letters, digits . _ / -")
+            if entry is not None:
+                err = _pr.validate_entry(entry)
+                if err:
+                    return self._err(400, err)
+            models = _pr.save_model(slug, entry)
+            try:
+                self.app.store.save_event("pricing_changed", {
+                    "by": "local" if self._is_local() else "remote", "ip": self._client_ip(),
+                    "slug": slug, "entry": entry})
+            except Exception:  # noqa: BLE001 -- an audit line must not break a save
+                pass
+            return self._json({"ok": True, "models": models})
         # Password gate: recipe CONTENT only (add/edit/delete). Start/Stop,
         # engine stop, services, settings, pricing stay open for convenience
         # — commands can only ever enter the system through these two doors.
@@ -943,6 +966,21 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(rep, dict):
                 rep["audit"] = getattr(smp, "counter_audit", None)
             return self._json(rep)
+        if path == "/api/pricing-models":
+            from . import pricing as _pr
+            data = _pr.load()
+            seen = {}
+            for s in app.engines.all():
+                names = [k["model"] for k in (app.store.stat_keys(s.id) if app.store else [])
+                         if k["model"]] + ([s.model] if s.model else [])
+                for mname in names:
+                    r = _pr.resolve(mname) or {}
+                    seen[mname] = {"model": mname, "engine": s.id,
+                                   "slug": (r.get("slug") or "").split("@")[0] or None,
+                                   "period": r.get("period")}
+            return self._json({"models": data.get("models") or {}, "default": data.get("default"),
+                               "seen": sorted(seen.values(), key=lambda x: x["model"]),
+                               "override": app.cfg.get("pricing")})
         if path == "/api/ssd":
             return self._json(self.app.hw.ssd_report())
         m = re.fullmatch(r"/api/stat-models/?", path)

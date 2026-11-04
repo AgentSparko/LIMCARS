@@ -574,7 +574,8 @@ class EngineSampler(threading.Thread):
             from . import pricing as pricing_mod
             _money = pricing_mod.money_stamped(
                 max(0, dp), max(0, dc), max(0, dg),
-                pricing_mod.effective_price(self.model, self.cfg.get("pricing")))
+                pricing_mod.effective_price(self.model, self.cfg.get("pricing"),
+                                            at=self._rate_prev_t))   # peak/off-peak of THIS minute
             # span since the last close, not since the shutdown: a 90 s restart can still
             # span >120 s wall-clock because the baseline is the previous minute's close.
             _gap = (now - self._rate_prev_t) > 120

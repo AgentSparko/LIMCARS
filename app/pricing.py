@@ -27,6 +27,107 @@ _cache: dict | None = None
 _cache_mtime: float = 0.0
 
 
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+PRICE_KEYS = ("input_per_M", "output_per_M", "cache_write_per_M", "cache_read_per_M")
+
+
+def _hm(s: str) -> int:
+    h, m = str(s).strip().split(":")
+    h, m = int(h), int(m)
+    if not (0 <= h <= 24 and 0 <= m < 60 and h * 60 + m <= 1440):
+        raise ValueError(s)
+    return h * 60 + m
+
+
+def _week_min(s: str) -> int:
+    d, t = str(s).strip().split()
+    return _DAYS.index(d[:3].lower()) * 1440 + _hm(t)
+
+
+def _within(x: int, lo: int, hi: int) -> bool:
+    return lo <= x < hi if lo <= hi else (x >= lo or x < hi)   # wraps midnight / Sunday
+
+
+def in_peak(peak: dict | None, at: float) -> bool:
+    """Peak pricing applies at ``at`` (epoch s)? All windows are UTC. ``hours_utc`` are
+    daily peak windows [["01:00","04:00"], ...]; ``offpeak_utc`` are weekly exceptions
+    that are off-peak whatever the hour [["Fri 16:00","Sun 16:00"]]."""
+    if not peak:
+        return False
+    tm = time.gmtime(at)
+    wm = tm.tm_wday * 1440 + tm.tm_hour * 60 + tm.tm_min
+    for a, b in peak.get("offpeak_utc") or []:
+        if _within(wm, _week_min(a), _week_min(b)):
+            return False
+    return any(_within(wm % 1440, _hm(a), _hm(b)) for a, b in peak.get("hours_utc") or [])
+
+
+def validate_entry(e) -> str | None:
+    """None if ``e`` is a storable model price entry, else the reason."""
+    if not isinstance(e, dict):
+        return "entry must be an object"
+    for k in ("display_name", "provider", "source_url", "openrouter_id"):
+        if k in e and e[k] is not None and not isinstance(e[k], str):
+            return f"{k} must be a string"
+    al = e.get("aliases")
+    if al is not None and (not isinstance(al, list) or not all(isinstance(x, str) for x in al)):
+        return "aliases must be a list of strings"
+
+    def prices(d, where):
+        for k in PRICE_KEYS:
+            v = d.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+                return f"{where}{k} must be a number >= 0"
+        return None
+    err = prices(e, "")
+    if err:
+        return err
+    if not any(isinstance(e.get(k), (int, float)) and e.get(k) > 0
+               for k in ("output_per_M", "cache_write_per_M", "input_per_M")):
+        return "need an input, cache-write or output price above 0"
+    pk = e.get("peak")
+    if pk is not None:
+        if not isinstance(pk, dict):
+            return "peak must be an object"
+        err = prices(pk, "peak.")
+        if err:
+            return err
+        try:
+            for a, b in pk.get("hours_utc") or []:
+                _hm(a), _hm(b)
+            for a, b in pk.get("offpeak_utc") or []:
+                _week_min(a), _week_min(b)
+        except (ValueError, TypeError):
+            return "peak hours must be [\"HH:MM\",\"HH:MM\"] and off-peak windows [\"Fri 16:00\",\"Sun 16:00\"] (UTC)"
+        if not pk.get("hours_utc"):
+            return "peak needs at least one hours_utc window"
+    return None
+
+
+def save_model(slug: str, entry: dict | None) -> dict:
+    """Add, replace (keys merged onto the existing entry) or delete (entry None) one model
+    in pricing.json, written atomically. Returns the new models map."""
+    global _cache, _cache_mtime
+    try:
+        data = json.loads(FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    models = data.setdefault("models", {})
+    if entry is None:
+        models.pop(slug, None)
+    else:
+        cur = dict(models.get(slug) or {})
+        cur.update(entry)
+        if entry.get("peak") is None:
+            cur.pop("peak", None)
+        models[slug] = cur
+    tmp = FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    tmp.replace(FILE)
+    _cache, _cache_mtime = None, 0.0
+    return models
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
@@ -50,7 +151,7 @@ def load() -> dict:
     return _cache
 
 
-def resolve(model: str | None) -> dict | None:
+def resolve(model: str | None, at: float | None = None) -> dict | None:
     """Return {display_name, provider, source, input, output, cache_write,
     cache_read, slug} in USD per 1M tokens, or None if nothing matches."""
     data = load()
@@ -64,7 +165,8 @@ def resolve(model: str | None) -> dict | None:
         if not k:
             continue
         for slug, e in models.items():
-            if _norm(slug) == k or _norm(e.get("openrouter_id", "")) == k:
+            if (_norm(slug) == k or _norm(e.get("openrouter_id", "")) == k
+                    or any(_norm(x) == k for x in e.get("aliases") or [])):
                 entry, slug_hit = e, slug
                 break
         if entry:
@@ -84,11 +186,25 @@ def resolve(model: str | None) -> dict | None:
         if not d:
             return None
         entry, slug_hit = d, "default"
+    period = None
+    name = entry.get("display_name", slug_hit)
+    if entry.get("peak"):
+        period = "offpeak"
+        try:
+            hot = in_peak(entry["peak"], time.time() if at is None else at)
+        except (ValueError, TypeError):
+            hot = False
+        if hot:
+            period = "peak"
+            entry = {**entry, **{k: v for k, v in entry["peak"].items()
+                                 if k in PRICE_KEYS and v is not None}}
+            slug_hit, name = f"{slug_hit}@peak", f"{name} (peak)"
     cw = entry.get("cache_write_per_M")
     cr = entry.get("cache_read_per_M")
     return {
         "slug": slug_hit,
-        "display_name": entry.get("display_name", slug_hit),
+        "period": period,
+        "display_name": name,
         "provider": entry.get("provider", ""),
         "source": entry.get("source_url", ""),
         "input": entry.get("input_per_M"),
@@ -100,7 +216,8 @@ def resolve(model: str | None) -> dict | None:
     }
 
 
-def effective_price(model: str | None, override: dict | None = None) -> dict | None:
+def effective_price(model: str | None, override: dict | None = None,
+                    at: float | None = None) -> dict | None:
     """Single price source of truth: manual override (from /api/config) wins,
     else data/pricing.json resolution. Savings bubbles AND token counters
     MUST both use this so their numbers agree."""
@@ -110,7 +227,7 @@ def effective_price(model: str | None, override: dict | None = None) -> dict | N
         p.setdefault("slug", "manual")
         p.setdefault("display_name", p.get("label") or "manual override")
         return p
-    return resolve(model)
+    return resolve(model) if at is None else resolve(model, at)
 
 
 def money_stamped(prompt: float | None, cached: float | None, gen: float | None,

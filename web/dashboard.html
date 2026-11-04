@@ -93,7 +93,45 @@
 
     <div class="bub-group"><div class="cards" id="bub-main"></div></div>
     <div class="bub-group"><h2 class="section">Projected savings <span id="pricing-note" class="muted small"></span>
-      <button class="pill tiny" id="btn-pricing" style="margin-left:8px">edit</button></h2>
+      <button class="pill tiny" id="btn-pricing" style="margin-left:8px">edit</button>
+      <button class="pill tiny" id="btn-price-mgr" style="margin-left:4px">prices</button></h2>
+      <div id="price-mgr" class="chart-card" style="display:none;margin-bottom:8px">
+        <div class="head"><span class="title">Cloud prices per model</span>
+          <span class="muted small">USD per 1M tokens · all hours are UTC · used for "money saved"</span></div>
+        <table class="data mono small" id="pm-tbl"></table>
+        <div id="pm-form" style="display:none;margin-top:8px;font-size:12px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <label>slug <input class="btn mono" id="pm-slug" size="22"></label>
+            <label>name <input class="btn mono" id="pm-name" size="22"></label>
+            <label>served ids <input class="btn mono" id="pm-alias" size="18" title="comma list of served model ids that use this price, e.g. dsv41"></label>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+            <span class="muted">off-peak / normal:</span>
+            <label>input <input class="btn mono pm-n" id="pm-in" size="6" type="number" step="0.001" min="0"></label>
+            <label>cache write <input class="btn mono pm-n" id="pm-w" size="6" type="number" step="0.001" min="0"></label>
+            <label>cache read <input class="btn mono pm-n" id="pm-r" size="6" type="number" step="0.0001" min="0"></label>
+            <label>output <input class="btn mono pm-n" id="pm-out" size="6" type="number" step="0.001" min="0"></label>
+          </div>
+          <div style="margin-top:6px"><label><input type="checkbox" id="pm-peak-on"> peak hours have other prices</label></div>
+          <div id="pm-peak" style="display:none;margin-top:4px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <span class="muted">peak:</span>
+              <label>input <input class="btn mono pm-n" id="pm-pin" size="6" type="number" step="0.001" min="0"></label>
+              <label>cache write <input class="btn mono pm-n" id="pm-pw" size="6" type="number" step="0.001" min="0"></label>
+              <label>cache read <input class="btn mono pm-n" id="pm-pr" size="6" type="number" step="0.0001" min="0"></label>
+              <label>output <input class="btn mono pm-n" id="pm-pout" size="6" type="number" step="0.001" min="0"></label>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px">
+              <label>peak hours (UTC) <input class="btn mono" id="pm-hours" size="26" placeholder="01:00-04:00, 06:00-10:00"></label>
+              <label>always off-peak (UTC) <input class="btn mono" id="pm-off" size="26" placeholder="Fri 16:00-Sun 16:00"></label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+            <button class="btn" id="pm-save">save</button><button class="btn" id="pm-del">delete</button>
+            <button class="btn" id="pm-cancel">cancel</button><span id="pm-msg" class="small muted" role="status"></span>
+          </div>
+        </div>
+      </div>
       <div id="pricing-edit" style="display:none" class="chart-card" style="margin-bottom:8px">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;padding:4px 0">
           <label>name <input class="btn mono" id="pr-name" size="16"></label>

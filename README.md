@@ -391,6 +391,14 @@ contract from the same app-side source, so it cannot drift from what is rendered
 
 ## 💵 Money is recorded as it was earned
 
+**Price manager.** `prices` next to *Projected savings* lists every model LIMCARS has
+recorded, flags the ones falling back to the `default` rates, and adds or edits an entry in
+`data/pricing.json`: served-id aliases (e.g. `dsv41` for a pack served under a short name),
+input / cache-write / cache-read / output per 1M tokens, and optional **peak pricing** with
+its own rates, daily peak windows and weekly always-off-peak windows. All hours are **UTC**
+(`hours_utc: [["01:00","04:00"], ...]`, `offpeak_utc: [["Fri 16:00","Sun 16:00"]]`); each
+minute is priced at the rate of its own time and stamped `slug@peak` when peak applied.
+
 Cloud prices move — the price fetcher refreshes `data/pricing.json` and you can edit it by
 hand. Every bucket therefore stores its cost (`cost_hot`, `cost_base`, `cost_nocache`) at the
 moment it is written, together with the rates that produced it (`price_slug`, `price_in`,

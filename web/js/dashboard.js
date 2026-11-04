@@ -1756,6 +1756,87 @@ document.querySelector('#pricing-edit').addEventListener('keydown', e => {
   if (e.key === 'Escape') document.querySelector('#pricing-edit').style.display = 'none';
 });
 
+// ---------------- price manager: every model LIMCARS has recorded, editable (data/pricing.json) ----------------
+
+let pmData = null;
+const pmF = v => v == null || v === '' ? '–' : '$' + (+v).toString();
+async function pmLoad() {
+  try { pmData = await (await fetch('/api/pricing-models')).json(); } catch (e) { return; }
+  const models = pmData.models || {};
+  const used = {};
+  (pmData.seen || []).forEach(s => { if (s.slug) (used[s.slug] = used[s.slug] || []).push(s.model); });
+  const rows = Object.entries(models).map(([slug, e]) => {
+    const pk = e.peak;
+    const peak = pk ? `peak ${pmF(pk.input_per_M)}/${pmF(pk.output_per_M)} · ${(pk.hours_utc || []).map(w => w.join('–')).join(', ')} UTC` +
+      ((pk.offpeak_utc || []).length ? ` · off-peak ${(pk.offpeak_utc).map(w => w.join(' – ')).join(', ')}` : '') : '';
+    return `<tr><td>${escH(e.display_name || slug)}<div class="muted">${escH(slug)}${(used[slug] || []).length ? ' · serves ' + escH(used[slug].join(', ')) : ''}</div></td>` +
+      `<td>${pmF(e.input_per_M)}</td><td>${pmF(e.cache_write_per_M)}</td><td>${pmF(e.cache_read_per_M)}</td><td>${pmF(e.output_per_M)}</td>` +
+      `<td class="muted">${escH(peak)}</td><td><button class="pill tiny" data-pm-edit="${escH(slug)}">edit</button></td></tr>`;
+  });
+  const unpriced = (pmData.seen || []).filter(s => !s.slug || s.slug === 'default').map(s =>
+    `<tr><td>${escH(s.model)}<div class="muted">no price of its own · using the fallback rates</div></td><td colspan="5"></td>` +
+    `<td><button class="pill tiny" data-pm-new="${escH(s.model)}">add price</button></td></tr>`);
+  document.querySelector('#pm-tbl').innerHTML =
+    `<tr><th>model</th><th>input</th><th>cache write</th><th>cache read</th><th>output</th><th>peak</th><th></th></tr>` +
+    unpriced.join('') + rows.join('') +
+    `<tr><td colspan="7"><button class="pill tiny" data-pm-new="">+ add a model</button></td></tr>`;
+}
+const pmWin = (s, week) => String(s || '').split(',').map(x => x.trim()).filter(Boolean).map(x => x.split(/\s*[-–]\s*/));
+function pmOpen(slug, alias) {
+  const e = (pmData.models || {})[slug] || {};
+  const pk = e.peak || null;
+  const set = (id, v) => { document.querySelector(id).value = v == null ? '' : v; };
+  set('#pm-slug', slug || (alias ? alias.toLowerCase().replace(/[^a-z0-9._/-]+/g, '-') : ''));
+  document.querySelector('#pm-slug').readOnly = !!slug;
+  set('#pm-name', e.display_name || alias || '');
+  set('#pm-alias', (e.aliases || (alias ? [alias] : [])).join(', '));
+  set('#pm-in', e.input_per_M); set('#pm-w', e.cache_write_per_M); set('#pm-r', e.cache_read_per_M); set('#pm-out', e.output_per_M);
+  document.querySelector('#pm-peak-on').checked = !!pk;
+  document.querySelector('#pm-peak').style.display = pk ? 'block' : 'none';
+  set('#pm-pin', pk?.input_per_M); set('#pm-pw', pk?.cache_write_per_M); set('#pm-pr', pk?.cache_read_per_M); set('#pm-pout', pk?.output_per_M);
+  set('#pm-hours', (pk?.hours_utc || []).map(w => w.join('-')).join(', '));
+  set('#pm-off', (pk?.offpeak_utc || []).map(w => w.join('-')).join(', '));
+  document.querySelector('#pm-del').hidden = !slug;
+  document.querySelector('#pm-msg').textContent = '';
+  document.querySelector('#pm-form').style.display = 'block';
+}
+async function pmSave(del) {
+  const v = id => document.querySelector(id).value.trim();
+  const n = id => v(id) === '' ? null : +v(id);
+  const slug = v('#pm-slug');
+  const entry = del ? null : {
+    display_name: v('#pm-name') || slug,
+    aliases: v('#pm-alias').split(',').map(x => x.trim()).filter(Boolean),
+    input_per_M: n('#pm-in'), cache_write_per_M: n('#pm-w'), cache_read_per_M: n('#pm-r'), output_per_M: n('#pm-out'),
+    peak: document.querySelector('#pm-peak-on').checked ? {
+      input_per_M: n('#pm-pin'), cache_write_per_M: n('#pm-pw'), cache_read_per_M: n('#pm-pr'), output_per_M: n('#pm-pout'),
+      hours_utc: pmWin(v('#pm-hours')), offpeak_utc: pmWin(v('#pm-off')) } : null };
+  let r;
+  try { r = await (await authFetch('/api/pricing-models', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug, entry }) },
+    '🔒 Editing prices is password-protected')).json(); }
+  catch (e) { r = { ok: false, error: String(e) }; }
+  const msg = document.querySelector('#pm-msg');
+  if (!r.ok) { msg.textContent = 'Save failed: ' + (r.error || '?'); msg.className = 'small pr-err'; return; }
+  document.querySelector('#pm-form').style.display = 'none';
+  toast(del ? 'Price removed ✓' : 'Price saved ✓ (new minutes use it; recorded minutes keep their price)', 'ok');
+  await pmLoad(); seed(false).catch(() => {});
+}
+document.querySelector('#btn-price-mgr').addEventListener('click', () => {
+  const p = document.querySelector('#price-mgr');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  if (p.style.display === 'block') pmLoad();
+});
+document.querySelector('#pm-tbl').addEventListener('click', e => {
+  const ed = e.target.closest('[data-pm-edit]'), nw = e.target.closest('[data-pm-new]');
+  if (ed) pmOpen(ed.dataset.pmEdit); else if (nw) pmOpen('', nw.dataset.pmNew);
+});
+document.querySelector('#pm-peak-on').addEventListener('change', e => {
+  document.querySelector('#pm-peak').style.display = e.target.checked ? 'block' : 'none'; });
+document.querySelector('#pm-save').addEventListener('click', () => pmSave(false));
+document.querySelector('#pm-del').addEventListener('click', () => pmSave(true));
+document.querySelector('#pm-cancel').addEventListener('click', () => { document.querySelector('#pm-form').style.display = 'none'; });
+
 document.querySelector('#btn-probe').addEventListener('click', async () => {
   const out = document.querySelector('#probe-out');
   out.innerHTML = '⚡ probing… <span class="muted">streaming a ~1.3k-token request</span>';
