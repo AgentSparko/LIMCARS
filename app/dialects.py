@@ -390,7 +390,47 @@ ATLAS = {
     },
 }
 
-DIALECTS = {d["kind"]: d for d in (VLLM, SGLANG, LLAMACPP, TANDEMLLM, EXL3, TENSORFOLD, ATLAS)}
+# Tarnwell (clean-room engine, tarnwell/metrics.py). Every forward pass is
+# booked under its step kind (prefill | decode | mixed) with its own rows and wall
+# seconds, so the prefill pair is exact: rows computed in prefill-only passes over
+# the seconds of those passes. Mixed passes are excluded from that pair rather
+# than split by a guess. Generated tokens are charged per step (live), so decode
+# speed is the window rate of gen_tokens, as for vLLM. spec_decode_* count draft
+# TOKENS (verified / accepted), the same unit as vLLM's families of that name.
+TARNWELL = {
+    "kind": "tarnwell",
+    "prefix": "tarnwell:",
+    "gauge": {
+        "running": "tarnwell:num_requests_running",
+        "waiting": "tarnwell:num_requests_waiting",
+        "kv_pct": "tarnwell:kv_cache_usage_perc",
+        # the state budget in tokens (no block pool to read num_gpu_blocks from)
+        "kv_used_tokens": "tarnwell:kv_cache_used_tokens",
+        "kv_pool_tokens": "tarnwell:kv_cache_capacity_tokens",
+    },
+    "counter": {
+        "prompt_tokens": "tarnwell:prompt_tokens_total",
+        "gen_tokens": "tarnwell:generation_tokens_total",
+        "cached_tokens": "tarnwell:prompt_tokens_cached_total",
+        "proc_start": "tarnwell:process_start_time_seconds",
+        "req_success": "tarnwell:requests_total",
+        "prefill_compute_tokens": ["tarnwell:step_tokens_total", {"step": "prefill", "phase": "prefill"}],
+        "prefill_seconds": ["tarnwell:step_seconds_total", {"step": "prefill"}],
+        "decode_seconds": ["tarnwell:step_seconds_total", {"step": "decode"}],
+        "draft_tokens": "tarnwell:spec_decode_num_draft_tokens_total",
+        "accepted_tokens": "tarnwell:spec_decode_num_accepted_tokens_total",
+    },
+    "hist": {
+        "ttft": "tarnwell:time_to_first_token_seconds",
+        "prefill_time": "tarnwell:request_prefill_time_seconds",
+        "decode_time": "tarnwell:request_decode_time_seconds",
+        "itl": "tarnwell:inter_token_latency_seconds",
+        "queue_time": "tarnwell:request_queue_time_seconds",
+        "e2e": "tarnwell:e2e_request_latency_seconds",
+    },
+}
+
+DIALECTS = {d["kind"]: d for d in (VLLM, SGLANG, LLAMACPP, TANDEMLLM, EXL3, TENSORFOLD, ATLAS, TARNWELL)}
 
 
 def detect(body: str) -> str | None:
@@ -418,6 +458,9 @@ def detect(body: str) -> str | None:
     if ("\natlas_requests_" in probe or "\natlas_generation_tokens_total" in probe
             or probe.startswith("# HELP atlas_")):
         return "atlas"
+    # Tarnwell: checked after every existing family, on its own two core names
+    if "\ntarnwell:step_tokens_total" in probe or "\ntarnwell:generation_tokens_total" in probe:
+        return "tarnwell"
     return None
 
 

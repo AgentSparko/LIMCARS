@@ -404,6 +404,10 @@ class EngineSampler(threading.Thread):
             used = round(pool * row["kv_pct"] / 100.0)
             row["kv_used_tokens"] = used
             row["kv_free_tokens"] = pool - used
+        if gauges.get("kv_pool_tokens"):  # engines that publish their pool in tokens directly (Tarnwell)
+            pool = int(gauges["kv_pool_tokens"])
+            used = int(gauges.get("kv_used_tokens") or 0)
+            row["kv_pool_tokens"], row["kv_used_tokens"], row["kv_free_tokens"] = pool, used, max(0, pool - used)
         ps = counters.get("proc_start")
         if ps:
             self.proc_start_t = ps

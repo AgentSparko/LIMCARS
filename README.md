@@ -107,6 +107,7 @@ configuration. Missing metrics degrade to `–`, never to fake zeros.
 | 🔶 SGLang | full — true live prefill rate |
 | 🧊 exl3 | full — exact prefill/generate pairing |
 | 🧮 TensorFold | full — dual metric families, spec decode |
+| ⚙️ Tarnwell | full — per-step prefill/decode/mixed accounting, spec decode |
 | 🦙 llama.cpp | basic — running requests + token counters (start the server with `--metrics`; TTS-only builds count too) |
 | 🔁 TandemLLM-family | **work in progress** — inflight + token counters |
 

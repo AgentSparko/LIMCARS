@@ -1,0 +1,195 @@
+# RECORDED from Tarnwell (tarnwell/metrics.py Metrics.render(), the GET /metrics body) after 3 real requests
+# on Qwen3.8-Flash-Next-FP4-Local (2 greedy + 1 sampled, MTP on, one 3K prompt -> mixed steps), in-process.
+# HELP tarnwell:prompt_tokens_total Prompt tokens admitted, cache hits included.
+# TYPE tarnwell:prompt_tokens_total counter
+tarnwell:prompt_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 4000
+# HELP tarnwell:prompt_tokens_cached_total Prompt tokens restored from the prompt cache (subset of prompt).
+# TYPE tarnwell:prompt_tokens_cached_total counter
+tarnwell:prompt_tokens_cached_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 0
+# HELP tarnwell:prefill_tokens_total Prompt tokens actually computed (prompt minus cached).
+# TYPE tarnwell:prefill_tokens_total counter
+tarnwell:prefill_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 4000
+# HELP tarnwell:generation_tokens_total Tokens generated.
+# TYPE tarnwell:generation_tokens_total counter
+tarnwell:generation_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 101
+# HELP tarnwell:requests_total Requests finished.
+# TYPE tarnwell:requests_total counter
+tarnwell:requests_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
+# HELP tarnwell:spec_decode_num_draft_tokens_total MTP draft tokens verified.
+# TYPE tarnwell:spec_decode_num_draft_tokens_total counter
+tarnwell:spec_decode_num_draft_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 90
+# HELP tarnwell:spec_decode_num_accepted_tokens_total MTP draft tokens accepted (subset of drafted).
+# TYPE tarnwell:spec_decode_num_accepted_tokens_total counter
+tarnwell:spec_decode_num_accepted_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local"} 49
+# HELP tarnwell:step_tokens_total Rows computed per forward-step kind (step) and row phase (phase).
+# TYPE tarnwell:step_tokens_total counter
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="prefill",phase="prefill"} 300
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="prefill",phase="decode"} 0
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="decode",phase="prefill"} 0
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="decode",phase="decode"} 87
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="mixed",phase="prefill"} 3700
+tarnwell:step_tokens_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="mixed",phase="decode"} 11
+# HELP tarnwell:step_seconds_total GPU wall seconds of forward steps, by step kind.
+# TYPE tarnwell:step_seconds_total counter
+tarnwell:step_seconds_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="prefill"} 0.373207
+tarnwell:step_seconds_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="decode"} 2.060109
+tarnwell:step_seconds_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="mixed"} 3.504887
+# HELP tarnwell:steps_total Forward steps, by step kind.
+# TYPE tarnwell:steps_total counter
+tarnwell:steps_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="prefill"} 1
+tarnwell:steps_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="decode"} 16
+tarnwell:steps_total{model_name="Qwen3.8-Flash-Next-FP4-Local",step="mixed"} 4
+# HELP tarnwell:num_requests_running num requests running.
+# TYPE tarnwell:num_requests_running gauge
+tarnwell:num_requests_running{model_name="Qwen3.8-Flash-Next-FP4-Local"} 2
+# HELP tarnwell:num_requests_waiting num requests waiting.
+# TYPE tarnwell:num_requests_waiting gauge
+tarnwell:num_requests_waiting{model_name="Qwen3.8-Flash-Next-FP4-Local"} 0
+# HELP tarnwell:kv_cache_usage_perc kv cache usage perc.
+# TYPE tarnwell:kv_cache_usage_perc gauge
+tarnwell:kv_cache_usage_perc{model_name="Qwen3.8-Flash-Next-FP4-Local"} 0
+# HELP tarnwell:kv_cache_used_tokens kv cache used tokens.
+# TYPE tarnwell:kv_cache_used_tokens gauge
+tarnwell:kv_cache_used_tokens{model_name="Qwen3.8-Flash-Next-FP4-Local"} 1536
+# HELP tarnwell:kv_cache_capacity_tokens kv cache capacity tokens.
+# TYPE tarnwell:kv_cache_capacity_tokens gauge
+tarnwell:kv_cache_capacity_tokens{model_name="Qwen3.8-Flash-Next-FP4-Local"} 541903
+# HELP tarnwell:process_start_time_seconds Unix time the engine started.
+# TYPE tarnwell:process_start_time_seconds gauge
+tarnwell:process_start_time_seconds{model_name="Qwen3.8-Flash-Next-FP4-Local"} 1793544567.577
+# HELP tarnwell:time_to_first_token_seconds Time from arrival to first generated token.
+# TYPE tarnwell:time_to_first_token_seconds histogram
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.25"} 0
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 1
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.75"} 1
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 1
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 2
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="5"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="7.5"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="10"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="20"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="40"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="80"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="160"} 3
+tarnwell:time_to_first_token_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 3
+tarnwell:time_to_first_token_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 5.445785
+tarnwell:time_to_first_token_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
+# HELP tarnwell:request_queue_time_seconds Time a request waited before its first step.
+# TYPE tarnwell:request_queue_time_seconds histogram
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.25"} 1
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 2
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.75"} 2
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 2
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="5"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="7.5"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="10"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="20"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="40"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="80"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="160"} 3
+tarnwell:request_queue_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 3
+tarnwell:request_queue_time_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 1.495695
+tarnwell:request_queue_time_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
+# HELP tarnwell:request_prefill_time_seconds Per-request wall time from first step to first token.
+# TYPE tarnwell:request_prefill_time_seconds histogram
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.25"} 0
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 1
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.75"} 2
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 2
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 2
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="5"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="7.5"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="10"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="20"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="40"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="80"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="160"} 3
+tarnwell:request_prefill_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 3
+tarnwell:request_prefill_time_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3.950089
+tarnwell:request_prefill_time_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
+# HELP tarnwell:request_decode_time_seconds Per-request wall time from first token to finish.
+# TYPE tarnwell:request_decode_time_seconds histogram
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.25"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.75"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 0
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 1
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="5"} 1
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="7.5"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="10"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="20"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="40"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="80"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="160"} 3
+tarnwell:request_decode_time_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 3
+tarnwell:request_decode_time_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 12.862738
+tarnwell:request_decode_time_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
+# HELP tarnwell:inter_token_latency_seconds Gap between consecutive generated tokens of one request.
+# TYPE tarnwell:inter_token_latency_seconds histogram
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.015"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.02"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.03"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.04"} 0
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 30
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 67
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 71
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.15"} 77
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.2"} 87
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.3"} 87
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 94
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 98
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 98
+tarnwell:inter_token_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 98
+tarnwell:inter_token_latency_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 12.862738
+tarnwell:inter_token_latency_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 98
+# HELP tarnwell:e2e_request_latency_seconds Arrival to finish.
+# TYPE tarnwell:e2e_request_latency_seconds histogram
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.005"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.01"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.025"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.05"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.075"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.1"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.25"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.5"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="0.75"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="1"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="2.5"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="5"} 0
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="7.5"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="10"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="20"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="40"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="80"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="160"} 3
+tarnwell:e2e_request_latency_seconds_bucket{model_name="Qwen3.8-Flash-Next-FP4-Local",le="+Inf"} 3
+tarnwell:e2e_request_latency_seconds_sum{model_name="Qwen3.8-Flash-Next-FP4-Local"} 18.308523
+tarnwell:e2e_request_latency_seconds_count{model_name="Qwen3.8-Flash-Next-FP4-Local"} 3
