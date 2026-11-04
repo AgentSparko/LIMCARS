@@ -1067,7 +1067,7 @@ function applySettings(s) {
   hide('#st-ssd-io', sideSettings.ssd_io_tile === false);
   renderColdset();
   const rsel = document.querySelector('#refresh-sel');
-  if (rsel && document.activeElement !== rsel) rsel.value = String(sideSettings.refresh_s ?? 1);
+  if (rsel && document.activeElement !== rsel) rsel.value = String(sideSettings.refresh_s ?? 0.5);
   const box = document.querySelector('#side-settings');
   if (box && !box._built) {
     box._built = true;
@@ -1964,7 +1964,7 @@ document.querySelector('#node-pick').addEventListener('click', e => {
   connect();
   (function loop() {
     refresh();
-    setTimeout(loop, Math.max(0.5, sideSettings.refresh_s ?? 1) * 1000);
+    setTimeout(loop, Math.max(0.5, sideSettings.refresh_s ?? 0.5) * 1000);
   })();
 })();
 

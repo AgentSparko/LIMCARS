@@ -55,7 +55,7 @@ SETTINGS_DEFAULTS = {
     "ssd_io_tile": True,        # sidebar SSD read/write tile
     "ssd_chart": True,          # sidebar SSD MB/s chart (1 h)
     "ssd_usage": True,          # sidebar SSD usage box (GB per hour/day, temperature)
-    "refresh_s": 1.0,           # base UI refresh interval (0.5-30 s)
+    "refresh_s": 0.5,           # base UI refresh interval (0.5-30 s); 0.5 = every sampler tick (2 Hz)
     "stats_scope": "all",       # all | active engine
     # theme + palette are NOT server settings: per-browser cookie (limcars_ui)
 }
