@@ -2031,6 +2031,37 @@ function recipeDialog({ title, name = '', cmd = '', onSave }) {
   nameEl.focus();
 }
 
+const recLogOpen = new Set();
+function recAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)}m ago`
+    : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
+}
+function recDur(s) {
+  s = Math.round(s);
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s`
+    : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+}
+// One status line (how it ended · exit · when), the one log line that explains it,
+// and the log tail folded away.
+function recEnd(r) {
+  const e = r.last_end;
+  const code = e.code == null ? '' : e.code < 0 ? `signal ${-e.code}` : `exit ${e.code}`;
+  const head = {
+    crash: '⚠ crashed', start_failed: '⚠ start failed', done: 'finished',
+    unknown: 'ended · exit code unknown',
+  }[e.kind] || 'ended';
+  const bits = [head, code, e.took != null && e.kind !== 'unknown' ? `ran ${recDur(e.took)}` : '', recAgo(e.at)]
+    .filter(Boolean).join(' · ');
+  const bad = e.kind === 'crash' || e.kind === 'start_failed';
+  const line = e.line && e.kind !== 'done'
+    ? `<div class="rec-line" title="${escH(e.line)}">${escH(e.line)}</div>` : '';
+  const log = e.tail
+    ? `<details class="rec-log"${recLogOpen.has(r.id) ? ' open' : ''}><summary>log</summary><pre>${escH(e.tail)}</pre></details>` : '';
+  return `<span class="${bad ? 'rec-err' : ''}"${e.kind === 'unknown' ? ' title="LIMCARS was restarted while it ran, so its exit code was lost"' : ''}>${escH(bits)}</span>${line}${log}`;
+}
+
 async function loadRecipes() {
   const host = document.querySelector('#recipe-list');
   if (!host) return;
@@ -2047,14 +2078,19 @@ async function loadRecipes() {
         <span class="rec-name">${escH(r.name)}</span></div>
       <div class="rec-sub muted small">${r.running
         ? `pid ${r.pid} · up ${new Date(r.started_at * 1000).toLocaleTimeString()}`
-        : r.last_error ? `<span class="rec-err" title="${escH(r.last_error)}">⚠ ${escH(r.last_error)}</span>`
-        : r.last_note ? escH(r.last_note) : 'stopped'}</div>
+        : r.last_end ? recEnd(r)
+        : r.last_error ? `<span class="rec-err rec-line" title="${escH(r.last_error)}">⚠ ${escH(r.last_error)}</span>`
+        : r.last_note ? `<span class="rec-line" title="${escH(r.last_note)}">${escH(r.last_note)}</span>` : 'stopped'}</div>
       <div class="rec-btns">
         ${r.running
           ? '<button class="btn tiny rec-stop">■ Stop</button>'
           : '<button class="btn tiny rec-start">▶ Start</button>'}
       </div>
     </div>`).join('');
+  host.querySelectorAll('.rec-log').forEach(d => d.ontoggle = () => {
+    const id = d.closest('.rec-row').dataset.id;
+    d.open ? recLogOpen.add(id) : recLogOpen.delete(id);
+  });
   host.querySelectorAll('.rec-start').forEach(b =>
     b.onclick = () => recAction(b.closest('.rec-row').dataset.id, 'start', b));
   host.querySelectorAll('.rec-stop').forEach(b =>

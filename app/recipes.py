@@ -91,6 +91,53 @@ def _log_tail(path: str, start: int, lines: int = 6) -> str:
     return " | ".join(keep[-lines:])[-600:]
 
 
+_NOISE = re.compile(r"UserWarning|warnings\.warn|resource_tracker|There appear to be \d+ leaked")
+_ERRISH = re.compile(r"error|exception|traceback|failed|fatal|conflict|denied|killed|"
+                     r"out of memory|oom|no such|not found|cannot|unable", re.I)
+_CODE_RE = re.compile(r"with code (-?\d+)|exited with code (-?\d+)")
+
+
+def _log_lines(path: str, start: int) -> list[str]:
+    try:
+        with open(path, "rb") as f:
+            f.seek(start)
+            text = f.read()[-8192:].decode("utf-8", "replace")
+    except OSError:
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def key_line(lines: list[str]) -> str:
+    """The one log line that best explains an end: last error-ish line, else the last line."""
+    lines = [ln for ln in lines if not _NOISE.search(ln)] or lines
+    pick = next((ln for ln in reversed(lines) if _ERRISH.search(ln)), lines[-1] if lines else "")
+    return pick[:300]
+
+
+def _legacy_end(r: dict, log_path: str) -> dict | None:
+    """last_end for rows recorded before it existed: rebuilt from the old message string."""
+    msg = r.get("last_error")
+    if not msg:
+        return None
+    head, _, tail = msg.partition(": ")
+    parts = [x.strip() for x in tail.split(" | ") if x.strip()]
+    starts = [i for i, x in enumerate(parts) if x.startswith("=====")]
+    if starts:
+        parts = parts[starts[-1] + 1:]
+    m = _CODE_RE.search(msg)
+    code = int(next(g for g in m.groups() if g is not None)) if m else None
+    if msg.startswith("start failed"):
+        kind = "start_failed"
+    else:
+        kind = "unknown" if code is None and "signal" not in head else "crash"
+    try:
+        at = os.path.getmtime(log_path)
+    except OSError:
+        at = None
+    return {"kind": kind, "code": code, "at": at, "took": None,
+            "line": key_line(parts), "tail": "\n".join(parts)}
+
+
 def _dur(s: float) -> str:
     s = int(max(0, s))
     return f"{s}s" if s < 60 else f"{s // 60}m {s % 60:02d}s" if s < 3600 else f"{s // 3600}h {s % 3600 // 60:02d}m"
@@ -147,12 +194,19 @@ class Recipes:
         except OSError:
             ended = time.time()
         took = _dur(ended - started)
+        lines = _log_lines(log_path, int(r.get("log_mark") or 0))
         tail = _log_tail(log_path, int(r.get("log_mark") or 0))
+        r["last_end"] = {"kind": "done" if rc == 0 else "unknown" if rc is None else "crash",
+                         "code": rc, "at": ended, "took": ended - started,
+                         "line": key_line(lines), "tail": "\n".join(lines[-12:])}
         if rc == 0:
             r["last_note"] = f"finished on its own after {took} (exit 0)"
+        elif rc is None:
+            # its exit code went with the LIMCARS run that started it: not shown as a failure
+            r["last_note"] = (f"ended on its own after {took}, exit code unknown (LIMCARS was "
+                              "restarted meanwhile)" + (f": {tail}" if tail else ""))
         else:
-            how = ("" if rc is None else f" killed by signal {-rc}" if rc < 0
-                   else f" with code {rc}")
+            how = f" killed by signal {-rc}" if rc < 0 else f" with code {rc}"
             r["last_error"] = f"ended on its own after {took}{how}" + (f": {tail}" if tail else "")
         r["pid"] = None
         self._save()
@@ -171,6 +225,8 @@ class Recipes:
                 "log": os.path.join(self.log_dir, f"{r['id']}.log"),
                 "last_error": r.get("last_error"),
                 "last_note": r.get("last_note"),
+                "last_end": r.get("last_end") or _legacy_end(
+                    r, os.path.join(self.log_dir, f"{r['id']}.log")),
             })
         return out
 
@@ -254,6 +310,8 @@ class Recipes:
                         log.close()
                         r["last_error"] = "start failed: " + err
                         r["last_note"] = None
+                        r["last_end"] = {"kind": "start_failed", "code": None, "at": time.time(),
+                                         "took": None, "line": err[:300], "tail": err}
                         self._save()
                         return {"ok": False, "error": err}
                 if procs.IS_WIN:
@@ -275,7 +333,7 @@ class Recipes:
             r["pid"] = proc.pid
             r["started_at"] = time.time()
             r["log_mark"] = mark
-            r["last_error"] = r["last_note"] = None
+            r["last_error"] = r["last_note"] = r["last_end"] = None
             try:
                 rc = proc.wait(timeout=self.START_GRACE_S)
             except subprocess.TimeoutExpired:
@@ -285,6 +343,10 @@ class Recipes:
                 err = f"exited with code {rc} right after start: {_log_tail(log_path, mark)}"
                 r["pid"] = None
                 r["last_error"] = "start failed: " + err
+                lines = _log_lines(log_path, mark)
+                r["last_end"] = {"kind": "start_failed", "code": rc, "at": time.time(),
+                                 "took": None, "line": key_line(lines),
+                                 "tail": "\n".join(lines[-12:])}
                 self._save()
                 return {"ok": False, "error": err, "log": log_path}
             self._procs[r["id"]] = proc

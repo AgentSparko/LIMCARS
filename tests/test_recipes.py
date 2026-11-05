@@ -138,8 +138,9 @@ def test_an_end_seen_after_a_dashboard_restart_has_no_code(tmp_path):
     rs._procs.pop(rid).wait()                     # the old run's child, reaped by its parent
     row = rs2.list()[0]
     assert not row["running"]
-    assert row["last_error"].startswith("ended on its own after ") and "code" not in row["last_error"]
-    assert "bye" in row["last_error"]
+    assert row["last_error"] is None                # unknown exit is not shown as a failure
+    assert "exit code unknown" in row["last_note"] and "bye" in row["last_note"]
+    assert row["last_end"]["kind"] == "unknown" and row["last_end"]["code"] is None
 
 
 def test_stop_is_not_reported_as_ending_on_its_own(tmp_path):
@@ -161,3 +162,34 @@ def test_a_new_start_clears_the_previous_end(tmp_path):
         assert row["running"] and row["last_error"] is None and row["last_note"] is None
     finally:
         rs.stop(rid)
+
+
+def test_a_crash_records_a_structured_end(tmp_path):
+    rs, _rid, res = _start(tmp_path, "sleep 2.5; echo 'loading'; echo 'CUDA out of memory' >&2; "
+                                     "echo 'UserWarning: leaked semaphore' >&2; exit 7")
+    assert res["ok"], res
+    end = _wait_ended(rs)["last_end"]
+    assert end["kind"] == "crash" and end["code"] == 7 and end["took"] >= 2
+    assert end["line"] == "CUDA out of memory"     # the explaining line, not the warning noise
+    assert "loading" in end["tail"] and end["at"]
+
+
+def test_key_line_prefers_errors_and_skips_warning_noise():
+    assert R.key_line(["a", "docker: Error response from daemon: Conflict.", "b"]).startswith("docker:")
+    assert R.key_line(["INFO: Application shutdown complete.",
+                       "UserWarning: resource_tracker: There appear to be 1 leaked"]) == \
+        "INFO: Application shutdown complete."
+    assert R.key_line([]) == ""
+
+
+def test_old_rows_get_a_compact_end_from_their_message(tmp_path):
+    rs = R.Recipes(str(tmp_path / "data"))
+    rid = rs.add("old", "true")["recipe"]["id"]
+    rs.items[0]["last_error"] = ("ended on its own after 140h 00m: --max-time 3 x || { echo "
+                                 "'engine did not come up'; exit 1; } | ===== start 2026-10-30 "
+                                 "07:28:08 :: cmd | engine live on 127.0.0.1:8000")
+    end = rs.list()[0]["last_end"]
+    assert end["kind"] == "unknown" and end["line"] == "engine live on 127.0.0.1:8000"
+    rs.items[0]["last_error"] = "start failed: exited with code 125 right after start: docker: Error x"
+    end = rs.list()[0]["last_end"]
+    assert end["kind"] == "start_failed" and end["code"] == 125 and rid

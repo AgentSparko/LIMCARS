@@ -97,6 +97,10 @@ html[data-theme="light"] .st-bar{background:#dbe3f0}
 .rec-dot.on { background: var(--green); box-shadow: 0 0 6px rgba(52,211,153,.55); }
 .rec-sub { margin: 2px 0 6px 15px; }
 .rec-err { color: var(--rose); }
+.rec-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .85; }
+.rec-log summary { cursor: pointer; opacity: .7; }
+.rec-log pre { margin: 4px 0 0; max-height: 160px; overflow: auto; white-space: pre-wrap;
+  word-break: break-all; font-size: 11px; background: #0b1322; border-radius: 6px; padding: 6px; }
 .rec-btns { display: flex; gap: 6px; }
 .btn.tiny { padding: 3px 14px; font-size: 12px; width: auto; }
 .rec-mrow { display: flex; align-items: center; gap: 8px; padding: 7px 4px;
