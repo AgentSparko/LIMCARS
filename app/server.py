@@ -1006,7 +1006,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.app.hw.ssd_report())
         if path == "/api/coldset":
             from . import coldset
-            return self._json(coldset.report(self.app.cfg, config.DATA))
+            live = set()
+            for s in self.app.engines.all():
+                if s.alive:
+                    live.update(x for x in (s.model, getattr(s, "_served_raw", None)) if x)
+                    if s.model_root:
+                        live.add(os.path.basename(s.model_root.rstrip("/")))
+            return self._json(coldset.report(self.app.cfg, config.DATA, live_models=live))
         m = re.fullmatch(r"/api/stat-models/?", path)
         if m:
             smp = self._picked_sampler(qs)

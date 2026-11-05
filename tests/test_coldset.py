@@ -42,3 +42,16 @@ def test_reserve_peak_survives_a_recreated_slice(tmp_path):
     _cg(tmp_path, 100, 200)            # slice recreated: its own peak restarts low
     res = coldset.report(cfg, tmp_path, now=2.0)["reserve"]
     assert res["peak_bytes"] == 200 and res["peak_ever_bytes"] == 9000 and res["peak_ever_time"] == 1.0
+
+
+def test_only_running_engines_records_are_shown(tmp_path):
+    heat = tmp_path / "heat"
+    heat.mkdir()
+    (heat / "route-heat-rexl3-vic-overlay.status.json").write_text(json.dumps({"time": 1000.0, "routes": 5}), encoding="utf-8")
+    (heat / "auto_cold-last.json").write_text(json.dumps({"time": 900.0, "decision": "kept"}), encoding="utf-8")
+    cfg = {"route_heat_dir": str(heat), "reserve_cgroup": str(tmp_path / "nocg")}
+    other = coldset.report(cfg, tmp_path, now=1060.0, live_models={"glm-5.3-flash-exlr8", "glm53-solo"})
+    assert other == {"available": False, "dir": str(heat), "records": [], "auto_cold": None, "reserve": None}
+    own = coldset.report(cfg, tmp_path, now=1060.0, live_models={"rexl3-vic-overlay", "dsv41"})
+    assert own["available"] and own["records"][0]["name"] == "route-heat-rexl3-vic-overlay"
+    assert own["auto_cold"]["decision"] == "kept"

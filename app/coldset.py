@@ -71,7 +71,12 @@ def reserve(cfg: dict, data_dir: Path, now: float | None = None) -> dict | None:
             "watched_since": rec.get("since"), "tenants": tenants}
 
 
-def report(cfg: dict, data_dir: Path, now: float | None = None) -> dict:
+def report(cfg: dict, data_dir: Path, now: float | None = None,
+           live_models: set[str] | None = None) -> dict:
+    """live_models: weights directory names (and served names) of the engines running now.
+    The recipe names its record route-heat-<weights dir>, so when given, only the records of
+    a running engine are shown (and its boot-time cold-set decision with them): a model
+    without SSD experts (e.g. GLM) doesn't show DeepSeek's files left on disk."""
     now = time.time() if now is None else now
     d = _heat_dir(cfg)
     records = []
@@ -83,6 +88,10 @@ def report(cfg: dict, data_dir: Path, now: float | None = None) -> dict:
         s["age_s"] = round(now - s.get("time", now))
         records.append(s)
     last = _read_json(d / "auto_cold-last.json")
+    if live_models is not None:
+        records = [r for r in records if r["name"][len("route-heat-"):] in live_models]
+        if not records:
+            last = None
     if last:
         last["age_s"] = round(now - last.get("time", now))
     res = reserve(cfg, data_dir, now)

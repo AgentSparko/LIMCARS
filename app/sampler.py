@@ -108,6 +108,7 @@ class EngineSampler(threading.Thread):
         self.kind = eng.get("kind")
         self.label = eng.get("label")   # configured name; the served one is self.model
         self.model = None
+        self.model_root = None  # /v1/models root: the weights path the engine loaded
         self._prev: dict | None = None          # counters at last tick
         self._prev_t = 0.0
         self._hist_prev: dict[str, tuple] = {}  # logical -> hist state at last tick
@@ -207,6 +208,7 @@ class EngineSampler(threading.Thread):
             models = json.loads(self._fetch("/v1/models", timeout=3.0))
             entry = (models.get("data") or [{}])[0]
             mid = entry.get("id")
+            self.model_root = entry.get("root") or None
             # TandemLLM serves every model under one configured id; its `tandem` block names
             # the model actually loaded (and changes when another one is picked)
             loaded = entry.get("tandem") if isinstance(entry.get("tandem"), dict) else {}
