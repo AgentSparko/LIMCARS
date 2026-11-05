@@ -187,7 +187,7 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
         if not price or not (price.get("output") or price.get("cache_write")
                              or price.get("cache_read") or price.get("input")):
             continue
-        models[eid] = eng.get("label") or model or eid
+        models[eng.get("group") or eid] = eng.get("group_label") or eng.get("label") or model or eid
         # machine occupancy for this window, straight from the minute rows:
         # hours a day the box was actually producing tokens (the stat the user
         # asked to see next to the money line — measured, never assumed)
@@ -226,8 +226,15 @@ def daily_savings(store, engines: list[dict], pricing_cfg, days: int) -> dict:
             # cache. `cached` stays on the row as the "of which" figure, and
             # pricing keeps its own (prompt - cached) split, which was always
             # correct.
-            d[eid] = {"cost": round(cost, 4), "prompt": p_, "cached": c_,
-                      "gen": g_, "tokens": (p_ or 0) + (g_ or 0), "priced": mode}
+            row = {"cost": round(cost, 4), "prompt": p_, "cached": c_,
+                   "gen": g_, "tokens": (p_ or 0) + (g_ or 0), "priced": mode}
+            gid = eng.get("group") or eid
+            if gid in d:       # the same model served by another engine that day: one bar
+                o = d[gid]
+                row = {"cost": round(o["cost"] + cost, 4),
+                       **{k: (o[k] or 0) + (row[k] or 0) for k in ("prompt", "cached", "gen", "tokens")},
+                       "priced": o["priced"] if o["priced"] == mode else "mixed"}
+            d[gid] = row
             tot_cost += cost
             tot_tok += (p_ or 0) + (g_ or 0)
             tot_cached += (c_ or 0)

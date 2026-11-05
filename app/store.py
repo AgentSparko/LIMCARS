@@ -760,6 +760,23 @@ class Store:
                     d["first"], d["last"] = min(d["first"], lo), max(d["last"], hi)
         return sorted(out.values(), key=lambda d: -(d["last"] or 0))
 
+    def known_models(self) -> list[str]:
+        """Model names recorded in the token history (the part after '@'), most recent first."""
+        seen: dict[str, int] = {}
+        with self._lock:
+            for tbl, col in (("counter_buckets", "ts"), ("counter_hour", "hour"),
+                             ("counter_day", "day * 86400")):
+                try:
+                    rows = self._con.execute(
+                        f"SELECT engine, MAX({col}) FROM {tbl} WHERE engine LIKE '%@%' GROUP BY engine"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                for k, hi in rows:
+                    m = k.split("@", 1)[1]
+                    seen[m] = max(seen.get(m, 0), hi or 0)
+        return sorted(seen, key=lambda m: -seen[m])
+
     def counter_totals(self, engine: str, since_ts: int | None,
                        real_only: bool = False) -> dict:
         """Totals across BOTH the raw minutes and the aggregate ladder.

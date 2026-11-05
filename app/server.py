@@ -941,6 +941,16 @@ class Handler(BaseHTTPRequestHandler):
                         old = getattr(s, "label", None)
                         engines.append({"id": k["key"], "model": old or s.model,
                                         "label": f"{old or s.id} (before model split)"})
+            from . import modelnames
+            groups: list[list[dict]] = []
+            for e in engines:
+                g = next((g for g in groups if modelnames.same_model(g[0]["model"], e["model"])), None)
+                (g.append(e) if g else groups.append([e])) if e.get("model") else None
+            for g in groups:
+                if len(g) > 1:
+                    name = next((e["model"] for e in g if "label" not in e), g[0]["model"])
+                    for e in g:
+                        e["group"], e["group_label"] = "model:" + modelnames.core(name), name
             payload = {"ok": True, **counters_mod.daily_savings(
                 app.store, engines, app.cfg.get("pricing"), days)}
             cache[days] = (now, payload)

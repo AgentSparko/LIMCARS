@@ -205,7 +205,12 @@ class EngineSampler(threading.Thread):
             return
         try:
             models = json.loads(self._fetch("/v1/models", timeout=3.0))
-            mid = (models.get("data") or [{}])[0].get("id")
+            entry = (models.get("data") or [{}])[0]
+            mid = entry.get("id")
+            # TandemLLM serves every model under one configured id; its `tandem` block names
+            # the model actually loaded (and changes when another one is picked)
+            loaded = entry.get("tandem") if isinstance(entry.get("tandem"), dict) else {}
+            mid = loaded.get("label") or loaded.get("model") or mid
             self._models_fails = 0
             self._models_next = now + self.MODEL_REFRESH_S
         except Exception:  # noqa: BLE001 — cosmetic only
@@ -215,12 +220,32 @@ class EngineSampler(threading.Thread):
             self._models_fails = fails
             self._models_next = now + min(60.0, 2.0 ** fails)
             return
+        if mid and mid != getattr(self, "_served_raw", None):
+            self._served_raw = mid
+            mid = self._known_name(mid)
+        else:
+            mid = self.model
         if mid and mid != self.model:
             if self.model is not None:
                 self._model_switch = True
             self.model = mid
             self.broker.publish("events", json.dumps(
                 {"t": now, "type": "engine_model", "engine": self.id, "model": mid}))
+
+    def _known_name(self, mid: str) -> str:
+        """The name this model already has in the history (any engine), so one model keeps one
+        name across engines, quants and org prefixes (app/modelnames.py)."""
+        from . import modelnames
+        known: list[str] = []
+        try:
+            if self.store:
+                known += self.store.known_models()
+        except Exception:  # noqa: BLE001 — naming must never stop sampling
+            pass
+        peers = getattr(self, "peers", None)
+        if peers is not None:
+            known += peers.declared_labels()
+        return modelnames.pick(mid, known)
 
     def _tick(self) -> None:
         # 8 s, not 1.5 s: a loaded TandemLLM renders /metrics in 4-10 s
@@ -1016,6 +1041,7 @@ class EngineManager:
 
     def _start(self, eng: dict) -> None:
         s = EngineSampler(self.cfg, eng, self.broker, self.store)
+        s.peers = self
         self.samplers[eng["id"]] = s
         s.start()
 
@@ -1082,6 +1108,12 @@ class EngineManager:
                 return dialects.detect(r.read().decode("utf-8", "replace"))
         except Exception:  # noqa: BLE001 — unreachable = not a candidate
             return None
+
+    def declared_labels(self) -> list[str]:
+        """Configured engine labels (operator-written model names). Discovered engines'
+        labels are left out: they echo the served id, which may be a placeholder."""
+        with self._lock:
+            return [s.label for eid, s in self.samplers.items() if s.label and eid not in self._auto]
 
     def get(self, engine_id: str) -> EngineSampler | None:
         with self._lock:
