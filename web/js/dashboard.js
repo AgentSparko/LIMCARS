@@ -2047,7 +2047,8 @@ async function loadRecipes() {
         <span class="rec-name">${escH(r.name)}</span></div>
       <div class="rec-sub muted small">${r.running
         ? `pid ${r.pid} · up ${new Date(r.started_at * 1000).toLocaleTimeString()}`
-        : (r.last_error ? `<span class="rec-err" title="${escH(r.last_error)}">⚠ last start failed: ${escH(r.last_error)}</span>` : 'stopped')}</div>
+        : r.last_error ? `<span class="rec-err" title="${escH(r.last_error)}">⚠ ${escH(r.last_error)}</span>`
+        : r.last_note ? escH(r.last_note) : 'stopped'}</div>
       <div class="rec-btns">
         ${r.running
           ? '<button class="btn tiny rec-stop">■ Stop</button>'

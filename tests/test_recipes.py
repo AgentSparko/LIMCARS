@@ -72,7 +72,7 @@ def test_a_live_container_with_the_name_is_left_alone(tmp_path, monkeypatch, fak
     rs, _rid, res = _start(tmp_path, "docker run --name eng img")
     assert not res["ok"] and "already running" in res["error"], res
     assert not any(c.startswith(("rm", "run")) for c in fake_docker())
-    assert rs.list()[0]["last_error"] == res["error"]
+    assert rs.list()[0]["last_error"] == "start failed: " + res["error"]
 
 
 def test_no_container_yet_just_runs(tmp_path, fake_docker):
@@ -100,3 +100,64 @@ def test_a_long_running_command_starts_and_stops(tmp_path):
     assert rs.stop(rid)["ok"]
     time.sleep(0.3)
     assert not rs.list()[0]["running"]
+
+
+def _wait_ended(rs, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        row = rs.list()[0]
+        if not row["running"]:
+            return row
+        time.sleep(0.2)
+    raise AssertionError("recipe did not end")
+
+
+def test_a_later_crash_shows_how_it_ended(tmp_path):
+    rs, _rid, res = _start(tmp_path, "sleep 2.5; echo 'CUDA out of memory' >&2; exit 7")
+    assert res["ok"], res
+    row = _wait_ended(rs)
+    assert row["pid"] is None
+    assert row["last_error"].startswith("ended on its own after "), row
+    assert "with code 7" in row["last_error"] and "CUDA out of memory" in row["last_error"]
+    assert "===== start" not in row["last_error"]
+
+
+def test_a_clean_finish_is_a_note_not_an_error(tmp_path):
+    rs, _rid, res = _start(tmp_path, "sleep 2.5; echo done")
+    assert res["ok"], res
+    row = _wait_ended(rs)
+    assert row["last_error"] is None
+    assert row["last_note"].startswith("finished on its own after ") and "exit 0" in row["last_note"]
+
+
+def test_an_end_seen_after_a_dashboard_restart_has_no_code(tmp_path):
+    rs, rid, res = _start(tmp_path, "sleep 2.5; echo bye >&2; exit 3")
+    assert res["ok"], res
+    rs2 = R.Recipes(str(tmp_path / "data"))      # the new run did not spawn it
+    time.sleep(3.0)
+    rs._procs.pop(rid).wait()                     # the old run's child, reaped by its parent
+    row = rs2.list()[0]
+    assert not row["running"]
+    assert row["last_error"].startswith("ended on its own after ") and "code" not in row["last_error"]
+    assert "bye" in row["last_error"]
+
+
+def test_stop_is_not_reported_as_ending_on_its_own(tmp_path):
+    rs, rid, res = _start(tmp_path, "sleep 30")
+    assert res["ok"], res
+    assert rs.stop(rid)["ok"]
+    row = rs.list()[0]
+    assert row["last_error"] is None and row["last_note"] is None
+
+
+def test_a_new_start_clears_the_previous_end(tmp_path):
+    rs, rid, res = _start(tmp_path, "sleep 2.5; exit 4")
+    assert res["ok"], res
+    assert _wait_ended(rs)["last_error"]
+    assert rs.update(rid, None, "sleep 30")["ok"]
+    try:
+        assert rs.start(rid)["ok"]
+        row = rs.list()[0]
+        assert row["running"] and row["last_error"] is None and row["last_note"] is None
+    finally:
+        rs.stop(rid)

@@ -19,8 +19,9 @@ lose track of started recipes.
 Start also clears the two ways a launch used to die silently: a stopped
 container still holding the `--name` of the recipe's `docker run` (docker
 refuses the name; Stop leaves such a container behind every time) is removed
-first, and a command that exits within START_GRACE_S is reported as a failed
-start with the tail of its log instead of a silent "started".
+first, a command that exits within START_GRACE_S is reported as a failed
+start with the tail of its log instead of a silent "started", and a recipe
+that ends later without Stop shows how it ended (exit code, log tail).
 """
 from __future__ import annotations
 
@@ -90,6 +91,11 @@ def _log_tail(path: str, start: int, lines: int = 6) -> str:
     return " | ".join(keep[-lines:])[-600:]
 
 
+def _dur(s: float) -> str:
+    s = int(max(0, s))
+    return f"{s}s" if s < 60 else f"{s // 60}m {s % 60:02d}s" if s < 3600 else f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
 class Recipes:
     MAX_CMD = 8000
     MAX_NAME = 80
@@ -101,6 +107,7 @@ class Recipes:
         os.makedirs(self.log_dir, exist_ok=True)
         self._lock = threading.Lock()
         self.items: list[dict] = self._load()
+        self._procs: dict[str, subprocess.Popen] = {}   # started by this dashboard run
 
     # ---------------- persistence ----------------
 
@@ -127,8 +134,34 @@ class Recipes:
     def _alive(pid) -> bool:
         return procs.alive(pid)
 
+    def _reap(self, r: dict) -> None:
+        """A recipe whose process is gone without Stop: record how it ended (lock held)."""
+        if not r.get("pid") or self._alive(r["pid"]):
+            return
+        proc = self._procs.pop(r["id"], None)
+        rc = proc.poll() if proc else None   # unknown when started before a dashboard restart
+        log_path = os.path.join(self.log_dir, f"{r['id']}.log")
+        started = r.get("started_at") or time.time()
+        try:                                  # last log write ~ when it ended; noticed later
+            ended = min(time.time(), max(os.path.getmtime(log_path), started))
+        except OSError:
+            ended = time.time()
+        took = _dur(ended - started)
+        tail = _log_tail(log_path, int(r.get("log_mark") or 0))
+        if rc == 0:
+            r["last_note"] = f"finished on its own after {took} (exit 0)"
+        else:
+            how = ("" if rc is None else f" killed by signal {-rc}" if rc < 0
+                   else f" with code {rc}")
+            r["last_error"] = f"ended on its own after {took}{how}" + (f": {tail}" if tail else "")
+        r["pid"] = None
+        self._save()
+
     def list(self) -> list[dict]:
         out = []
+        with self._lock:
+            for r in self.items:
+                self._reap(r)
         for r in self.items:
             out.append({
                 "id": r["id"], "name": r["name"], "cmd": r["cmd"],
@@ -137,6 +170,7 @@ class Recipes:
                 "running": self._alive(r.get("pid")),
                 "log": os.path.join(self.log_dir, f"{r['id']}.log"),
                 "last_error": r.get("last_error"),
+                "last_note": r.get("last_note"),
             })
         return out
 
@@ -218,7 +252,8 @@ class Recipes:
                     if err:
                         log.write(f"[limcars] not started: {err}\n".encode())
                         log.close()
-                        r["last_error"] = err
+                        r["last_error"] = "start failed: " + err
+                        r["last_note"] = None
                         self._save()
                         return {"ok": False, "error": err}
                 if procs.IS_WIN:
@@ -239,7 +274,8 @@ class Recipes:
                 return {"ok": False, "error": str(exc)[:300]}
             r["pid"] = proc.pid
             r["started_at"] = time.time()
-            r["last_error"] = None
+            r["log_mark"] = mark
+            r["last_error"] = r["last_note"] = None
             try:
                 rc = proc.wait(timeout=self.START_GRACE_S)
             except subprocess.TimeoutExpired:
@@ -248,9 +284,10 @@ class Recipes:
             if rc is not None and rc != 0:
                 err = f"exited with code {rc} right after start: {_log_tail(log_path, mark)}"
                 r["pid"] = None
-                r["last_error"] = err
+                r["last_error"] = "start failed: " + err
                 self._save()
                 return {"ok": False, "error": err, "log": log_path}
+            self._procs[r["id"]] = proc
             self._save()
             return {"ok": True, "pid": proc.pid, "log": log_path}
 
@@ -284,6 +321,7 @@ class Recipes:
                 return {"ok": False, "error": "no such recipe"}
             pid = int(r.get("pid") or 0)
             if not self._alive(pid):
+                self._reap(r)
                 r["pid"] = None
                 self._save()
                 return {"ok": True, "note": "was not running"}
@@ -303,6 +341,9 @@ class Recipes:
                 pass
             except PermissionError as exc:
                 return {"ok": False, "error": f"stop: {exc}"}
+            proc = self._procs.pop(r["id"], None)
+            if proc:
+                proc.poll()
             r["pid"] = None
             r["last_stop_at"] = time.time()
             self._save()
