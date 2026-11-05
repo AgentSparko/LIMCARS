@@ -1089,15 +1089,23 @@ class EngineManager:
                 want[eid] = {"id": eid, "url": url, "kind": None,
                              "label": r.get("model") or r.get("type") or url}
                 declared.add(url)            # never two auto ids on one port
+        changed = False
         with self._lock:
             for eid, eng in want.items():
                 if eid not in self.samplers:
                     self._auto.add(eid)
                     self._start(eng)
+                    changed = True
             for eid in list(self._auto):
                 if eid not in want and eid in self.samplers:
                     self.samplers.pop(eid).stop()   # engine gone: retire sampler
                     self._auto.discard(eid)
+                    changed = True
+        if changed:
+            # open dashboards subscribe per engine topic, so tell them to
+            # re-pull the engine set (an engine swap otherwise needs a reload)
+            self.broker.publish("events", json.dumps(
+                {"t": time.time(), "type": "engines_changed"}))
 
     @staticmethod
     def _metrics_dialect(url: str) -> str | None:

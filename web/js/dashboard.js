@@ -804,6 +804,25 @@ async function hwResync() {
     state.lastHwSeed = Date.now();
   } catch { /* server briefly down — the 30 s watchdog retries */ }
 }
+// The stream only carries the engines known when it opened. While the selected
+// engine is down, check every 10 s whether the server's engine set changed (an
+// engine swap, or auto-discovery finding one); if so, drop the stream so the
+// reconnect path re-seeds, subscribes to the new set and eng() moves to the
+// live engine. The engines_changed event is the fast path; this catches one
+// published before the tab reconnected (e.g. right after a LIMCARS restart).
+async function checkEngineSet() {
+  try {
+    const snap = await (await fetch('/api/snapshot?seconds=1')).json();
+    const have = Object.keys(state.engines).sort().join(',');
+    const now = Object.keys(snap.engines || {}).sort().join(',');
+    if (have !== now && state.sseAbort) state.sseAbort.abort();
+  } catch { /* server down: the reconnect path handles it */ }
+}
+setInterval(() => {
+  if (document.hidden || !state.connected) return;
+  const e = state.engines[eng()];
+  if (!(e && (e.alive || (e.meta && e.meta.alive)))) checkEngineSet();
+}, 10000);
 setInterval(() => {
   if (document.hidden) return;
   const now = Date.now();
@@ -888,6 +907,11 @@ async function connect() {
         } else if (ev === 'events' && o.type === 'node_down') {
           const n = state.nodes && state.nodes[o.node];
           if (n) { n.alive = false; n.error = o.error; }
+        } else if (ev === 'events' && o.type === 'engines_changed') {
+          // an engine came or went (engine swap, auto-discovery): drop this
+          // stream; the reconnect below re-seeds and subscribes to the new set,
+          // and eng() moves off a dead remembered engine onto the live one
+          ac.abort();
         } else if (ev === 'events' && o.type === 'engine_down') {
           const e = state.engines[o.engine];
           if (e && e.meta) e.meta.alive = false;
