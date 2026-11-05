@@ -37,7 +37,12 @@ def alive(pid) -> bool:
     if not pid:
         return False
     if LINUX_PROC:
-        return os.path.isdir(f"/proc/{int(pid)}")
+        try:
+            with open(f"/proc/{int(pid)}/stat", encoding="ascii", errors="replace") as fh:
+                # an exited child nobody reaped yet (zombie) is not running
+                return fh.read().rsplit(")", 1)[-1].split()[0] != "Z"
+        except (OSError, IndexError):
+            return False
     return psutil.pid_exists(int(pid))
 
 
