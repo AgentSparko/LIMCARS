@@ -98,6 +98,9 @@ class EngineSampler(threading.Thread):
         # loop warning: every MTP draft accepted, step after step, for loop_warn_s
         self.loop_win_s = float(cfg.get("loop_window_s", 5.0))
         self.loop_warn_s = float(cfg.get("loop_warn_s", 30.0))
+        # ...and only while the draft counter moves in most samples of the window: an engine that adds a request's
+        # counters when it ends puts them in one sample
+        self.loop_moving_share = float(cfg.get("loop_moving_share", 0.8))
         # served-model regex -> seconds: the KV tile shows the highest reading of that window
         self.kv_peak_models = cfg.get("kv_peak_models", DEFAULT_KV_PEAK_MODELS)
         self._kv_hist: deque = deque()
@@ -797,12 +800,18 @@ class EngineSampler(threading.Thread):
         acceptance pins at the maximum: on DSV4.1 (K=5) a real 9-minute Hermes reasoning
         loop read 6.00 tokens/step every minute, normal reasoning 2-3. Judged over
         loop_window_s of steps so one lucky stretch does not count.
+
+        A window counts only when the draft counter moved in at least loop_moving_share of
+        its samples. gr8 added each request's counters when the request ended: agent traffic
+        then put one burst in nearly every window, and tool-call JSON accepts about 98% of
+        its drafts, so finished requests read as a loop while nothing looped.
         """
         since = now - self.loop_win_s
         drafts = self._win_sum("drafts", since) or 0
         dtok = self._win_sum("draft_tokens", since) or 0
         acc = self._win_sum("accepted_tokens", since) or 0
-        if drafts >= 10 and dtok > 0 and acc >= 0.98 * dtok:
+        if (drafts >= 10 and dtok > 0 and acc >= 0.98 * dtok
+                and self._moving_share("drafts", since) >= self.loop_moving_share):
             if self._full_accept_since is None:
                 self._full_accept_since = since
         else:
@@ -810,6 +819,11 @@ class EngineSampler(threading.Thread):
         secs = now - self._full_accept_since if self._full_accept_since is not None else 0.0
         row["spec_full_accept_s"] = round(secs, 1)
         row["loop_suspect"] = secs >= self.loop_warn_s
+
+    def _moving_share(self, logical: str, since: float) -> float:
+        """The share of the samples since SINCE in which the counter went up."""
+        deltas = [d for t, d, _ in self._counter_win.get(logical) or [] if t >= since]
+        return sum(1 for d in deltas if d > 0) / len(deltas) if deltas else 0.0
 
     def _gen_active_rate(self, now: float) -> float | None:
         """Tokens per second of the ticks that generated, over decode_avg_window_s."""

@@ -246,6 +246,22 @@ def test_loop_warning_needs_every_draft_accepted_for_loop_warn_s():
     assert r["loop_suspect"] is False
 
 
+def test_loop_warning_ignores_counters_that_arrive_per_request():
+    """gr8 added a request's draft counters when it ended. Agent traffic finishing a request
+    every 5 s, each at 98.7% acceptance (tool-call JSON), must not read as a loop: the counter
+    moved in one sample of each window, not in most of them."""
+    s = _mk()
+    t0 = time.time() - 100
+    for i in range(120):                      # 60 s of 0.5 s samples
+        t = t0 + i * 0.5
+        burst = i % 10 == 0
+        for lg, d in (("drafts", 300), ("draft_tokens", 300), ("accepted_tokens", 296)):
+            s._win_delta(lg, 1000 + (d if burst else 0), 1000, t, 0.5)
+        row = {}
+        s._loop_signal(t, row)
+        assert row["loop_suspect"] is False and row["spec_full_accept_s"] <= s.loop_win_s, (i, row)
+
+
 def test_kv_tile_holds_the_peak_only_for_listed_models():
     """DSV4.1 flips 0.70 <-> 1.02 % for ~1 s every 128 tokens: its tile shows the 10 s peak,
     every other model keeps the raw reading."""
