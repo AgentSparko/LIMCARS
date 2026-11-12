@@ -214,6 +214,31 @@ def test_tandemllm_qse_family_detected_and_mapped():
     assert c.get("drafts") is None and c.get("proc_start") is None
 
 
+QSE_REQS_BODY = """qse_requests_total{finish_reason="length"} 1.0
+qse_requests_total{finish_reason="stop"} 8.0
+qse_requests_total{finish_reason="tool_calls"} 195.0
+qse_request_success_total 9.0
+"""
+
+
+def test_tandemllm_requests_total_is_every_finish_reason():
+    # qse_request_success_total is only the stop+length rows (METRICS.md): on
+    # a tool-calling workload it read 11 while the engine served 280. The row
+    # and the completion event must use the full family.
+    dial = D.DIALECTS["tandemllm"]
+    c = D.read_counters(_parse(QSE_REQS_BODY), dial)
+    assert c["req_success"] == 9.0                    # ledger anchor, unchanged
+    assert c["requests_total"] == 204.0               # 1 + 8 + 195, summed rows
+
+
+def test_other_dialects_never_carry_requests_total():
+    # the logical is tandemllm-only; every other family must keep reading
+    # requests through req_success exactly as before
+    for kind, dial in D.DIALECTS.items():
+        if kind != "tandemllm":
+            assert "requests_total" not in dial.get("counter", {}), kind
+
+
 def test_tandemllm_contract_010_fallbacks_and_new_signals():
     body = QSE_BODY.replace("qse_prompt_tokens_cached_total 3000.0\n",
                             "qse_prefill_tokens_reused_total 2500.0\n")

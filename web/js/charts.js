@@ -15,6 +15,24 @@ export const COLORS = {
 const scol = v => typeof v === 'function' ? v() : v;  // palette-reactive:
                                                        // series may carry a
                                                        // getter resolved at draw
+
+// KV tile honesty (drift study 2026-11-10): a pinned --floor in kv_ref_cmd
+// makes the recomputed pool a stale launch-era number — the tile must say so
+// instead of quietly understating KV pressure (measured: 66.9% shown while
+// the honest reading was 84.3%). Pure, so tests/js/kv_honesty.mjs can fire it.
+export const kvPinNote = l => (l && l.kv_ref_pin_gb != null)
+  ? ` · ⚠ pool floor pinned ${l.kv_ref_pin_gb} GiB — not the launch's`
+  : '';
+
+// One ring per ref step-change on the dashed pool line: the reference can
+// jump with zero usage change (new launch knobs, a pin dropped), and without
+// a mark the % history cannot be told apart from a load spike.
+export function stepMarks(pts, x, y, color) {
+  return pts.filter(([, v]) => Number.isFinite(v))
+    .map(([t, v]) => `<circle cx="${x(t).toFixed(1)}" cy="${y(v).toFixed(1)}" `
+      + `r="3.5" fill="none" stroke="${color}" stroke-width="1.4"/>`)
+    .join('');
+}
 export function fmt(v, d = 1) {
   if (v === null || v === undefined || !Number.isFinite(v)) return '–';
   if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString('en-US');
@@ -71,7 +89,7 @@ export const RATE_WHILE_ACTIVE = {
 // Fields that report a false 0 while idle (vLLM: kv_cache_usage_perc = 0 while the
 // prefix-cached blocks are still resident). The number holds the last real reading;
 // the curve must hold it too, or the two visibly contradict each other.
-export const HOLD_LAST_NONZERO = new Set(['kv_pct', 'kv_pct_shown']);
+export const HOLD_LAST_NONZERO = new Set(['kv_pct', 'kv_pct_shown', 'kv_tok']);
 
 /**
  * The value to append for one engine field on one frame — pure, so it can be tested
@@ -89,7 +107,13 @@ export function seriesSample(field, raw, frame, held) {
     return raw;                     // never seen a real reading yet: 0 is all we know
   }
   const flag = RATE_WHILE_ACTIVE[field];
-  if (flag && frame && frame[flag] === false) return null;
+  // A prefill value the engine's live board published mid-flight carries the
+  // prefill_live marker: it is a MEASURED speed, not a stale hold, so the
+  // curve keeps drawing it even while the tile dims — the dim is the operator's
+  // lane-activity UX and stays driven by the activity flag alone (2026-11-09:
+  // the null used to erase the line through every 60 s prefill).
+  if (flag && frame && frame[flag] === false &&
+      !(field === 'prefill_tps_avg' && frame.prefill_live === 1)) return null;
   return raw;
 }
 
@@ -249,6 +273,11 @@ export class LineChart {
     this.opts.series.forEach((s, si) => {
       const pts = data[si];
       if (!pts.length) return;
+      if (s.mark) {
+        // marker series: rings at the finite points only, never a polyline
+        out += stepMarks(pts, x, y, scol(s.color));
+        return;
+      }
       // Break the polyline on null gap markers — one path per finite run, so
       // an unmeasurable stretch renders BLANK instead of as a straight
       // connector between the samples on either side.
@@ -409,4 +438,16 @@ export function spark(svgEl, values, color = COLORS.cobalt, opts = {}) {
     });
     svgEl.addEventListener('mouseleave', kill);
   }
+}
+
+// Engine-table "Seen" cell: how long ago the last SUCCESSFUL scrape was.
+// Pure so tests/js/scrape_age.mjs can falsify it without a DOM. The caller
+// passes the age in seconds (client clock, seeded from the server's
+// last_scrape so no reader-clock math is needed here).
+export function seenLabel(ageS) {
+  if (ageS == null || !Number.isFinite(ageS)) return '–';
+  const s = Math.max(0, ageS);
+  if (s < 90) return `${Math.round(s)} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
 }

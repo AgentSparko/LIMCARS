@@ -9,6 +9,10 @@ User=%i
 WorkingDirectory=/home/%i/projects/limcars-next
 ExecStart=/usr/bin/env bash /home/%i/projects/limcars-next/scripts/start.sh
 Restart=on-failure
+# Recipe engines started from the dashboard must outlive a dashboard restart:
+# the default KillMode=control-group SIGKILLs the whole cgroup, and the recipe
+# launcher's start_new_session does not escape a cgroup kill. See app/recipes.py.
+KillMode=process
 RestartSec=3
 Nice=5
 

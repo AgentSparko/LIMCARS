@@ -287,18 +287,30 @@ function renderBatches() {
     card.dataset.key = mkey; // for follow-state re-render + per-card button lookup
     const head = el('div', 'batch-head');
     const left = el('div');
-    const titleEl = el('div', 'b-title', s.profile === 'default' ? 'agent' : s.profile);
-    const agentTag = el('span', 'b-agent ' + (s.profile === 'default' ? 'agent' : 'main'), s.profile === 'default' ? 'main agent' : 'sub-agent');
+    /* DSH/DS Bot entries carry a human display name (bot name, session
+       title, or folder); Hermes entries keep their profile label exactly
+       as before. */
+    const isDsh = s.profile === 'dsb' || s.profile === 'dsh';
+    const titleEl = el('div', 'b-title', isDsh ? (s.display || s.title || s.profile)
+                                               : (s.profile === 'default' ? 'agent' : s.profile));
+    const agentTag = el('span', 'b-agent ' + (isDsh ? 'main' : (s.profile === 'default' ? 'agent' : 'main')),
+      isDsh ? (s.profile === 'dsb' ? 'DSB bot' : 'DSH session')
+            : (s.profile === 'default' ? 'main agent' : 'sub-agent'));
     titleEl.insertBefore(agentTag, titleEl.firstChild);
     left.appendChild(titleEl);
     // Row 1 (meta): model + msg count (no date here — the date is its own
     // full-width row further down, per the user's layout request).
     const sub = el('div', 'b-sub');
     if (s.model) sub.appendChild(el('span', 'b-model', s.model));
-    sub.appendChild(el('span', '', (s.msg_count || 0) + ' msgs'));
+    /* DSH msg_count counts user messages in the last 2 MiB of the transcript
+       only — visible ≈ so the approximation is honest on the card itself. */
+    const isDshS = s.profile === 'dsb' || s.profile === 'dsh';
+    sub.appendChild(el('span', '', s.degraded ? 'no readable msgs'
+        : (isDshS ? '≈' : '') + (s.msg_count || 0) + ' msgs'));
     left.appendChild(sub);
     let pill;
-    if (s.live) pill = el('span', 'pill running', 'live');
+    if (s.degraded) pill = el('span', 'pill failed', 'unreadable');
+    else if (s.live) pill = el('span', 'pill running', 'live');
     else pill = el('span', 'pill done', s.ended_at ? 'ended' : 'idle');
     head.appendChild(left); head.appendChild(pill);
     head.appendChild(el('span', 'b-chevron', '▶'));
@@ -439,7 +451,8 @@ async function exportMainSession(profile, sid) {
   try {
     const d = await (await fetch(API + 'main-transcript/' + encodeURIComponent(profile) + '/' + encodeURIComponent(sid) + '?limit=5000', { cache: 'no-store' })).json();
     const s = state.mainSessions.find(x => x.id === sid && x.profile === profile) || {};
-    const text = '# ' + (profile === 'default' ? 'agent' : profile) + ' · ' + sid +
+    const text = '# ' + (profile === 'default' ? 'agent'
+        : (profile === 'dsb' || profile === 'dsh') ? (s.display || profile) : profile) + ' · ' + sid +
       '\n# ' + (s.title || '') +
       '\n# model: ' + (d.model || s.model || '?') + '   msgs: ' + (s.msg_count != null ? s.msg_count : (d.lines || []).length) +
       '\n# exported: ' + new Date().toISOString() +
@@ -872,13 +885,14 @@ async function loadMainTranscript(profile, sid, fresh) {
   const view = $('taskView');
   view.hidden = false;
   if (fresh) $('timeline').innerHTML = '';
-  $('taskTitle').textContent = (profile === 'default' ? 'agent' : profile) + ' · ' + sid;
-  $('taskStatus').className = s.live ? 'pill running' : 'pill done';
-  $('taskStatus').textContent = s.live ? 'live' : (s.ended_at ? 'ended' : 'idle');
+  $('taskTitle').textContent = ((profile === 'default' ? 'agent'
+    : (profile === 'dsb' || profile === 'dsh') ? (s.display || profile) : profile)) + ' · ' + sid;
+  $('taskStatus').className = s.degraded ? 'pill failed' : (s.live ? 'pill running' : 'pill done');
+  $('taskStatus').textContent = s.degraded ? 'unreadable' : (s.live ? 'live' : (s.ended_at ? 'ended' : 'idle'));
   $('taskGoal').textContent = s.title || (s.last_activity_desc || '');
   const meta = [];
   if (s.model) meta.push(s.model);
-  meta.push((s.msg_count || 0) + ' msgs');
+  meta.push(s.degraded ? 'no readable msgs' : (s.msg_count || 0) + ' msgs');
   if (s.last_activity_s !== null && s.last_activity_s !== undefined) meta.push('active ' + (s.last_activity_s < 5 ? 'just now' : s.last_activity_s + 's ago'));
   $('taskMeta').textContent = meta.join('  ·  ');
 
@@ -888,6 +902,15 @@ async function loadMainTranscript(profile, sid, fresh) {
     $('taskStatus').textContent = 'load failed';
     $('taskStatus').className = 'pill failed';
     $('taskGoal').textContent = e.message;
+    return;
+  }
+  /* 404 (unreadable/corrupt transcript, or the session vanished): say so
+     instead of rendering a silently empty timeline. */
+  if (!data || data.error) {
+    $('taskStatus').textContent = 'unreadable';
+    $('taskStatus').className = 'pill failed';
+    $('taskGoal').textContent = 'Transcript could not be read (missing or corrupt).';
+    if (fresh || !mainFollow || mainFollow.sid !== sid) $('timeline').innerHTML = '';
     return;
   }
   state.logCache['main:' + profile + ':' + sid] = (data.lines || []).join('\n');
@@ -939,8 +962,8 @@ function startMainFollow() {
     const s = state.mainSessions.find(x => x.id === mainFollow.sid && x.profile === mainFollow.profile);
     if (s) {
       mainFollow.live = !!s.live;
-      $('taskStatus').className = s.live ? 'pill running' : 'pill done';
-      $('taskStatus').textContent = s.live ? 'live' : (s.ended_at ? 'ended' : 'idle');
+      $('taskStatus').className = s.degraded ? 'pill failed' : (s.live ? 'pill running' : 'pill done');
+      $('taskStatus').textContent = s.degraded ? 'unreadable' : (s.live ? 'live' : (s.ended_at ? 'ended' : 'idle'));
     }
     if (!mainFollow.live && Date.now() - lastGrow > STALE_STOP_MS) {
       stopPoll();

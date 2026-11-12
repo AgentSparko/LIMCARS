@@ -66,6 +66,13 @@ def samples_now() -> list[dict]:
                 "messages": int(r["n"]),
                 "active": (r["la"] or 0) >= act_cut,
             })
+    # DSH / DS Bot clients: real tokens from the usage ledger (bot handoff
+    # parts fold into one row); same row shape, so the chart needs no change.
+    try:
+        from .dsh_home import chart_samples
+        out.extend(chart_samples())
+    except Exception:  # noqa: BLE001 — one client source must not kill the chart
+        pass
     return out
 
 

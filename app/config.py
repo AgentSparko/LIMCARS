@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -42,6 +43,31 @@ DEFAULTS = {
     "allowed_hosts": [],
     "live_hz": 2.0,          # engine sampler ticks per second (1-4)
     "hw_hz": 1.0,            # hardware sampler ticks per second
+    # Disk watchdog thresholds, GiB of TRUE writable free (statvfs f_bavail —
+    # df's Avail, not f_bfree: the ext4 reserve is not writable by us). The
+    # tile goes red below warn, flashes + raises the critical banner below
+    # crit. Defaults are the post-2026-11-09-crash house guards: warn <10,
+    # hard floor <5.
+    "disk_warn_gib": 10.0,
+    # Voice-lane tile (app/voice.py): the TCP port the voice-bot serving
+    # process listens on (0 = tile off, zero per-tick cost). Optional JSON
+    # endpoint carrying round_trip_ms / ttft_ms / latency_ms for the
+    # last-round-trip figure; without one the tile shows the latency dash.
+    # When set, point it at the 127.0.0.1 LITERAL, not "localhost": name
+    # resolution (search domains / IPv6-first ::1) can eat the whole
+    # 0.4 s fetch timeout every tick where the literal connects directly.
+    "voice_port": 0,
+    "voice_latency_url": "",
+    # Voice-lane memory gates (app/voice_gates.py) — the guard lines from
+    # the 2026-11-10 build-phase verdict: load refused below 10 GiB
+    # MemAvailable; watchdog trips below 6 GiB sustained 30 s, rearms
+    # only after recovery to 7 GiB (hysteresis). The voice launcher reads
+    # these; the dashboard itself enforces nothing.
+    "voice_gate_load_gib": 10.0,
+    "voice_gate_watch_low_gib": 6.0,
+    "voice_gate_watch_secs": 30.0,
+    "voice_gate_watch_recover_gib": 7.0,
+    "disk_crit_gib": 5.0,
     "ring_seconds": 3900,    # in-memory ring depth (65 min — supports the 1 h window)
     # 1 s-resolution ring window. This is the whole database: ~1.7 KB per tick
     # row per engine, so 7 d was roughly 1 GB/engine of data the UI never
@@ -113,5 +139,19 @@ def load() -> dict:
         cfg["db_path"] = v
     if v := os.environ.get("LIMCARS_TOKEN"):
         cfg["auth_token"] = v
+    # L2 (second audit, 2026-11-10): a hand-typed engine row can carry
+    # kv_ref_tokens as a STRING ("836140"). The sampler does arithmetic on it
+    # every refresh — a TypeError caught fail-open, so the ref silently stops
+    # stepping and the step mark dies while the tile looks fine. Coerce a
+    # parseable, finite, positive numeric string to float; anything else
+    # becomes None — the tile shows a dash until the recompute lands, and a
+    # dash beats a wrong number or a silently dead marker.
+    for eng in cfg.get("engines") or []:
+        if isinstance(eng, dict) and isinstance(eng.get("kv_ref_tokens"), str):
+            try:
+                v = float(eng["kv_ref_tokens"])
+                eng["kv_ref_tokens"] = v if v > 0 and math.isfinite(v) else None
+            except ValueError:
+                eng["kv_ref_tokens"] = None
     DATA.mkdir(exist_ok=True)
     return cfg

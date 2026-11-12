@@ -132,6 +132,33 @@ engine family is read through the most exact counter pairing it offers — so yo
 never see the phantom "100k tokens in half a second" spikes other dashboards
 happily plot. 🧮
 
+### 📏 The KV pool's reference line
+
+TandemLLM's pool is dynamic — pages commit as contexts grow and return when idle —
+so it publishes no fixed ceiling. The setup wizard's *tokens fit in all* figure is
+computed on demand and **never stored**, and its route exists only in `--setup`
+mode, so a *serving* engine cannot answer the question at all. Two per-engine keys
+in `data/config.json` put a marker on the KV chart anyway:
+
+| key | what it does |
+|---|---|
+| `kv_ref_tokens` | the number you typed: the dashed line and the `x / y tok used` sub-line |
+| `kv_ref_cmd` | a command that **recomputes** it from the engine's own registry and launch (`scripts/pool_estimate.py`), refreshed off the sampler's clock (`kv_ref_ttl_s`, default 15 min). A failing command keeps the last good number and records why — a stale marker beats a wrong one. |
+
+`scripts/pool_estimate.py` re-implements the wizard's arithmetic on purpose and
+publishes nothing unless it reproduces every case in the engine's own
+`models/estimate-cases.json`: a formula change upstream surfaces as a drift
+report, not a quietly wrong line. The install folder is **auto-detected** from
+the running engine — the process owning the port is read through `/proc`, so
+the marker follows TandemLLM wherever it is installed and survives an upgrade
+that moves the folder; `--engine-dir` only stands in when no engine runs.
+The marker is the wizard's own figure for the running
+profile, window and floor. When the launch's env prices a knob the registry does
+not carry, the sub-line shows that price beside the marker — on this box the env
+says 1.5 GiB per side slot and the registry 0.0, and the engine committing
+425,984 rows with 22.8 GiB still available says the registry is the closer truth. `kv_ref_cmd` runs a shell command, so it is read **only**
+from the config file — never settable over the API.
+
 ![Server config — engine launch parameters, KV pool, spec decoding](docs/screenshots/4.jpg)
 
 ## 🚀 Quick start
@@ -139,7 +166,7 @@ happily plot. 🧮
 ```bash
 git clone https://github.com/AgentSparko/LIMCARS.git
 cd LIMCARS
-python3 -m pytest tests/ -q     # 333 tests, stdlib pytest, no GPU/network/engine needed
+python3 -m pytest tests/ -q     # 502 tests, stdlib pytest, no GPU/network/engine needed
 python3 -m app                  # open http://localhost:8951 🎉
 ```
 
@@ -183,6 +210,12 @@ Starts at boot ✅ restarts itself on failure ✅ plays nice under load (`Nice=5
 `scripts/start.sh` is also the manual foreground entry point — it `cd`s to the
 repo and execs `python3 -m app`. Watch it with
 `systemctl status limcars-next@$(whoami)` or `journalctl -u limcars-next@$(whoami) -f`.
+
+**Keep `KillMode=process` in the unit if you edit it.** Engines started from the
+sidebar's recipes are children of the dashboard, and systemd's default
+`KillMode=control-group` SIGKILLs every process in the unit's cgroup — so
+restarting the dashboard would take a serving engine down with it. The recipe
+launcher's `start_new_session` escapes a shell kill, not a cgroup kill.
 
 ### cron @reboot (no systemd?)
 

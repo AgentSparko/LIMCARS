@@ -153,3 +153,17 @@ html[data-theme="light"] .st-bar{background:#dbe3f0}
 .node-pick { display: flex; flex-wrap: wrap; gap: 6px; }
 .node-pick[hidden], .node-err[hidden] { display: none; }
 .node-err { color: var(--rose); }
+
+/* disk watchdog (app/diskwatch.py): tile warn/crit + critical banner.
+   Colors are rgba/var-based so both themes read them without overrides,
+   same recipe as .stale-banner. */
+.disk-banner { margin: 0 0 10px; padding: 12px 16px; border-radius: 10px; font-size: 14px;
+  border: 1px solid rgba(251, 113, 133, .7); background: rgba(251, 113, 133, .14); color: var(--text);
+  animation: disk-flash 1.2s steps(2, start) infinite; }
+.disk-banner[hidden] { display: none; }
+@keyframes disk-flash { 50% { background: rgba(251, 113, 133, .32); border-color: var(--rose); } }
+@media (prefers-reduced-motion: reduce) { .disk-banner { animation: none; } }
+.side-tiles .st.warn { border-color: rgba(245, 158, 11, .8); }
+.side-tiles .st.warn .v { color: #f59e0b; }
+.side-tiles .st.crit { border-color: var(--rose); animation: disk-flash 1.2s steps(2, start) infinite; }
+.side-tiles .st.crit .v { color: var(--rose); }

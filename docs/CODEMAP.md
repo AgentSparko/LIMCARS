@@ -1,8 +1,11 @@
 # LIMCARS — Code Map
 
 Derived from the tree, not carried forward from a previous version — a map copied forward carries
-that version's drift. Measured now: `ls app/*.py | wc -l` → **27 modules**, `wc -l app/*.py` →
-**7,139 lines**, **29 test files / 247 tests**, `find web -type f` → 10.
+that version's drift. Counts rot the moment code moves — this map once carried a test count
+that outlived its own suite by hundreds — so it carries measurement pointers, not numbers:
+`ls app/*.py | wc -l` (modules), `wc -l app/*.py` (lines), `python3 -m pytest tests/ -q`
+(test count; the README's figure is measured this way at each deploy commit), `find web -type f`
+(web files).
 If this file and the code disagree, the code is right and this file is a bug — and
 `tests/test_docs_knobs.py` exists to make that painful rather than silent.
 
@@ -62,21 +65,21 @@ against *that* list — measured, never grepped.
 
 | Module | Owns | Load-bearing detail |
 |---|---|---|
-| `sampler.py` (815) | Polls engines, builds 1 s samples, drives the ring | `except Exception as exc: self._fail(exc)` sits **inside** the `while not self._stop.is_set()` loop, so one bad scrape is recorded, not fatal |
-| `server.py` (946) | Routing, auth gates, config writes, SSE | `_picked_sampler(qs)` must resolve the browser-selected `?engine=`; using `samplers[0]` makes money endpoints report the wrong engine (a lane regressed this; `tests/test_engine_selection.py` locks it) |
-| `store.py` (895) | SQLite (WAL), retention, ring/stats storage | `_PRUNEABLE` frozenset of `(table, column)` — never widen to caller strings; `set_persist_window()` + `compact()` apply retention without restart; `_lean()` is a **deny-list** (unlisted = kept); `ring_stats()` cached 30 s because `/api/storage` polls a full-table `SUM(LENGTH())` |
-| `counters.py` (566) | **The money math** | capacity = best demonstrated hour × 8760; two named utilisation bases, never blended; measured vs synthetic decided by ONE SQL predicate shared with the fold |
-| `tiers.py` (478) | Long-horizon ladder (hourly + daily) | `hour` is **epoch seconds**, `day` is an **epoch-day index** — comparing one against the other's unit silently sums zero, and it did |
-| `live_engines.py` (443) | Finds engines wherever they were started | containers + `/proc` + port probing; discovery, never authority over what an engine is serving |
-| `dialects.py` (420) | Per-engine metric maps | every name must exist in the engine — see Dialects |
-| `maintenance.py` (234) | Self-tidy: fold, thin, compact | the pre/post-VACUUM invariant **fails closed**: an unreadable baseline means no compaction (an empty result once passed the check vacuously); two cadences on one thread — thin every `thin_interval_s`, compact on `compact_interval_s` or when a thin is big |
-| `hw.py` (244) | Host + GPU sampling, in-process rings | `series_keys()` = `_BASE_KEYS` + auto-charted `gpu*/vram*`; `_BASE_KEYS` (`load1`, `load5`, `swap_used_gb`, `disk_r_mbs`, `net_*`) are **charted but appear nowhere in the JS** — a grep calls them dead and once deleted working panel series |
-| `nodes.py` (271) | Agentless remote GPU over ssh | options splice **before** `--`, so `sanitise_ssh_opts()` is an execution gate, not a style rule |
-| `recipes.py` (202) | User-saved launch commands | `shell=True` is deliberate (recipes *are* shell lines) — this is why remote writes fail closed |
-| `swatch.py` (285) | Hermes Traces port | reads Hermes state; private content, gated like traces |
-| `auth.py` (154) | password → scrypt, per-IP lockout | loopback exempt from the write gate |
-| `prom.py` (153) | Prometheus text parser | histogram families exist only suffixed (`_bucket`/`_sum`/`_count`) |
-| `pricing.py` (175) | Cloud price table, tier math | drives every `$` figure; remote-write gated; `display_name`/`provider` are operator strings; unknown price ⇒ UNKNOWN, never `$0.00` |
+| `sampler.py` | Polls engines, builds 1 s samples, drives the ring | `except Exception as exc: self._fail(exc)` sits **inside** the `while not self._stop.is_set()` loop, so one bad scrape is recorded, not fatal |
+| `server.py` | Routing, auth gates, config writes, SSE | `_picked_sampler(qs)` must resolve the browser-selected `?engine=`; using `samplers[0]` makes money endpoints report the wrong engine (a lane regressed this; `tests/test_engine_selection.py` locks it) |
+| `store.py` | SQLite (WAL), retention, ring/stats storage | `_PRUNEABLE` frozenset of `(table, column)` — never widen to caller strings; `set_persist_window()` + `compact()` apply retention without restart; `_lean()` is a **deny-list** (unlisted = kept); `ring_stats()` cached 30 s because `/api/storage` polls a full-table `SUM(LENGTH())` |
+| `counters.py` | **The money math** | capacity = best demonstrated hour × 8760; two named utilisation bases, never blended; measured vs synthetic decided by ONE SQL predicate shared with the fold |
+| `tiers.py` | Long-horizon ladder (hourly + daily) | `hour` is **epoch seconds**, `day` is an **epoch-day index** — comparing one against the other's unit silently sums zero, and it did |
+| `live_engines.py` | Finds engines wherever they were started | containers + `/proc` + port probing; discovery, never authority over what an engine is serving |
+| `dialects.py` | Per-engine metric maps | every name must exist in the engine — see Dialects |
+| `maintenance.py` | Self-tidy: fold, thin, compact | the pre/post-VACUUM invariant **fails closed**: an unreadable baseline means no compaction (an empty result once passed the check vacuously); two cadences on one thread — thin every `thin_interval_s`, compact on `compact_interval_s` or when a thin is big |
+| `hw.py` | Host + GPU sampling, in-process rings | `series_keys()` = `_BASE_KEYS` + auto-charted `gpu*/vram*`; `_BASE_KEYS` (`load1`, `load5`, `swap_used_gb`, `disk_r_mbs`, `net_*`) are **charted but appear nowhere in the JS** — a grep calls them dead and once deleted working panel series |
+| `nodes.py` | Agentless remote GPU over ssh | options splice **before** `--`, so `sanitise_ssh_opts()` is an execution gate, not a style rule |
+| `recipes.py` | User-saved launch commands | `shell=True` is deliberate (recipes *are* shell lines) — this is why remote writes fail closed |
+| `swatch.py` | Hermes Traces port | reads Hermes state; private content, gated like traces |
+| `auth.py` | password → scrypt, per-IP lockout | loopback exempt from the write gate |
+| `prom.py` | Prometheus text parser | histogram families exist only suffixed (`_bucket`/`_sum`/`_count`) |
+| `pricing.py` | Cloud price table, tier math | drives every `$` figure; remote-write gated; `display_name`/`provider` are operator strings; unknown price ⇒ UNKNOWN, never `$0.00` |
 | `procs.py`, `engine_info.py`, `clients.py`, `sse.py`, `rings.py`, `session_tokens.py`, `hermes_home.py`, `services.py`, `probe.py`, `config.py` | process helpers, server info, per-client rings, pub/sub, settings | `config.py`: defaults < `data/config.json` < `LIMCARS_*` env |
 
 ## 3. Storage
@@ -208,7 +211,7 @@ Adding an engine means adding a dialect and **nothing else**. Never special-case
 `web/js/dashboard.js` is the dashboard (cards, bubbles, charts, recipe manager, pricing editor,
 password dialog); `charts.js` the plotting. `escH` (`dashboard.js:383`) is the only HTML-escaping
 path for foreign text — engine model names, Hermes session titles, LAN-submitted recipe names,
-pricing labels — with **40 call sites**. Contract pinned by `tests/test_web_escapes.py`: the class
+pricing labels — at every call site. Contract pinned by `tests/test_web_escapes.py`: the class
 covers `& < > " ' \`, the entity map has an entry per class member, foreign fields reach sinks
 escaped (`textContent` and `title="…"`).
 
@@ -220,19 +223,19 @@ client can name — including `histNum`/`histMs`/`histBasis` (`dashboard.js:104-
 
 | Guard | File | Catches |
 |---|---|---|
-| 255 tests / 31 files | `tests/` | everything below is also a test |
-| ring storage | `test_ring_storage.py` (12) | unread field stored, caller row mutated, thin losing a minute, row byte budget, a text metric costing the engine its samples, `ring_stats` caching |
-| sparkline stats | `test_spark_stats.py` (11) | stats not surviving the prune, the 7-day sparkline amputated, watermark skipping points, stride/keys drifting from the consumer |
-| render contract | `test_render_contract.py` (7) | deny-list touching a charted field, dynamic-family drift |
-| money types | `test_money_types.py` (4) | text money vanishing from `SUM()` / understating it 1000×, `p + g` 500ing the money endpoint, NULL-as-0.0, a repair that runs twice |
-| ladder | `test_tiers.py` (20) | unit confusion, a fold shrinking history, a reader trusting an unbuilt rung |
-| money | `test_priced_history.py` (8), `test_lost_potential.py` (17) | prices rewriting history, capacity/duty semantics |
-| self-tidy | `test_self_tidy.py` (13) | VACUUM losing rows, guard failing open, probe wedging on the lock |
+| test suite | `tests/` | everything below is also a test; `python3 -m pytest tests/ -q` prints the live count |
+| ring storage | `test_ring_storage.py` | unread field stored, caller row mutated, thin losing a minute, row byte budget, a text metric costing the engine its samples, `ring_stats` caching |
+| sparkline stats | `test_spark_stats.py` | stats not surviving the prune, the 7-day sparkline amputated, watermark skipping points, stride/keys drifting from the consumer |
+| render contract | `test_render_contract.py` | deny-list touching a charted field, dynamic-family drift |
+| money types | `test_money_types.py` | text money vanishing from `SUM()` / understating it 1000×, `p + g` 500ing the money endpoint, NULL-as-0.0, a repair that runs twice |
+| ladder | `test_tiers.py` | unit confusion, a fold shrinking history, a reader trusting an unbuilt rung |
+| money | `test_priced_history.py`, `test_lost_potential.py` | prices rewriting history, capacity/duty semantics |
+| self-tidy | `test_self_tidy.py` | VACUUM losing rows, guard failing open, probe wedging on the lock |
 | engine selection | `test_engine_selection.py` | the wrong engine's money shown |
-| security | `test_security_http.py` (16), `test_nodes_ssh_opts.py` (31), `test_auth.py` | unauthenticated writes, ssh option injection, lockout, a query string choosing the scan size |
+| security | `test_security_http.py`, `test_nodes_ssh_opts.py`, `test_auth.py` | unauthenticated writes, ssh option injection, lockout, a query string choosing the scan size |
 | portability | `test_portability.py`, `test_portability_linux.py` | Windows path and `/proc` path, and that they agree |
 | docs/code drift | `test_docs_knobs.py` | a documented knob the code does not implement |
-| explicit encodings | `test_explicit_encodings.py` (2) | a text open that leaves the encoding to the platform — the bug that turned the Windows lane red |
+| explicit encodings | `test_explicit_encodings.py` | a text open that leaves the encoding to the platform — the bug that turned the Windows lane red |
 | **upgrade rehearsal** | `scripts/limcars_upgrade_rehearsal.py` | a real old database, old code as the baseline, deep diff of every payload the dashboard renders, plus the file actually shrinking |
 | contract diff | `scripts/limcars_contract_snapshot.py` + `limcars_contract_diff.py` | a storage change moving a visible reading; the contract is derived from the app so it cannot drift from what is rendered |
 | tidy / ladder CLIs | `scripts/limcars_tidy.py` (`--tier`), `scripts/ladder_live_proof.py` | operator-driven migration with a money gate |

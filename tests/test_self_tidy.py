@@ -137,10 +137,12 @@ def test_it_refuses_when_the_disk_cannot_hold_a_second_copy(tmp_path, monkeypatc
     declining is the correct behaviour, not a failure."""
     st = _fat_store(str(tmp_path / "t.db"))
     m = Maintenance(CFG, st)
-    # a stub with the one attribute the guard reads; the earlier
-    # os.statvfs_result(...) fake had the wrong arity and never reached the guard
-    monkeypatch.setattr("shutil.disk_usage",
-                        lambda p: type("Usage", (), {"free": 1})())
+    # a stub with the one attribute the guard reads; the guard measures
+    # f_bavail via app.hw._disk_free_bytes since 2026-11-09 (shutil's free is
+    # f_bfree and counts root-reserved blocks as writable), so the seam to
+    # stub is that helper — an earlier os.statvfs_result fake had the wrong
+    # arity and never reached the guard.
+    monkeypatch.setattr("app.maintenance._disk_free_bytes", lambda p: 1)
     rep = m.run_once()
     assert rep["vacuumed"] is False and rep["skipped"] == "disk"
     assert "needs" in m.status["note"]

@@ -16,6 +16,13 @@ killpg SIGTERM → grace → SIGKILL so launch scripts with children die fully.
 Running state is re-derived from /proc, so a dashboard restart does not
 lose track of started recipes.
 
+The session is NOT what keeps an engine alive under systemd: a new session
+escapes a shell kill, but the child stays in the dashboard unit's CGROUP, and
+systemd's default KillMode=control-group SIGKILLs every process in it — so
+restarting limcars.service used to take the live engine down with the
+dashboard. The unit must set KillMode=process (scripts/limcars.service,
+scripts/limcars-next@.service); without it, Start survives but Restart kills.
+
 Start also clears the two ways a launch used to die silently: a stopped
 container still holding the `--name` of the recipe's `docker run` (docker
 refuses the name; Stop leaves such a container behind every time) is removed

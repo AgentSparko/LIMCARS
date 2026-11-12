@@ -257,6 +257,14 @@ _TANDEM_MAP = {
                        "qse_generation_tokens_total"],
         "req_success": ["tandemllm:requests_total", "qwen38:requests_total",
                         "qse_request_success_total"],
+        # ALL finished generations, by every finish reason. qse_request_success_total
+        # is only the stop/length rows (METRICS.md), so on a tool-calling workload
+        # it counted 11 while the engine served 280 — the row and the completion
+        # event must read the full family (prom.total sums the finish_reason rows).
+        # req_success stays the ledger/audit anchor: counter_raw rows already
+        # stored under it must keep comparing like for like.
+        "requests_total": ["tandemllm:requests_total", "qwen38:requests_total",
+                           "qse_requests_total"],
         # tokens genuinely run through the layers (excludes cache-restored), so
         # this is the sampler's engine-native live-prefill path
         "prefill_tokens": ["qse_prefill_tokens_forwarded_total"],
@@ -285,6 +293,18 @@ _TANDEM_MAP = {
     # on_request), not per step: the sampler must never read a per-tick
     # counter difference as a speed for this engine.
     "gen_completion_charged": True,
+    # qse_request_decode_tokens_per_second is PER REQUEST (one lane's speed).
+    # With several requests in flight the honest "now" speed is the AGGREGATE
+    # across lanes — the sampler reads it from the engine's live endpoint
+    # (below) and falls back to the window rate of gen_tokens. The histogram
+    # mean survives as decode_tps_req (per-request mean, tile sub-line).
+    "decode_hist_per_request": True,
+    # The engine's own live board (contract 1.2, unauthenticated, 4 Hz):
+    # aggregate decode/prefill tps and the KV context in TOKENS
+    # (engine.kv.length / max_len) — the token-denominated pool this engine
+    # publishes nowhere on /metrics (its state store is byte-denominated).
+    # Read-only GET, one extra request per tick, failures never break the tick.
+    "live_json": "/v1/dashboard/live",
     # No vLLM-style KV block pool exists here (metrics.py header says so
     # outright). The engine's equivalent is the state store — KV snapshots
     # against its byte budget — so that occupancy IS the honest "cache used".

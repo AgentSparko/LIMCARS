@@ -212,6 +212,13 @@ def main_sessions() -> dict:
                 c.close()
             except Exception:  # noqa: BLE001
                 pass
+    # DSH / DS Bot sessions ride the same list: profile dsb (a DS Bot chat,
+    # display = bot name) or dsh (a plain DSH session, display = title/folder).
+    try:
+        from . import dsh_home
+        out.extend(dsh_home.trace_sessions())
+    except Exception:  # noqa: BLE001 — traces must survive a DSH dir hiccup
+        pass
     out.sort(key=lambda x: -(x["last_activity"] or 0))
     return {"generated": time.time(), "sqlite": True, "sessions": out[:MAIN_SESSION_CAP]}
 
@@ -226,6 +233,9 @@ def _fmt_hms(ts) -> str:
 def main_transcript(profile: str, sid: str, limit: int = 200) -> dict | None:
     if not _PROF_RE.match(profile) or not _SID_RE.match(sid):
         return None
+    if profile in ("dsb", "dsh"):
+        from . import dsh_home
+        return dsh_home.trace_transcript(sid=sid, limit=limit)
     home = _hermes_home()
     db = home / "state.db" if profile == "default" else home / "profiles" / profile / "state.db"
     if not db.is_file():

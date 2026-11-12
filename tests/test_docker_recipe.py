@@ -45,7 +45,7 @@ def _ctr(**over):
         },
         "HostConfig": {
             "NetworkMode": "host", "IpcMode": "host",
-            "Binds": ["/home/a/models:/models:ro", "/home/a/cache:/cache"],
+            "Binds": ["/srv/models:/models:ro", "/srv/cache:/cache"],
             "RestartPolicy": {"Name": "unless-stopped"},
             "Ulimits": [{"Name": "memlock", "Hard": -1, "Soft": -1}],
             "DeviceRequests": [{"Count": -1, "Capabilities": [["gpu"]]}],
@@ -76,7 +76,7 @@ def test_flags_and_mounts_present():
     cmd = build(_ctr())
     for frag in ["--restart unless-stopped", "--ipc host", "--network host",
                  "--gpus all", "--ulimit memlock=-1:-1", "--cpuset-cpus 0-9",
-                 '-v /home/a/models:/models:ro', "-v /home/a/cache:/cache"]:
+                 '-v /srv/models:/models:ro', "-v /srv/cache:/cache"]:
         assert frag in cmd, frag
     assert "--shm-size" not in cmd  # docker default is omitted
 

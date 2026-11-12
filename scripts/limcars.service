@@ -1,0 +1,27 @@
+# Canonical user-mode unit for this deployment (the live copy lives at
+# ~/.config/systemd/user/limcars.service and is NOT in the checkout; this is the
+# versioned source. Install: cp here -> that path, then
+#   systemctl --user daemon-reload && systemctl --user restart limcars.service
+[Unit]
+Description=LIMCARS dashboard (public repo AgentSparko/LIMCARS)
+Documentation=https://github.com/AgentSparko/LIMCARS
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/LIMCARS
+Environment=LIMCARS_PORT=8951
+Environment=LIMCARS_HOST=0.0.0.0
+ExecStart=/usr/bin/python3 -m app
+Restart=always
+# Recipe engines are started by this process (app/recipes.py) and MUST outlive it:
+# systemd's default KillMode=control-group SIGKILLs every process in the unit's
+# cgroup on restart, and start_new_session only escapes a shell kill, not the
+# cgroup — so `systemctl --user restart limcars` used to take the live engine
+# down with the dashboard. recipes.py is the only child spawner here, and its
+# Stop path (killpg) is unchanged; 'process' kills the dashboard alone.
+KillMode=process
+RestartSec=3
+
+[Install]
+WantedBy=default.target

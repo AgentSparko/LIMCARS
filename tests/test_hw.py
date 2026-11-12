@@ -48,3 +48,21 @@ def test_partial_memory_used_skips_vram_aggregate():
     two = ("0, 80, 70, 300.0, 350.00, 1800, 2100, [N/A], 81920, A\n"
            "1, 20, 55, 100.0, 350.00, 1800, 2100, 1024, 81920, B\n")
     assert "vram_used_gb" not in _gpu_row(_parse_nvidia(two))
+
+
+def test_disk_free_is_f_bavail_not_f_bfree():
+    """The disk guard must report what an unprivileged writer can allocate.
+
+    shutil.disk_usage().free is total-used = f_bfree*frsize, which counts
+    ext4's root-reserved blocks as writable (36.8 GiB over-report measured
+    on the Spark's / on 2026-11-09, the day after the disk-full crash).
+    _disk_free_bytes must equal statvfs f_bavail*frsize, i.e. df's Avail.
+    """
+    import os
+    import shutil
+    from app.hw import _disk_free_bytes
+    st = os.statvfs("/")
+    assert _disk_free_bytes("/") == st.f_bavail * st.f_frsize
+    # On any filesystem with a reserve this is strictly below shutil's free;
+    # on ones without it must at least never exceed it.
+    assert _disk_free_bytes("/") <= shutil.disk_usage("/").free

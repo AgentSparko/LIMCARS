@@ -65,7 +65,8 @@ eq('engine 2 has no idea what engine 1 saw', seriesSample('kv_pct', 0, {}, e2), 
 eq('engine 1 still holds its own', seriesSample('kv_pct', 0, {}, e1), 11.0);
 eq('policy tables stay small and explicit',
    [Object.keys(RATE_WHILE_ACTIVE).sort(), [...HOLD_LAST_NONZERO].sort()],
-   [['decode_tps_avg', 'decode_tps_now', 'prefill_tps_avg', 'prefill_tps_now'], ['kv_pct', 'kv_pct_shown']]);
+   [['decode_tps_avg', 'decode_tps_now', 'prefill_tps_avg', 'prefill_tps_now'],
+    ['kv_pct', 'kv_pct_shown', 'kv_tok']]);
 
 // --- 6. the renderer: a gap must not become a plunge ----------------------------
 // spark() draws only finite samples, so a null leaves the shape (and the y range)
@@ -140,6 +141,21 @@ eq('garbage in is passed through, not crashed on', rateZerosToGaps(undefined), u
 eq('RATE_FIELDS matches exactly what seriesSample gates',
    [...RATE_FIELDS].sort().join(','),
    'decode_tps_avg,decode_tps_now,prefill_tps_avg,prefill_tps_now');
+
+// --- prefill_live: the chart line survives a long prefill while the tile dims ---
+// the operator's dim UX (2026-11-09): dimWhen stays the activity flag's alone; only a
+// value the engine's live board published mid-flight (prefill_live marker) is
+// exempt from the null — it is measured, not a stale hold.
+eq('prefill_tps_avg with the live marker survives an inactive frame (60 s prefill)',
+   seriesSample('prefill_tps_avg', 1050.4, { prefill_active: false, prefill_live: 1 }, {}), 1050.4);
+eq('prefill_tps_avg without the marker still gaps on an inactive frame (as before)',
+   seriesSample('prefill_tps_avg', 4800.0, { prefill_active: false }, {}), null);
+eq('the marker does not leak to the burst field (0 would draw a false plunge)',
+   seriesSample('prefill_tps_now', 0, { prefill_active: false, prefill_live: 1 }, {}), null);
+eq('the marker does not leak to decode fields',
+   seriesSample('decode_tps_avg', 0, { decode_active: false, prefill_live: 1 }, {}), null);
+eq('active frames are untouched by the marker logic',
+   seriesSample('prefill_tps_avg', 1050.4, { prefill_active: true, prefill_live: 1 }, {}), 1050.4);
 
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);

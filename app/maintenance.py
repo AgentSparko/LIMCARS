@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import os
 import logging
-import shutil
 import threading
 import time
+
+from .hw import _disk_free_bytes
 
 
 log = logging.getLogger("limcars.maintenance")
@@ -47,7 +48,7 @@ class Maintenance(threading.Thread):
         # how long the pre/post compaction invariants will wait for the store lock before
         # declaring the check unavailable (which then blocks the compaction, never allows it)
         self.probe_timeout = max(0.5, float(cfg.get("invariant_timeout_s", 20)))
-        self._stop = threading.Event()
+        self._stop_ev = threading.Event()
         self.status: dict = {"enabled": self.enabled, "runs": 0, "last_run": None,
                              "last_vacuum": None, "freed_bytes_total": 0,
                              "last_report": None, "note": "not yet run"}
@@ -166,8 +167,12 @@ class Maintenance(threading.Thread):
         if size < self.min_bytes:
             self.status["note"] = f"database too small to bother ({size} B)"
             return {"vacuumed": False, "skipped": "small"}
-        free_disk = shutil.disk_usage(os.path.dirname(
-            getattr(self.store, "path", ".") or ".")).free
+        # f_bavail, not shutil's free (= f_bfree): VACUUM runs as this user and
+        # cannot write into the root-reserved blocks, so the headroom check must
+        # measure what this process can actually allocate (same bug class the
+        # SSD-free tile had — fixed 2026-11-09 after the disk-full crash).
+        free_disk = _disk_free_bytes(os.path.dirname(
+            getattr(self.store, "path", ".") or "."))
         if free_disk < size * self.disk_headroom:
             self.status["note"] = (f"skipped: needs ~{int(size * self.disk_headroom)} B free, "
                                    f"{free_disk} B available")
@@ -218,7 +223,7 @@ class Maintenance(threading.Thread):
     def run(self) -> None:
         # the boot pass is the one that matters after an update: the previous version left a
         # high-water mark behind, and the new retention rules have just made it reclaimable
-        if self._stop.wait(self.start_delay):
+        if self._stop_ev.wait(self.start_delay):
             return
         try:
             self._rollup()                                  # fold first, at boot too
@@ -238,7 +243,7 @@ class Maintenance(threading.Thread):
         # Two cadences on one thread: thinning is cheap and wants to be frequent (otherwise the
         # full-resolution window grows a day deep again), compaction is a full file rewrite and
         # must stay on its own interval.
-        while not self._stop.wait(min(self.interval, self.thin_interval)):
+        while not self._stop_ev.wait(min(self.interval, self.thin_interval)):
             try:
                 thinned = (self.store.thin_rings() or {}).get("thinned", 0)
                 # A thin can free hundreds of megabytes in one statement, and SQLite hands
@@ -254,7 +259,7 @@ class Maintenance(threading.Thread):
                 self.status["note"] = f"scheduled pass failed: {exc}"
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_ev.set()
 
     def snapshot(self) -> dict:
         """What /api/storage shows. Numbers measured, decisions explained."""

@@ -1,0 +1,710 @@
+{
+ ".config": [
+  "app/__main__.py"
+ ],
+ ".server": [
+  "app/__main__.py"
+ ],
+ "__future__": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/coldset.py",
+  "app/config.py",
+  "app/counters.py",
+  "app/dialects.py",
+  "app/diskwatch.py",
+  "app/docker_recipe.py",
+  "app/dsh_home.py",
+  "app/engine_info.py",
+  "app/hermes_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/modelnames.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/procs.py",
+  "app/prom.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/session_tokens.py",
+  "app/sse.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/tiers.py",
+  "app/voice.py",
+  "app/voice_gates.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/test_gap_class.py",
+  "tests/test_render_contract.py",
+  "tests/test_ring_storage.py",
+  "tests/test_spark_stats.py",
+  "tests/test_tiers.py"
+ ],
+ "hashlib": [
+  "app/auth.py"
+ ],
+ "hmac": [
+  "app/auth.py",
+  "app/server.py"
+ ],
+ "json": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/coldset.py",
+  "app/config.py",
+  "app/docker_recipe.py",
+  "app/dsh_home.py",
+  "app/engine_info.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/recipes.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/voice.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/test_auth.py",
+  "tests/test_coldset.py",
+  "tests/test_data_dir.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_modelnames.py",
+  "tests/test_portability.py",
+  "tests/test_price_schedule.py",
+  "tests/test_render_contract.py",
+  "tests/test_ring_storage.py",
+  "tests/test_sampler.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_tidy_script.py"
+ ],
+ "os": [
+  "app/auth.py",
+  "app/coldset.py",
+  "app/config.py",
+  "app/diskwatch.py",
+  "app/dsh_home.py",
+  "app/hermes_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/nodes.py",
+  "app/procs.py",
+  "app/recipes.py",
+  "app/server.py",
+  "app/store.py",
+  "app/swatch.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/test_data_dir.py",
+  "tests/test_diskwatch.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_stop.py",
+  "tests/test_hw.py",
+  "tests/test_kv_tile_denominator.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_money_types.py",
+  "tests/test_pool_estimate.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_prefill_live.py",
+  "tests/test_recipes.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_storage_growth.py",
+  "tests/test_tidy_script.py",
+  "tests/test_voice.py"
+ ],
+ "secrets": [
+  "app/auth.py"
+ ],
+ "threading": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/diskwatch.py",
+  "app/dsh_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/nodes.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/sse.py",
+  "app/store.py",
+  "tests/test_self_tidy.py"
+ ],
+ "time": [
+  "app/auth.py",
+  "app/clients.py",
+  "app/coldset.py",
+  "app/counters.py",
+  "app/diskwatch.py",
+  "app/dsh_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/procs.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/session_tokens.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/tiers.py",
+  "app/voice_gates.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_core.py",
+  "tests/test_counter_audit.py",
+  "tests/test_data_dir.py",
+  "tests/test_diskwatch.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_selection.py",
+  "tests/test_engine_stop.py",
+  "tests/test_gap_class.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_money_types.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_priced_history.py",
+  "tests/test_recipes.py",
+  "tests/test_ring_storage.py",
+  "tests/test_sampler.py",
+  "tests/test_savings_history.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_storage_growth.py",
+  "tests/test_tidy_script.py",
+  "tests/test_tiers.py"
+ ],
+ ".dsh_home": [
+  "app/clients.py"
+ ],
+ ".hermes_home": [
+  "app/clients.py",
+  "app/session_tokens.py"
+ ],
+ "collections": [
+  "app/clients.py",
+  "app/dsh_home.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/sse.py",
+  "scripts/import_legacy_history.py"
+ ],
+ "pathlib": [
+  "app/clients.py",
+  "app/coldset.py",
+  "app/config.py",
+  "app/dsh_home.py",
+  "app/hermes_home.py",
+  "app/pricing.py",
+  "app/server.py",
+  "app/session_tokens.py",
+  "app/swatch.py",
+  "tests/test_atlas_contract.py",
+  "tests/test_data_dir.py",
+  "tests/test_dialect_fixtures.py",
+  "tests/test_docs_knobs.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_selection.py",
+  "tests/test_explicit_encodings.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_llamacpp_contract.py",
+  "tests/test_pool_estimate.py",
+  "tests/test_portability.py",
+  "tests/test_render_contract.py",
+  "tests/test_scrape_age.py",
+  "tests/test_spark_stats.py",
+  "tests/test_tarnwell_contract.py",
+  "tests/test_web_charts.py",
+  "tests/test_web_escapes.py"
+ ],
+ "sqlite3": [
+  "app/clients.py",
+  "app/dsh_home.py",
+  "app/session_tokens.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/tiers.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_tidy.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_gap_class.py",
+  "tests/test_money_types.py",
+  "tests/test_priced_history.py",
+  "tests/test_self_tidy.py",
+  "tests/test_storage_growth.py",
+  "tests/test_tidy_script.py"
+ ],
+ "glob": [
+  "app/coldset.py",
+  "app/engine_info.py"
+ ],
+ "math": [
+  "app/config.py",
+  "app/server.py",
+  "scripts/pool_estimate.py"
+ ],
+ ".": [
+  "app/counters.py",
+  "app/dialects.py",
+  "app/engine_info.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/recipes.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/voice.py",
+  "app/voice_gates.py"
+ ],
+ "bisect": [
+  "app/counters.py"
+ ],
+ "typing": [
+  "app/dialects.py"
+ ],
+ "re": [
+  "app/diskwatch.py",
+  "app/dsh_home.py",
+  "app/engine_info.py",
+  "app/live_engines.py",
+  "app/modelnames.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/recipes.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/session_tokens.py",
+  "app/swatch.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/test_docs_knobs.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_explicit_encodings.py",
+  "tests/test_portability.py",
+  "tests/test_render_contract.py",
+  "tests/test_sampler.py",
+  "tests/test_web_escapes.py"
+ ],
+ "shlex": [
+  "app/docker_recipe.py",
+  "app/recipes.py",
+  "app/services.py"
+ ],
+ "subprocess": [
+  "app/docker_recipe.py",
+  "app/dsh_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/nodes.py",
+  "app/recipes.py",
+  "app/sampler.py",
+  "app/services.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_data_dir.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_stop.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_nodes_ssh_opts.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py",
+  "tests/test_web_charts.py"
+ ],
+ "selectors": [
+  "app/dsh_home.py"
+ ],
+ "shutil": [
+  "app/dsh_home.py",
+  "app/hw.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_hw.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_portability.py",
+  "tests/test_scrape_age.py",
+  "tests/test_web_charts.py"
+ ],
+ ".live_engines": [
+  "app/engine_info.py",
+  "app/server.py",
+  "app/voice.py"
+ ],
+ "urllib.request": [
+  "app/engine_info.py",
+  "app/live_engines.py",
+  "app/probe.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/voice.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "tests/test_portability.py",
+  "tests/test_sampler.py",
+  "tests/test_voice.py"
+ ],
+ ".diskwatch": [
+  "app/hw.py"
+ ],
+ ".rings": [
+  "app/hw.py",
+  "app/nodes.py",
+  "app/sampler.py"
+ ],
+ "psutil": [
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/procs.py",
+  "tests/test_portability.py"
+ ],
+ "ntpath": [
+  "app/live_engines.py"
+ ],
+ "signal": [
+  "app/live_engines.py",
+  "app/recipes.py"
+ ],
+ ".hw": [
+  "app/maintenance.py",
+  "app/nodes.py",
+  "app/server.py"
+ ],
+ "logging": [
+  "app/maintenance.py",
+  "app/server.py",
+  "app/store.py"
+ ],
+ "uuid": [
+  "app/recipes.py"
+ ],
+ ".sse": [
+  "app/sampler.py",
+  "app/server.py"
+ ],
+ ".auth": [
+  "app/server.py"
+ ],
+ ".clients": [
+  "app/server.py"
+ ],
+ ".maintenance": [
+  "app/server.py"
+ ],
+ ".nodes": [
+  "app/server.py"
+ ],
+ ".recipes": [
+  "app/server.py"
+ ],
+ ".sampler": [
+  "app/server.py"
+ ],
+ ".services": [
+  "app/server.py"
+ ],
+ ".store": [
+  "app/server.py"
+ ],
+ "gzip": [
+  "app/server.py"
+ ],
+ "http.server": [
+  "app/server.py",
+  "tests/test_portability.py"
+ ],
+ "mimetypes": [
+  "app/server.py"
+ ],
+ "posixpath": [
+  "app/server.py"
+ ],
+ "socket": [
+  "app/server.py",
+  "tests/test_portability.py",
+  "tests/test_security_http.py",
+  "tests/test_voice.py"
+ ],
+ "urllib.parse": [
+  "app/server.py"
+ ],
+ "itertools": [
+  "app/sse.py"
+ ],
+ "queue": [
+  "app/sse.py",
+  "tests/test_core.py"
+ ],
+ "argparse": [
+  "app/voice_gates.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py"
+ ],
+ "sys": [
+  "app/voice_gates.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/test_atlas_contract.py",
+  "tests/test_data_dir.py",
+  "tests/test_dialect_fixtures.py",
+  "tests/test_explicit_encodings.py",
+  "tests/test_kv_tile_denominator.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_llamacpp_contract.py",
+  "tests/test_money_types.py",
+  "tests/test_portability.py",
+  "tests/test_prefill_live.py",
+  "tests/test_recipes.py",
+  "tests/test_security_http.py",
+  "tests/test_tarnwell_contract.py",
+  "tests/test_voice_gates.py"
+ ],
+ "app.store": [
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_counter_audit.py",
+  "tests/test_engine_selection.py",
+  "tests/test_gap_class.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_money_types.py",
+  "tests/test_priced_history.py",
+  "tests/test_render_contract.py",
+  "tests/test_ring_storage.py",
+  "tests/test_sampler.py",
+  "tests/test_savings_history.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_ssd.py",
+  "tests/test_storage_growth.py",
+  "tests/test_tidy_script.py",
+  "tests/test_tiers.py"
+ ],
+ "app": [
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_atlas_contract.py",
+  "tests/test_coldset.py",
+  "tests/test_core.py",
+  "tests/test_data_dir.py",
+  "tests/test_dialect_fixtures.py",
+  "tests/test_dialects.py",
+  "tests/test_docker_recipe.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_stop.py",
+  "tests/test_gap_class.py",
+  "tests/test_hw_chart_keys.py",
+  "tests/test_llamacpp_contract.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_money_bases.py",
+  "tests/test_money_types.py",
+  "tests/test_nodes_ssh_opts.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_price_schedule.py",
+  "tests/test_priced_history.py",
+  "tests/test_recipes.py",
+  "tests/test_render_contract.py",
+  "tests/test_sampler.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_ssd.py",
+  "tests/test_tarnwell_contract.py",
+  "tests/test_tidy_script.py",
+  "tests/test_tiers.py",
+  "tests/test_voice.py",
+  "tests/test_voice_gates.py"
+ ],
+ "http.client": [
+  "scripts/limcars_gate_proof.py",
+  "tests/test_data_dir.py",
+  "tests/test_security_http.py"
+ ],
+ "tempfile": [
+  "scripts/limcars_upgrade_rehearsal.py",
+  "tests/test_security_http.py"
+ ],
+ "server.setup": [
+  "scripts/pool_estimate.py"
+ ],
+ "../../web/js/charts.js": [
+  "tests/js/kv_honesty.mjs",
+  "tests/js/scrape_age.mjs",
+  "tests/js/series_sample.mjs",
+  "tests/js/spark_cap.mjs"
+ ],
+ "app.auth": [
+  "tests/test_auth.py"
+ ],
+ "app.sse": [
+  "tests/test_core.py",
+  "tests/test_diskwatch.py",
+  "tests/test_engine_selection.py",
+  "tests/test_kv_tile_denominator.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_modelnames.py",
+  "tests/test_prefill_live.py",
+  "tests/test_sampler.py",
+  "tests/test_scrape_age.py",
+  "tests/test_voice.py"
+ ],
+ "test_sampler": [
+  "tests/test_counter_audit.py"
+ ],
+ "importlib": [
+  "tests/test_data_dir.py"
+ ],
+ "pytest": [
+  "tests/test_data_dir.py",
+  "tests/test_dialects.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_stop.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_nodes_ssh_opts.py",
+  "tests/test_pool_estimate.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_priced_history.py",
+  "tests/test_recipes.py",
+  "tests/test_render_contract.py",
+  "tests/test_ring_storage.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_tidy_script.py",
+  "tests/test_tiers.py",
+  "tests/test_voice.py",
+  "tests/test_voice_gates.py",
+  "tests/test_web_charts.py"
+ ],
+ "app.diskwatch": [
+  "tests/test_diskwatch.py"
+ ],
+ "app.hw": [
+  "tests/test_diskwatch.py",
+  "tests/test_hw.py",
+  "tests/test_voice.py"
+ ],
+ "io": [
+  "tests/test_docker_recipe.py"
+ ],
+ "app.counters": [
+  "tests/test_engine_selection.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_priced_history.py",
+  "tests/test_savings_history.py"
+ ],
+ "app.sampler": [
+  "tests/test_engine_selection.py",
+  "tests/test_kv_tile_denominator.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_modelnames.py",
+  "tests/test_prefill_live.py",
+  "tests/test_sampler.py",
+  "tests/test_scrape_age.py"
+ ],
+ "app.server": [
+  "tests/test_engine_selection.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py"
+ ],
+ "inspect": [
+  "tests/test_engine_selection.py",
+  "tests/test_spark_stats.py"
+ ],
+ "app.config": [
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_voice_gates.py"
+ ],
+ "importlib.util": [
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_pool_estimate.py",
+  "tests/test_tidy_script.py"
+ ],
+ "app.nodes": [
+  "tests/test_nodes.py",
+  "tests/test_nodes_ssh_opts.py",
+  "tests/test_security_http.py"
+ ],
+ "calendar": [
+  "tests/test_price_schedule.py"
+ ],
+ "stat": [
+  "tests/test_recipes.py"
+ ],
+ "app.dialects": [
+  "tests/test_sampler.py"
+ ],
+ "app.pricing": [
+  "tests/test_savings_history.py"
+ ],
+ "app.maintenance": [
+  "tests/test_self_tidy.py"
+ ],
+ "./charts.js?v=20261112a": [
+  "web/js/dashboard.js"
+ ]
+}

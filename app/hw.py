@@ -25,6 +25,8 @@ import time
 import psutil  # only non-stdlib import in the whole backend
 
 from .rings import Ring
+from .diskwatch import DiskWatch
+from . import voice
 
 
 _NV_FIELDS = ("index,utilization.gpu,temperature.gpu,power.draw,power.limit,"
@@ -105,6 +107,23 @@ def _nvidia_query() -> list[dict]:
     except Exception:  # noqa: BLE001
         return []
     return _parse_nvidia(out)
+
+
+def _disk_free_bytes(path: str) -> int:
+    """Bytes an unprivileged process can still write on `path`.
+
+    statvfs f_bavail, NOT f_bfree: f_bfree includes the filesystem's
+    root-reserved blocks (ext4 default reserves ~4-5% that ordinary users
+    cannot write), so any free-space figure built on it — or on
+    shutil.disk_usage().free, which is total-used = f_bfree — over-reports
+    by exactly the reserve. A disk guard must count what the guard's own
+    user can allocate. Falls back to shutil's figure if statvfs fails.
+    """
+    try:
+        st = os.statvfs(path)
+        return st.f_bavail * st.f_frsize
+    except OSError:
+        return shutil.disk_usage(path).free
 
 
 def _ssd_disk() -> str | None:
@@ -210,20 +229,31 @@ class HwSampler(threading.Thread):
         self.cfg, self.broker, self.store = cfg, broker, store
         self.hz = float(cfg.get("hw_hz", 1.0))
         self.ring = Ring(float(cfg.get("ring_seconds", 900)))
-        self._stop = threading.Event()
+        self._stop_ev = threading.Event()
         self._last_net = None
         self._persist_acc: list[tuple[float, dict]] = []
         self.ssd_disk = _ssd_disk()
+        # disk watchdog: alert states on the f_bavail reading + critical scan
+        # (app/diskwatch.py). Thresholds are config keys, not env knobs.
+        self.diskwatch = DiskWatch(cfg)
         self.ssd_limits: dict = {}
         self._ssd_prev = None          # (t, read, written) at the last tick
         self._ssd_day_prev = None      # (read, written) at the last per-day flush
         self._ssd_day_t = 0.0
         self.gpus: list[dict] = []   # static identity per card: index, name, vram
+        # voice-lane monitor (app/voice.py): off unless voice_port is configured
+        self.voice_port = int(cfg.get("voice_port") or 0)
+        self.voice_latency_url = cfg.get("voice_latency_url") or ""
+        self._voice_pid: int | None = None
+        self._voice_base: float | None = None    # MemAvailable GiB at first sight
+        self._voice_boot: bool | None = None     # None until first voice tick
+        self._voice_lat: float | None = None
+        self._voice_lat_age = 0
         psutil.cpu_percent(interval=None)  # prime
         psutil.net_io_counters()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_ev.set()
 
     def snapshot(self, seconds: float | None = None) -> dict:
         rows = self.ring.all() if seconds is None else self.ring.window(seconds)
@@ -275,9 +305,63 @@ class HwSampler(threading.Thread):
                 "since_boot": b and {"read_gb": round(b[0] / 2**30, 1), "written_gb": round(b[1] / 2**30, 1)},
                 "days": self.store.ssd_days(30) if self.store else []}
 
+    def _voice_tick(self, row: dict) -> None:
+        """Voice-lane tile fields (app/voice.py). Zero work when the
+        feature is off; when on, one /proc/net/tcp read per tick plus a
+        cached-pid revalidation — the full pids scan only on cache miss.
+        voice_delta_gb is the honest GB10 footprint: MemAvailable drop
+        against the reading of the tick the process was first seen (GPU
+        allocations live in the unified pool, invisible to RSS). No
+        pre-spawn reading (LIMCARS booted with the voice stack already
+        up) -> None, never an invented baseline."""
+        if not self.voice_port:
+            return
+        pid = voice.find_voice_pid(self.voice_port, self._voice_pid)
+        if pid is None:
+            self._voice_pid = None
+            self._voice_base = None
+            self._voice_boot = False       # next appearance IS a watched spawn
+            self._voice_lat = None
+            self._voice_lat_age = 0
+            row.update({"voice_alive": 0, "voice_pid": None, "voice_rss_gb": None,
+                        "voice_delta_gb": None, "voice_latency_ms": None,
+                        "voice_latency_stale": 0})
+            return
+        if pid != self._voice_pid:
+            # baseline only for a spawn we WATCHED (an off tick came first);
+            # a pid already running on our very first tick has no pre-spawn
+            # reading on this dashboard's watch -> delta stays None
+            watched = self._voice_boot is False
+            self._voice_base = row.get("mem_avail_gb") if watched else None
+            self._voice_pid = pid
+            self._voice_lat = None          # previous process's latency is
+            self._voice_lat_age = 0         # not this process's figure
+        self._voice_boot = True
+        base, avail = self._voice_base, row.get("mem_avail_gb")
+        row.update({
+            "voice_alive": 1,
+            "voice_pid": pid,
+            "voice_rss_gb": voice.rss_gb(pid),
+            "voice_delta_gb": (round(base - avail, 2)
+                               if base is not None and avail is not None else None),
+        })
+        lat = voice.read_latency(self.voice_latency_url)
+        if lat is not None:
+            self._voice_lat, self._voice_lat_age = lat, 0
+        elif self._voice_lat is not None:
+            self._voice_lat_age += 1
+            if self._voice_lat_age > voice.LAT_HOLD_TICKS:
+                self._voice_lat = None      # stale, not frozen
+        row["voice_latency_ms"] = self._voice_lat
+        # held-value marker: the figure is from an older tick while the
+        # endpoint is quiet — the tile shows it prefixed "~" so a held
+        # number never reads as a fresh measurement
+        row["voice_latency_stale"] = int(self._voice_lat is not None
+                                         and self._voice_lat_age > 0)
+
     def run(self) -> None:
         interval = 1.0 / max(0.25, self.hz)
-        while not self._stop.is_set():
+        while not self._stop_ev.is_set():
             t0 = time.monotonic()
             try:
                 self._tick()
@@ -285,12 +369,18 @@ class HwSampler(threading.Thread):
                 pass
             sleep = interval - (time.monotonic() - t0)
             if sleep > 0:
-                self._stop.wait(sleep)
+                self._stop_ev.wait(sleep)
 
     def _tick(self) -> None:
         now = time.time()
         vm = psutil.virtual_memory()
         du = shutil.disk_usage("/")
+        # TRUE writable free: shutil.disk_usage's free is statvfs f_bfree,
+        # which counts ext4's root-reserved blocks as writable — on this box
+        # that over-reported free by ~36.8 GiB (measured 2026-11-09, the day
+        # after the disk-full crash). f_bavail is what an unprivileged writer
+        # can actually allocate; it is what df's Avail column shows.
+        disk_free_gb = round(_disk_free_bytes("/") / 2**30, 2)
         try:
             load1, load5, _ = os.getloadavg()
         except (OSError, AttributeError):   # Windows has no load average: "–"
@@ -306,7 +396,10 @@ class HwSampler(threading.Thread):
             "swap_used_gb": round(psutil.swap_memory().used / 2**30, 2),
             "disk_used_gb": round(du.used / 2**30, 2),
             "disk_total_gb": round(du.total / 2**30, 2),
+            "disk_free_gb": disk_free_gb,
         }
+        # watchdog keys ride the same row: SSE, ring and sqlite all carry them
+        row.update(self.diskwatch.tick(disk_free_gb))
         # throughput rates from cumulative io counters
         if (self._last_net is not None and dio is not None
                 and self._last_net[1] is not None and self._last_net[2] is not None):
@@ -340,6 +433,7 @@ class HwSampler(threading.Thread):
             row[f"temp_{k}"] = round(v, 1)
 
         self._ssd_tick(now, row)
+        self._voice_tick(row)
 
         self.ring.append(row, now)
         self.broker.publish("hw", json.dumps({"t": now, **row}))

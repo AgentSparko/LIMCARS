@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
 <link rel="stylesheet" href="/css/style.css?v=20261026j">
-<link rel="stylesheet" href="/css/dashboard.css?v=20261105c">
+<link rel="stylesheet" href="/css/dashboard.css?v=20261109a">
 </head>
 <body>
 <header class="top">
@@ -66,7 +66,7 @@
     <div class="side-lbl">stats scope</div>
     <div id="side-scope" style="display:flex;gap:6px"></div>
     </div>
-    <button class="btn traces-btn" id="btn-traces" style="width:100%;margin-top:12px">🐝 Hermes Traces</button>
+    <button class="btn traces-btn" id="btn-traces" style="width:100%;margin-top:12px">🐝 Hermes + DSH Traces</button>
     <div class="probe-box">
       <button class="btn" id="btn-probe" style="width:100%">⚡ Ping engine</button>
       <div class="probe-out" id="probe-out">⚡ <span class="muted">one streamed request — real TTFT, prefill &amp; generation speed</span></div>
@@ -91,6 +91,7 @@
   <main class="main">
    <div id="dash-pane">
     <div id="stale-banner" class="stale-banner" role="status" hidden></div>
+    <div id="disk-banner" class="disk-banner" role="alert" hidden></div>
     <div class="cards hero" id="hero"></div>
 
     <div class="bub-group"><div class="cards" id="bub-main"></div></div>
@@ -178,7 +179,7 @@
    <div id="traces-pane" style="display:none">
      <div class="chart-card" style="padding:0;overflow:hidden">
        <div class="head" style="padding:8px 12px;border-bottom:1px solid var(--line)">
-         <span class="title">🐝 Hermes Traces</span>
+         <span class="title">🐝 Hermes + DSH Traces</span>
          <span class="muted small">live transcripts · browse · follow · export</span>
          <a class="pill tiny" id="traces-newtab" href="/subagent-watch/" target="_blank" rel="noopener" style="margin-left:10px">open in new tab ↗</a>
          <button class="btn" id="btn-traces-back" style="margin-left:8px;background:var(--orange,#ff8c3a);color:#0b111c;border-color:var(--orange,#ff8c3a);font-weight:700">← Dashboard</button>
@@ -189,6 +190,6 @@
   </main>
 </div>
 
-<script type="module" src="/js/dashboard.js?v=20261105d"></script>
+<script type="module" src="/js/dashboard.js?v=20261112a"></script>
 </body>
 </html>

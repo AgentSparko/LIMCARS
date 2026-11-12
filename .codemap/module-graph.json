@@ -1,0 +1,1177 @@
+{
+ "files": [
+  "app/__init__.py",
+  "app/__main__.py",
+  "app/auth.py",
+  "app/clients.py",
+  "app/coldset.py",
+  "app/config.py",
+  "app/counters.py",
+  "app/dialects.py",
+  "app/diskwatch.py",
+  "app/docker_recipe.py",
+  "app/dsh_home.py",
+  "app/engine_info.py",
+  "app/hermes_home.py",
+  "app/hw.py",
+  "app/live_engines.py",
+  "app/maintenance.py",
+  "app/modelnames.py",
+  "app/nodes.py",
+  "app/pricing.py",
+  "app/probe.py",
+  "app/procs.py",
+  "app/prom.py",
+  "app/recipes.py",
+  "app/rings.py",
+  "app/sampler.py",
+  "app/server.py",
+  "app/services.py",
+  "app/session_tokens.py",
+  "app/sse.py",
+  "app/store.py",
+  "app/swatch.py",
+  "app/tiers.py",
+  "app/voice.py",
+  "app/voice_gates.py",
+  "scripts/import_legacy_history.py",
+  "scripts/limcars_contract_diff.py",
+  "scripts/limcars_contract_snapshot.py",
+  "scripts/limcars_gate_proof.py",
+  "scripts/limcars_tidy.py",
+  "scripts/limcars_upgrade_rehearsal.py",
+  "scripts/pool_estimate.py",
+  "tests/js/kv_honesty.mjs",
+  "tests/js/scrape_age.mjs",
+  "tests/js/series_sample.mjs",
+  "tests/js/spark_cap.mjs",
+  "tests/test_atlas_contract.py",
+  "tests/test_auth.py",
+  "tests/test_coldset.py",
+  "tests/test_core.py",
+  "tests/test_counter_audit.py",
+  "tests/test_data_dir.py",
+  "tests/test_dialect_fixtures.py",
+  "tests/test_dialects.py",
+  "tests/test_diskwatch.py",
+  "tests/test_docker_recipe.py",
+  "tests/test_docs_knobs.py",
+  "tests/test_dsh_sources.py",
+  "tests/test_engine_selection.py",
+  "tests/test_engine_stop.py",
+  "tests/test_explicit_encodings.py",
+  "tests/test_gap_class.py",
+  "tests/test_hw.py",
+  "tests/test_hw_chart_keys.py",
+  "tests/test_kv_tile_denominator.py",
+  "tests/test_kv_tile_honesty.py",
+  "tests/test_llamacpp_contract.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_money_bases.py",
+  "tests/test_money_types.py",
+  "tests/test_nodes.py",
+  "tests/test_nodes_ssh_opts.py",
+  "tests/test_pool_estimate.py",
+  "tests/test_portability.py",
+  "tests/test_portability_linux.py",
+  "tests/test_prefill_live.py",
+  "tests/test_price_schedule.py",
+  "tests/test_priced_history.py",
+  "tests/test_recipes.py",
+  "tests/test_render_contract.py",
+  "tests/test_ring_storage.py",
+  "tests/test_sampler.py",
+  "tests/test_savings_history.py",
+  "tests/test_scrape_age.py",
+  "tests/test_security_http.py",
+  "tests/test_self_tidy.py",
+  "tests/test_spark_stats.py",
+  "tests/test_ssd.py",
+  "tests/test_storage_growth.py",
+  "tests/test_tarnwell_contract.py",
+  "tests/test_tidy_script.py",
+  "tests/test_tiers.py",
+  "tests/test_voice.py",
+  "tests/test_voice_gates.py",
+  "tests/test_web_charts.py",
+  "tests/test_web_escapes.py",
+  "web/css/dashboard.css",
+  "web/css/style.css",
+  "web/js/charts.js",
+  "web/js/dashboard.js",
+  "web/subagent-watch/app.js",
+  "web/subagent-watch/style.css"
+ ],
+ "imports": {
+  "app/__init__.py": {
+   "imports": [],
+   "loc": 3
+  },
+  "app/__main__.py": {
+   "imports": [
+    ".config",
+    ".server"
+   ],
+   "loc": 9
+  },
+  "app/auth.py": {
+   "imports": [
+    "__future__",
+    "hashlib",
+    "hmac",
+    "json",
+    "os",
+    "secrets",
+    "threading",
+    "time"
+   ],
+   "loc": 257
+  },
+  "app/clients.py": {
+   "imports": [
+    ".dsh_home",
+    ".hermes_home",
+    "__future__",
+    "collections",
+    "json",
+    "pathlib",
+    "sqlite3",
+    "threading",
+    "time"
+   ],
+   "loc": 130
+  },
+  "app/coldset.py": {
+   "imports": [
+    "__future__",
+    "glob",
+    "json",
+    "os",
+    "pathlib",
+    "time"
+   ],
+   "loc": 100
+  },
+  "app/config.py": {
+   "imports": [
+    "__future__",
+    "json",
+    "math",
+    "os",
+    "pathlib"
+   ],
+   "loc": 158
+  },
+  "app/counters.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "bisect",
+    "time"
+   ],
+   "loc": 577
+  },
+  "app/dialects.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "typing"
+   ],
+   "loc": 506
+  },
+  "app/diskwatch.py": {
+   "imports": [
+    "__future__",
+    "os",
+    "re",
+    "threading",
+    "time"
+   ],
+   "loc": 178
+  },
+  "app/docker_recipe.py": {
+   "imports": [
+    "__future__",
+    "json",
+    "shlex",
+    "subprocess"
+   ],
+   "loc": 187
+  },
+  "app/dsh_home.py": {
+   "imports": [
+    "__future__",
+    "collections",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "selectors",
+    "shutil",
+    "sqlite3",
+    "subprocess",
+    "threading",
+    "time"
+   ],
+   "loc": 550
+  },
+  "app/engine_info.py": {
+   "imports": [
+    ".",
+    ".live_engines",
+    "__future__",
+    "glob",
+    "json",
+    "re",
+    "urllib.request"
+   ],
+   "loc": 238
+  },
+  "app/hermes_home.py": {
+   "imports": [
+    "__future__",
+    "os",
+    "pathlib"
+   ],
+   "loc": 56
+  },
+  "app/hw.py": {
+   "imports": [
+    ".",
+    ".diskwatch",
+    ".rings",
+    "__future__",
+    "json",
+    "os",
+    "psutil",
+    "shutil",
+    "subprocess",
+    "threading",
+    "time"
+   ],
+   "loc": 445
+  },
+  "app/live_engines.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "json",
+    "ntpath",
+    "os",
+    "psutil",
+    "re",
+    "signal",
+    "subprocess",
+    "threading",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 498
+  },
+  "app/maintenance.py": {
+   "imports": [
+    ".",
+    ".hw",
+    "__future__",
+    "logging",
+    "os",
+    "threading",
+    "time"
+   ],
+   "loc": 270
+  },
+  "app/modelnames.py": {
+   "imports": [
+    "__future__",
+    "re"
+   ],
+   "loc": 61
+  },
+  "app/nodes.py": {
+   "imports": [
+    ".",
+    ".hw",
+    ".rings",
+    "__future__",
+    "json",
+    "os",
+    "re",
+    "subprocess",
+    "threading",
+    "time"
+   ],
+   "loc": 272
+  },
+  "app/pricing.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "json",
+    "pathlib",
+    "re",
+    "time"
+   ],
+   "loc": 293
+  },
+  "app/probe.py": {
+   "imports": [
+    "__future__",
+    "json",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 88
+  },
+  "app/procs.py": {
+   "imports": [
+    "__future__",
+    "os",
+    "psutil",
+    "time"
+   ],
+   "loc": 113
+  },
+  "app/prom.py": {
+   "imports": [
+    "__future__"
+   ],
+   "loc": 158
+  },
+  "app/recipes.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "json",
+    "os",
+    "re",
+    "shlex",
+    "signal",
+    "subprocess",
+    "threading",
+    "time",
+    "uuid"
+   ],
+   "loc": 420
+  },
+  "app/rings.py": {
+   "imports": [
+    "__future__",
+    "collections",
+    "threading",
+    "time"
+   ],
+   "loc": 49
+  },
+  "app/sampler.py": {
+   "imports": [
+    ".",
+    ".rings",
+    ".sse",
+    "__future__",
+    "collections",
+    "json",
+    "re",
+    "subprocess",
+    "threading",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 1548
+  },
+  "app/server.py": {
+   "imports": [
+    ".",
+    ".auth",
+    ".clients",
+    ".hw",
+    ".live_engines",
+    ".maintenance",
+    ".nodes",
+    ".recipes",
+    ".sampler",
+    ".services",
+    ".sse",
+    ".store",
+    "__future__",
+    "gzip",
+    "hmac",
+    "http.server",
+    "json",
+    "logging",
+    "math",
+    "mimetypes",
+    "os",
+    "pathlib",
+    "posixpath",
+    "re",
+    "socket",
+    "threading",
+    "time",
+    "urllib.parse",
+    "urllib.request"
+   ],
+   "loc": 1372
+  },
+  "app/services.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "shlex",
+    "subprocess",
+    "threading",
+    "time"
+   ],
+   "loc": 71
+  },
+  "app/session_tokens.py": {
+   "imports": [
+    ".hermes_home",
+    "__future__",
+    "pathlib",
+    "re",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 69
+  },
+  "app/sse.py": {
+   "imports": [
+    "__future__",
+    "collections",
+    "itertools",
+    "queue",
+    "threading"
+   ],
+   "loc": 83
+  },
+  "app/store.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "json",
+    "logging",
+    "os",
+    "sqlite3",
+    "threading",
+    "time"
+   ],
+   "loc": 1123
+  },
+  "app/swatch.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 296
+  },
+  "app/tiers.py": {
+   "imports": [
+    "__future__",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 570
+  },
+  "app/voice.py": {
+   "imports": [
+    ".",
+    ".live_engines",
+    "__future__",
+    "json",
+    "urllib.request"
+   ],
+   "loc": 85
+  },
+  "app/voice_gates.py": {
+   "imports": [
+    ".",
+    "__future__",
+    "argparse",
+    "sys",
+    "time"
+   ],
+   "loc": 197
+  },
+  "scripts/import_legacy_history.py": {
+   "imports": [
+    "app.store",
+    "argparse",
+    "collections",
+    "json",
+    "os",
+    "re",
+    "sqlite3",
+    "sys"
+   ],
+   "loc": 168
+  },
+  "scripts/limcars_contract_diff.py": {
+   "imports": [
+    "app",
+    "json",
+    "os",
+    "sys",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 267
+  },
+  "scripts/limcars_contract_snapshot.py": {
+   "imports": [
+    "json",
+    "os",
+    "sys",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 56
+  },
+  "scripts/limcars_gate_proof.py": {
+   "imports": [
+    "__future__",
+    "argparse",
+    "http.client",
+    "json",
+    "re",
+    "subprocess",
+    "sys"
+   ],
+   "loc": 138
+  },
+  "scripts/limcars_tidy.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "argparse",
+    "json",
+    "os",
+    "shutil",
+    "sqlite3",
+    "subprocess",
+    "sys",
+    "time"
+   ],
+   "loc": 516
+  },
+  "scripts/limcars_upgrade_rehearsal.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "argparse",
+    "json",
+    "os",
+    "re",
+    "shutil",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "time"
+   ],
+   "loc": 287
+  },
+  "scripts/pool_estimate.py": {
+   "imports": [
+    "__future__",
+    "argparse",
+    "json",
+    "math",
+    "os",
+    "re",
+    "server.setup",
+    "sys"
+   ],
+   "loc": 572
+  },
+  "tests/js/kv_honesty.mjs": {
+   "imports": [
+    "../../web/js/charts.js"
+   ],
+   "loc": 43
+  },
+  "tests/js/scrape_age.mjs": {
+   "imports": [
+    "../../web/js/charts.js"
+   ],
+   "loc": 29
+  },
+  "tests/js/series_sample.mjs": {
+   "imports": [
+    "../../web/js/charts.js"
+   ],
+   "loc": 162
+  },
+  "tests/js/spark_cap.mjs": {
+   "imports": [
+    "../../web/js/charts.js"
+   ],
+   "loc": 103
+  },
+  "tests/test_atlas_contract.py": {
+   "imports": [
+    "app",
+    "pathlib",
+    "sys"
+   ],
+   "loc": 84
+  },
+  "tests/test_auth.py": {
+   "imports": [
+    "app.auth",
+    "json"
+   ],
+   "loc": 261
+  },
+  "tests/test_coldset.py": {
+   "imports": [
+    "app",
+    "json"
+   ],
+   "loc": 58
+  },
+  "tests/test_core.py": {
+   "imports": [
+    "app",
+    "app.sse",
+    "queue",
+    "time"
+   ],
+   "loc": 98
+  },
+  "tests/test_counter_audit.py": {
+   "imports": [
+    "app.store",
+    "test_sampler",
+    "time"
+   ],
+   "loc": 59
+  },
+  "tests/test_data_dir.py": {
+   "imports": [
+    "app",
+    "http.client",
+    "importlib",
+    "json",
+    "os",
+    "pathlib",
+    "pytest",
+    "subprocess",
+    "sys",
+    "time"
+   ],
+   "loc": 101
+  },
+  "tests/test_dialect_fixtures.py": {
+   "imports": [
+    "app",
+    "pathlib",
+    "sys"
+   ],
+   "loc": 220
+  },
+  "tests/test_dialects.py": {
+   "imports": [
+    "app",
+    "pytest"
+   ],
+   "loc": 366
+  },
+  "tests/test_diskwatch.py": {
+   "imports": [
+    "app.diskwatch",
+    "app.hw",
+    "app.sse",
+    "os",
+    "time"
+   ],
+   "loc": 104
+  },
+  "tests/test_docker_recipe.py": {
+   "imports": [
+    "app",
+    "io"
+   ],
+   "loc": 125
+  },
+  "tests/test_docs_knobs.py": {
+   "imports": [
+    "pathlib",
+    "re"
+   ],
+   "loc": 59
+  },
+  "tests/test_dsh_sources.py": {
+   "imports": [
+    "app",
+    "json",
+    "os",
+    "pathlib",
+    "pytest",
+    "re",
+    "shutil",
+    "sqlite3",
+    "subprocess",
+    "time"
+   ],
+   "loc": 610
+  },
+  "tests/test_engine_selection.py": {
+   "imports": [
+    "app.counters",
+    "app.sampler",
+    "app.server",
+    "app.sse",
+    "app.store",
+    "inspect",
+    "pathlib",
+    "time"
+   ],
+   "loc": 148
+  },
+  "tests/test_engine_stop.py": {
+   "imports": [
+    "app",
+    "os",
+    "pytest",
+    "subprocess",
+    "time"
+   ],
+   "loc": 141
+  },
+  "tests/test_explicit_encodings.py": {
+   "imports": [
+    "pathlib",
+    "re",
+    "sys"
+   ],
+   "loc": 84
+  },
+  "tests/test_gap_class.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 228
+  },
+  "tests/test_hw.py": {
+   "imports": [
+    "app.hw",
+    "os",
+    "shutil"
+   ],
+   "loc": 69
+  },
+  "tests/test_hw_chart_keys.py": {
+   "imports": [
+    "app"
+   ],
+   "loc": 11
+  },
+  "tests/test_kv_tile_denominator.py": {
+   "imports": [
+    "app.sampler",
+    "app.sse",
+    "os",
+    "sys"
+   ],
+   "loc": 127
+  },
+  "tests/test_kv_tile_honesty.py": {
+   "imports": [
+    "app.config",
+    "app.sampler",
+    "app.sse",
+    "importlib.util",
+    "json",
+    "os",
+    "pathlib",
+    "pytest",
+    "shutil",
+    "subprocess",
+    "sys"
+   ],
+   "loc": 219
+  },
+  "tests/test_llamacpp_contract.py": {
+   "imports": [
+    "app",
+    "pathlib",
+    "sys"
+   ],
+   "loc": 108
+  },
+  "tests/test_lost_potential.py": {
+   "imports": [
+    "app",
+    "app.counters",
+    "app.store",
+    "time"
+   ],
+   "loc": 389
+  },
+  "tests/test_modelnames.py": {
+   "imports": [
+    "app",
+    "app.counters",
+    "app.sampler",
+    "app.sse",
+    "app.store",
+    "json",
+    "time"
+   ],
+   "loc": 72
+  },
+  "tests/test_money_bases.py": {
+   "imports": [
+    "app"
+   ],
+   "loc": 22
+  },
+  "tests/test_money_types.py": {
+   "imports": [
+    "app",
+    "app.store",
+    "os",
+    "sqlite3",
+    "sys",
+    "time"
+   ],
+   "loc": 140
+  },
+  "tests/test_nodes.py": {
+   "imports": [
+    "app.nodes"
+   ],
+   "loc": 78
+  },
+  "tests/test_nodes_ssh_opts.py": {
+   "imports": [
+    "app",
+    "app.nodes",
+    "pytest",
+    "subprocess"
+   ],
+   "loc": 110
+  },
+  "tests/test_pool_estimate.py": {
+   "imports": [
+    "importlib.util",
+    "os",
+    "pathlib",
+    "pytest"
+   ],
+   "loc": 108
+  },
+  "tests/test_portability.py": {
+   "imports": [
+    "app",
+    "http.server",
+    "json",
+    "os",
+    "pathlib",
+    "psutil",
+    "pytest",
+    "re",
+    "shutil",
+    "socket",
+    "subprocess",
+    "sys",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 276
+  },
+  "tests/test_portability_linux.py": {
+   "imports": [
+    "app",
+    "os",
+    "pytest",
+    "subprocess",
+    "time"
+   ],
+   "loc": 219
+  },
+  "tests/test_prefill_live.py": {
+   "imports": [
+    "app.sampler",
+    "app.sse",
+    "os",
+    "sys"
+   ],
+   "loc": 169
+  },
+  "tests/test_price_schedule.py": {
+   "imports": [
+    "app",
+    "calendar",
+    "json"
+   ],
+   "loc": 59
+  },
+  "tests/test_priced_history.py": {
+   "imports": [
+    "app",
+    "app.counters",
+    "app.store",
+    "pytest",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 163
+  },
+  "tests/test_recipes.py": {
+   "imports": [
+    "app",
+    "os",
+    "pytest",
+    "stat",
+    "sys",
+    "time"
+   ],
+   "loc": 196
+  },
+  "tests/test_render_contract.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "json",
+    "pathlib",
+    "pytest",
+    "re"
+   ],
+   "loc": 155
+  },
+  "tests/test_ring_storage.py": {
+   "imports": [
+    "__future__",
+    "app.store",
+    "json",
+    "pytest",
+    "time"
+   ],
+   "loc": 211
+  },
+  "tests/test_sampler.py": {
+   "imports": [
+    "app",
+    "app.dialects",
+    "app.sampler",
+    "app.sse",
+    "app.store",
+    "json",
+    "re",
+    "time",
+    "urllib.request"
+   ],
+   "loc": 667
+  },
+  "tests/test_savings_history.py": {
+   "imports": [
+    "app.counters",
+    "app.pricing",
+    "app.store",
+    "time"
+   ],
+   "loc": 118
+  },
+  "tests/test_scrape_age.py": {
+   "imports": [
+    "app.sampler",
+    "app.server",
+    "app.sse",
+    "json",
+    "pathlib",
+    "pytest",
+    "shutil",
+    "subprocess",
+    "time"
+   ],
+   "loc": 144
+  },
+  "tests/test_security_http.py": {
+   "imports": [
+    "app",
+    "app.nodes",
+    "app.server",
+    "http.client",
+    "json",
+    "os",
+    "pytest",
+    "socket",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "time"
+   ],
+   "loc": 553
+  },
+  "tests/test_self_tidy.py": {
+   "imports": [
+    "app",
+    "app.maintenance",
+    "app.store",
+    "json",
+    "os",
+    "pytest",
+    "sqlite3",
+    "threading",
+    "time"
+   ],
+   "loc": 360
+  },
+  "tests/test_spark_stats.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "inspect",
+    "json",
+    "pathlib",
+    "pytest",
+    "time"
+   ],
+   "loc": 229
+  },
+  "tests/test_ssd.py": {
+   "imports": [
+    "app",
+    "app.store"
+   ],
+   "loc": 24
+  },
+  "tests/test_storage_growth.py": {
+   "imports": [
+    "app.store",
+    "os",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 90
+  },
+  "tests/test_tarnwell_contract.py": {
+   "imports": [
+    "app",
+    "pathlib",
+    "sys"
+   ],
+   "loc": 66
+  },
+  "tests/test_tidy_script.py": {
+   "imports": [
+    "app",
+    "app.store",
+    "importlib.util",
+    "json",
+    "os",
+    "pytest",
+    "sqlite3",
+    "time"
+   ],
+   "loc": 268
+  },
+  "tests/test_tiers.py": {
+   "imports": [
+    "__future__",
+    "app",
+    "app.store",
+    "pytest",
+    "time"
+   ],
+   "loc": 553
+  },
+  "tests/test_voice.py": {
+   "imports": [
+    "app",
+    "app.hw",
+    "app.sse",
+    "os",
+    "pytest",
+    "socket",
+    "urllib.request"
+   ],
+   "loc": 195
+  },
+  "tests/test_voice_gates.py": {
+   "imports": [
+    "app",
+    "app.config",
+    "pytest",
+    "sys"
+   ],
+   "loc": 251
+  },
+  "tests/test_web_charts.py": {
+   "imports": [
+    "pathlib",
+    "pytest",
+    "shutil",
+    "subprocess"
+   ],
+   "loc": 75
+  },
+  "tests/test_web_escapes.py": {
+   "imports": [
+    "pathlib",
+    "re"
+   ],
+   "loc": 108
+  },
+  "web/css/dashboard.css": {
+   "imports": [],
+   "loc": 170
+  },
+  "web/css/style.css": {
+   "imports": [],
+   "loc": 217
+  },
+  "web/js/charts.js": {
+   "imports": [],
+   "loc": 454
+  },
+  "web/js/dashboard.js": {
+   "imports": [
+    "./charts.js?v=20261112a"
+   ],
+   "loc": 2495
+  },
+  "web/subagent-watch/app.js": {
+   "imports": [],
+   "loc": 1332
+  },
+  "web/subagent-watch/style.css": {
+   "imports": [],
+   "loc": 226
+  }
+ },
+ "exports": {
+  "web/js/charts.js": [
+   "COLORS",
+   "HOLD_LAST_NONZERO",
+   "LineChart",
+   "RATE_FIELDS",
+   "RATE_WHILE_ACTIVE",
+   "SeriesStore",
+   "fillIdleZeros",
+   "fmt",
+   "kvPinNote",
+   "rateZerosToGaps",
+   "seenLabel",
+   "seriesSample",
+   "spark",
+   "stepMarks"
+  ]
+ },
+ "package_deps": {}
+}

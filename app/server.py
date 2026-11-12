@@ -4,6 +4,7 @@ Routes
   GET  /                      dashboard (web/dashboard.html)
   GET  /api/health            {ok, version, uptime}
   GET  /api/snapshot          engines + hw latest + rings (cold-start paint)
+  GET  /api/engine-status     lean per-engine read for tools (?engine= optional)
   GET  /api/history?engine=&seconds=   sqlite downsample history
   GET  /api/events            SSE: topics engine:*, hw, requests, events
   POST /api/services/<id>/start|stop   whitelisted systemd/docker actions
@@ -26,10 +27,11 @@ import socket
 import threading
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, __version__ as VERSION
+from . import config, dialects, __version__ as VERSION
 from .sse import Broker
 
 # Single source of truth for the version string: app/__init__.py. The tag is what
@@ -837,6 +839,43 @@ class Handler(BaseHTTPRequestHandler):
                 return s
         return all_s[0] if all_s else None
 
+    # headline fields the lean read keeps from the latest row — the ones a
+    # resource verdict or a paste-day check needs; everything else stays on
+    # the full snapshot
+    _LEAN = ("running", "waiting", "kv_pct", "kv_used_tokens",
+             "kv_pool_tokens", "decode_tps_now", "prefill_tps_now")
+
+    def _engine_status(self, qs: dict) -> tuple:
+        """Lean per-engine read for external tools (resource verdicts,
+        paste-day checks): meta + latest headline fields only — no series,
+        rings, hw, nodes or services. The full /api/snapshot body measures
+        megabytes and a short-timeout scraper resets mid-write; this stays
+        in the single KB. scrape_age_s is computed at read time: the honest
+        answer to "how old is this number", independent of the reader clock.
+        Returns (payload, http_code)."""
+        def _lean(s):
+            l = s.ring.last() or {}
+            return {"id": s.id, "url": s.url, "kind": s.kind,
+                    "model": s.model, "alive": s.alive,
+                    "last_scrape": s.last_scrape,
+                    "scrape_age_s": (round(time.time() - s.last_scrape, 1)
+                                     if s.last_scrape else None),
+                    "hz": s.hz,
+                    "kv_ref_tokens": s.kv_ref_tokens,
+                    "kv_ref_source": s.kv_ref_source,
+                    "kv_ref_pin_gb": s.kv_ref_pin_gb,
+                    "latest": {k: l.get(k) for k in self._LEAN
+                               if l.get(k) is not None}}
+        sel = (qs.get("engine") or [None])[0]
+        if sel:
+            s = self.app.engines.get(sel)
+            if s is None:
+                return {"ok": False, "error": "unknown engine"}, 404
+            return {"ok": True, "ts": time.time(), "engine": _lean(s)}, 200
+        items = sorted(self.app.engines.all(), key=lambda s: (not s.alive, s.id))
+        return {"ok": True, "ts": time.time(),
+                "engines": {s.id: _lean(s) for s in items}}, 200
+
     def _api_get(self, path: str, qs: dict) -> None:
         app = self.app
         if path == "/api/health":
@@ -897,6 +936,11 @@ class Handler(BaseHTTPRequestHandler):
                 "nodes": {n.id: n.snapshot(secs) for n in app.nodes},
                 "services": app.services.status_all(),
             })
+        if path == "/api/engine-status":
+            obj, code = self._engine_status(qs)
+            if code != 200:
+                return self._err(code, obj["error"])
+            return self._json(obj)
         if path == "/api/history":
             eng = (qs.get("engine") or [None])[0]
             try:
@@ -908,6 +952,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "rows": app.store.history("hw_samples", None, secs)})
         if path == "/api/events":
             return self._sse(qs)
+        if path == "/api/engine-live":
+            # Relay of an engine's own live board SSE (tandemllm's 4 Hz-while-
+            # busy stream): the Gen-speed tile follows the engine's cadence
+            # while the charts stay on the sampler's 2 Hz feed. Only engines
+            # whose dialect declares live_json have a relay; read-only, one
+            # upstream stream per browser connection, capped per engine.
+            eid = (qs.get("engine") or [""])[0]
+            s = app.engines.get(eid)
+            dial = dialects.DIALECTS.get((s.kind if s else "") or "", {})
+            live_path = dial.get("live_json")
+            if s is None or not live_path:
+                return self._err(404, "no live board for that engine")
+            relays = getattr(app, "_live_relays", None)
+            if relays is None:
+                relays = app._live_relays = {}
+            n = relays.get(eid, 0)
+            if n >= 4:
+                return self._err(429, "too many live relays for that engine")
+            if getattr(self, "_head_only", False):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            self.timeout = None  # the relay only writes
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            relays[eid] = n + 1
+            try:  # noqa: S310 — fixed http(s) url from the engine's own config
+                up = urllib.request.urlopen(s.url + live_path, timeout=10)
+                try:
+                    for raw in up:
+                        self.wfile.write(raw)
+                        self.wfile.flush()
+                finally:
+                    up.close()
+            except Exception:  # noqa: BLE001 — engine died / client left: end the stream
+                pass
+            finally:
+                relays[eid] = relays.get(eid, 1) - 1
+            return
         if path == "/api/savings-history":
             # daily money-saved chart data (real persisted usage, per model)
             from . import counters as counters_mod

@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections import deque
 import json
 import re
+import subprocess
 import threading
 import time
 import urllib.request
@@ -51,9 +52,10 @@ _HIST_KEYS = {lg: (f"{lg}_p50_ms", f"{lg}_avg_ms", f"{lg}_n",
 SERIES_KEYS = ("prefill_tps_now", "decode_tps_now", "prefill_tps_avg",
                "decode_tps_avg", "running", "waiting", "kv_pct",
                "kv_pct_shown", "kv_pct_peak_s",
-               "kv_pool_tokens", "kv_used_tokens", "kv_free_tokens",
+               "kv_pool_tokens", "kv_used_tokens", "kv_free_tokens", "kv_tok",
+               "kv_ref_tokens", "kv_ref_step", "decode_tps_req",
                "ttft_p50_ms", "itl_p50_ms", "queue_time_p50_ms", "e2e_p50_ms",
-               "cache_hit_pct", "cache_hit_life_pct",
+               "cache_hit_pct", "cache_hit_life_pct", "cache_hit_agg_1h",
                "spec_accept_pct", "spec_step_accept_pct", "spec_accept_len", "draft_tok_per_step",
                "prompt_total", "gen_total", "gen_peak", "requests_total",
                "savings_day", "savings_month", "savings_year",
@@ -62,6 +64,160 @@ SERIES_KEYS = ("prefill_tps_now", "decode_tps_now", "prefill_tps_avg",
 PREFILL_MAX = 12000.0   # plausibility ceiling, tok/s. Real peak measured on
                         # the GB10 daily driver is ~7.5k; anything above this is
                         # completion-attribution skew, never a speed.
+
+
+def _live_decode_agg(now: dict):
+    """The engine board's aggregate decode speed, freshest field first:
+    decode_live_tps moves every frame (4 Hz while busy); decode_tps is built
+    from the engine's 1 Hz history samples, so it only changes once a second —
+    the engine's own dashboard leads with the live field too."""
+    for k in ("decode_live_tps", "decode_tps"):
+        v = now.get(k)
+        if isinstance(v, (int, float)) and v >= 0:
+            return float(v)
+    return None
+
+
+def _apply_prefill_live(row: dict, live_json: dict | None) -> None:
+    """The engine live board's own in-flight prefill speed (TandemLLM
+    contract: `now.prefilling` + `now.prefill_live_tps`), mirroring the
+    decode-live path above.
+
+    Why (the operator's bug, 2026-11-09): during a LONG prefill no counter
+    advances — measured on the live engine: qse_prefill_tokens_forwarded_total
+    froze for the whole 90 s prefill (charged at completion), and the
+    prefill_time/prompt_tokens sides of the windowed rate fire only when the
+    prefill ENDS. The tile therefore showed nothing exactly while the number
+    mattered; short prefills looked fine because their burst lands inside the
+    averaging window.
+
+    Honest gap, measured the same day: `prefill_live_tps` populates only
+    after the engine's first live chunk — LONG prefills publish it mid-flight
+    (count>=1), SHORT ones never publish one (their completion burst already
+    reaches the windowed path). While it is null the windowed counter value
+    deliberately STANDS, and the board's `prefill_tps` is NOT used as a
+    fallback: it is a window average diluted by idle time (measured 36.89
+    tok/s while the engine prefilled at ~1000 — a speed lie). Capped like
+    every other prefill path (PREFILL_MAX).
+
+    The tile's DIM is the operator's lane-activity UX (his words 2026-11-09):
+    `prefill_active` stays exactly what the counter heuristic says — this
+    function must NOT light it from the board's `prefilling` flag. What the
+    marker `prefill_live` fixes instead is the CHART LINE: seriesSample
+    normally nulls a rate while its activity flag reads false, which made
+    the curve vanish through 60 s prefills even though the engine was
+    publishing a real speed. A marked value is measured, not a stale hold,
+    so the curve keeps drawing it while the tile dims as before.
+    """
+    now = (live_json or {}).get("now") or {}
+    if not now.get("prefilling"):
+        return
+    v = now.get("prefill_live_tps")
+    if isinstance(v, (int, float)) and 0 < v <= PREFILL_MAX:
+        row["prefill_tps_avg"] = float(v)
+        row["prefill_live"] = 1
+
+
+def _live_kv(live: dict, series: dict, health: dict | None = None) -> dict:
+    """KV fields from an engine live-board JSON (tandemllm contract 1.2):
+    engine.kv.length/max_len are the context in TOKENS — the token-denominated
+    pool this engine publishes nowhere on /metrics. The state store also lands
+    in GiB beside the tokens (this engine's kv_pct is a BYTE ratio, so the tile
+    fallback can state the real unit). Pure; missing keys yield no fields.
+
+    `health` (the engine's /health JSON) adds the SHARED pool truth: the KV
+    pool is dynamic — pages are committed per lane as contexts grow and given
+    back when idle — so there is no fixed token ceiling to draw against (the
+    setup wizard's "663,179 fit in all" is a planning estimate from the model
+    registry, and /v1/setup/* only exists in setup mode). What the RUNNING
+    engine publishes is what it holds: committed rows per lane, summed."""
+    out: dict = {}
+    kv = (live.get("engine") or {}).get("kv") or {}
+    kl, kmax = kv.get("length"), kv.get("max_len")
+    if isinstance(kl, (int, float)) and isinstance(kmax, (int, float)) and kmax > 0:
+        out["kv_pool_tokens"] = int(kmax)
+        out["kv_used_tokens"] = int(kl)
+        out["kv_free_tokens"] = max(0, int(kmax - kl))
+        # the tile's % follows the tokens: context occupancy (length/max_len).
+        # The dialect's kv_pct is the state-store BYTE ratio, which reads 0%
+        # whenever the cache is cold/empty while the engine holds a full
+        # context — a dead gauge next to a live token line.
+        out["kv_pct"] = round(100.0 * kl / kmax, 3)
+    # engine.kv.length is the ACTIVE LANE's context; with 2+ requests in
+    # flight the shared usage is the sum of every running request's context
+    # (prompt + generated). 'done' rows linger in the frame — only prefill/
+    # decode rows count.
+    rows = live.get("requests") or []
+    ctx = [int(r.get("prompt_tokens") or 0) + int(r.get("tokens") or 0)
+           for r in rows if isinstance(r, dict)
+           and r.get("phase") in ("prefill", "decode")]
+    if ctx and any(ctx):
+        out["kv_used_tokens"] = sum(ctx)
+        if out.get("kv_pool_tokens"):
+            out["kv_free_tokens"] = max(0, out["kv_pool_tokens"] - sum(ctx))
+    sb = series.get("qse_state_store_budget_bytes")
+    sb = sb[0][2] if sb else None
+    cb = prom.first(series, "qse_cache_bytes", cache="state")
+    if sb and cb is not None:
+        out["kv_used_gib"] = round(cb / 2**30, 2)
+        out["kv_pool_gib"] = round(sb / 2**30, 2)
+    if isinstance(health, dict):
+        slots = ((health.get("kv_pool") or {}).get("slots")) or []
+        rows = sum(int(s.get("committed_rows") or 0) for s in slots
+                   if isinstance(s, dict))
+        if rows > 0:
+            out["kv_committed_rows"] = rows
+            out["kv_pool_note"] = f"{rows:,} rows committed across {len(slots)} lanes"
+    # The engine's own memory gate, in GiB. The peak gate is what makes a long
+    # prefill WAIT rather than fail: on 2026-11-07 the engine logged "reserved
+    # 73.1 + this request's workspace 5.3 > peak 75.8" and the request waited
+    # 34.9 s before its client abandoned it at 45 s. A 90k-token prefill prices
+    # about 5 GiB of workspace, so once the headroom under the peak is under
+    # that, the next long request is already queued — which is a number the
+    # dashboard can state long before anyone notices a hang.
+    alloc = prom.first(series, "qse_memory_bytes", part="allocated")
+    peak = prom.first(series, "qse_memory_bytes", part="peak")
+    if alloc is not None and peak is not None and peak > 0:
+        out["mem_alloc_gib"] = round(alloc / 2**30, 2)
+        out["mem_peak_gib"] = round(peak / 2**30, 2)
+        out["mem_gate_headroom_gib"] = round((peak - alloc) / 2**30, 2)
+    kp = health.get("kv_pool") if isinstance(health, dict) else None
+    if isinstance(kp, dict) and isinstance(kp.get("mem_available_gib"), (int, float)):
+        out["mem_avail_gib"] = round(float(kp["mem_available_gib"]), 2)
+    return out
+
+
+def _anchor_tile_pct(row: dict) -> None:
+    """ONE denominator per tile (the operator's KV-tile fix 2026-11-09): the big %
+    must equal 100 x used / the SAME denominator the sub-line prints, so the
+    two figures on the tile can never disagree.
+
+    The sub-line's fraction divides kv_used_tokens by kv_ref_tokens when a
+    shared-pool fit is configured — the pool implied by the used+free values
+    (recomputed from the engine's live memory state, `kv_ref_source` says by
+    what) — and falls back to kv_pool_tokens (vLLM block pool, Tarnwell
+    gauges, or the tandem per-lane window) when there is no ref. The % now
+    follows that same number.
+
+    Before this, the tandem tile divided the ACTIVE LANE's length by the
+    PER-LANE window while the fraction beside it divided the sum across all
+    running lanes by the shared fit: 37.1% printed above "614.2k / 836.1k
+    tok used" (73.5%). Three denominators in one tile.
+
+    The launch-priced figure (kv_ref_launch) is deliberately NOT the pool:
+    the engine commits pages dynamically past what the launch env priced
+    (measured 2026-11-09: 614.2k used > 472.9k launch-priced — a launch-based
+    denominator would print a fraction over 100%), so it stays an annotation
+    beside the marker, visible exactly while it disagrees materially.
+    """
+    pool_shown = row.get("kv_ref_tokens") or row.get("kv_pool_tokens")
+    used = row.get("kv_used_tokens")
+    # a pool must be a POSITIVE number: a negative or zero ref (broken
+    # recompute, corrupt config) must not print a negative % — the dialect's
+    # own reading stands, honest, until the pool is trustworthy again
+    if pool_shown and pool_shown > 0 and used is not None:
+        row["kv_pct"] = round(100.0 * used / pool_shown, 3)
+        row["kv_free_tokens"] = max(0, int(round(pool_shown - used)))
 
 
 def _trim(lst: list, cutoff: float) -> None:
@@ -100,6 +256,36 @@ class EngineSampler(threading.Thread):
         self.loop_warn_s = float(cfg.get("loop_warn_s", 30.0))
         # served-model regex -> seconds: the KV tile shows the highest reading of that window
         self.kv_peak_models = cfg.get("kv_peak_models", DEFAULT_KV_PEAK_MODELS)
+        # per-engine static KV reference line (tokens): the setup wizard's
+        # shared-pool estimate for THIS engine's launch config. The running
+        # engine publishes no fixed ceiling (its pool is dynamic), so this is
+        # an operator-entered marker — dashed line on the KV chart, nothing
+        # else reads it. Engines without the key never emit it.
+        self.kv_ref_tokens = (eng or {}).get("kv_ref_tokens")
+        # Optional: a command that RECOMPUTES that marker from the engine's own
+        # launch config (scripts/pool_estimate.py for tandemllm). The number the
+        # setup wizard shows is computed on demand and never stored, and its
+        # route only exists in --setup mode, so a serving engine cannot answer
+        # the question; this asks the engine's registry instead of trusting a
+        # hand-typed figure. Config-file only, like a node's ssh options — never
+        # settable over the API, because it runs a shell command. Runs off the
+        # 2 Hz tick in a daemon thread; a failure keeps the last good number and
+        # only records why (a dash, never a wrong number).
+        self.kv_ref_cmd = (eng or {}).get("kv_ref_cmd")
+        self.kv_ref_ttl = float((eng or {}).get("kv_ref_ttl_s") or 900)
+        self.kv_ref_source = "static" if self.kv_ref_tokens else None
+        self.kv_ref_launch = None
+        # honesty markers (drift study 2026-11-10): an operator-pinned --floor
+        # in kv_ref_cmd makes the recompute re-derive an OLD launch's pool —
+        # pool_estimate says so via floor_pinned. Carry the pinned GiB so the
+        # tile can warn out loud, and stamp one row with the previous ref when
+        # the ref steps, so the chart can mark the step (a % jump with no
+        # usage change must not read as a load spike in the history).
+        self.kv_ref_pin_gb = None
+        self._kv_ref_step = None
+        self.kv_ref_error = None
+        self._kv_ref_at = 0.0
+        self._kv_ref_busy = False
         self._kv_hist: deque = deque()
         self._full_accept_since = None
         self.ring = Ring(float(cfg.get("ring_seconds", 3900)))
@@ -134,7 +320,7 @@ class EngineSampler(threading.Thread):
         self._rate_prev_t = 0.0
         self._rate_live: set[str] = set()       # counters the baseline really read
         self._savings_cache: dict | None = None
-        self._stop = threading.Event()
+        self._stop_ev = threading.Event()
         self.started = time.time()
         self._persist_acc: list[tuple[float, dict]] = []
         self.topic = f"engine:{self.id}"
@@ -142,7 +328,7 @@ class EngineSampler(threading.Thread):
     # ---------------- public ----------------
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_ev.set()
 
     def _hour_median(self, key: str, fallback, rows=None):
         """Median of a per-tick series over the last hour (user rule: hour
@@ -161,9 +347,23 @@ class EngineSampler(threading.Thread):
         return {
             "id": self.id, "url": self.url, "kind": self.kind, "model": self.model,
             "alive": self.alive, "last_scrape": self.last_scrape,
+            # seconds since the last SUCCESSFUL scrape, computed at read time:
+            # rows stop flowing when the engine dies, but a reader that only
+            # sees the last row's timestamp cannot tell a frozen value from a
+            # fresh one without doing clock math against its own clock.
+            "scrape_age_s": (round(time.time() - self.last_scrape, 1)
+                             if self.last_scrape else None),
             "proc_start": getattr(self, "proc_start_t", None),
             "counter_audit": getattr(self, "counter_audit", None),
             "hz": self.hz, "window_s": self.window_s,
+            # the client opens the live relay only for engines whose dialect
+            # declares a live board (tandemllm)
+            "live": bool(dialects.DIALECTS.get(self.kind or "", {})
+                         .get("live_json")),
+            "kv_ref_tokens": self.kv_ref_tokens,
+            "kv_ref_source": self.kv_ref_source,
+            "kv_ref_launch": self.kv_ref_launch,
+            "kv_ref_pin_gb": self.kv_ref_pin_gb,
             "latest": self.ring.last(),
             "series": {k: [[t, r.get(k)] for t, r in rows] for k in SERIES_KEYS},
         }
@@ -172,7 +372,7 @@ class EngineSampler(threading.Thread):
 
     def run(self) -> None:
         interval = 1.0 / max(0.5, self.hz)
-        while not self._stop.is_set():
+        while not self._stop_ev.is_set():
             t0 = time.monotonic()
             try:
                 self._tick()
@@ -181,13 +381,102 @@ class EngineSampler(threading.Thread):
             # publish at most once per tick even on failure (last row stays alive)
             sleep = interval - (time.monotonic() - t0)
             if sleep > 0:
-                self._stop.wait(sleep)
+                self._stop_ev.wait(sleep)
 
     def _fetch(self, path: str, timeout: float = 1.5) -> bytes:
         req = urllib.request.Request(self.url + path,
                                      headers={"User-Agent": "limcars-next/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — fixed http(s) url
             return r.read()
+
+    def _kv_ref_maybe(self) -> None:
+        """Kick a recompute when its TTL expired. Never blocks the 2 Hz tick."""
+        cmd = self.kv_ref_cmd
+        if not cmd or self._kv_ref_busy or time.time() - self._kv_ref_at < self.kv_ref_ttl:
+            return
+        self._kv_ref_busy = True
+        self._kv_ref_at = time.time()
+        threading.Thread(target=self._kv_ref_refresh, args=(cmd,), daemon=True).start()
+
+    def _kv_ref_refresh(self, cmd: str) -> None:
+        try:
+            p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            if p.returncode != 0:
+                # the script's drift gate exits 3 with its diff on stderr: name it,
+                # and keep the marker that is already on the chart
+                tail = (p.stderr or "").strip().splitlines()
+                raise ValueError(tail[-1] if tail else f"exit {p.returncode}")
+            out = json.loads((p.stdout or "").strip().splitlines()[-1])
+            n = out.get("context_tokens_fit")
+            if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+                raise ValueError("no usable context_tokens_fit in its output")
+            old = self.kv_ref_tokens
+            self.kv_ref_tokens = float(n)
+            self.kv_ref_source = out.get("source") or "recomputed"
+            self.kv_ref_launch = out.get("launch_context_tokens_fit")
+            # pool_estimate emits floor_pinned ONLY when --floor overrode the
+            # launch's knob: the fit is then a stale launch-era pool, not this
+            # engine's (measured 2026-11-10: pinned floor 10 read 836,140
+            # while the 0.15.3 launch prices 663,179 — the tile understated
+            # pressure by 26%). Carry the GiB so the tile can name the pin.
+            fp = out.get("floor_pinned")
+            gb = fp.get("floor_gb") if isinstance(fp, dict) else None
+            self.kv_ref_pin_gb = (float(gb) if isinstance(gb, (int, float))
+                                  and not isinstance(gb, bool) else None)
+            if old is not None and abs(old - self.kv_ref_tokens) > 0.5:
+                # the ref stepped (new launch knobs, or a pin dropped/added):
+                # the next row carries the OLD value once, for the chart mark
+                self._kv_ref_step = old
+            self.kv_ref_error = None
+        except Exception as exc:  # noqa: BLE001 — a stale marker beats a wrong one
+            self.kv_ref_error = f"{type(exc).__name__}: {exc}"[:200]
+        finally:
+            self._kv_ref_busy = False
+
+    def _live_json(self, dial: dict, path: str | None = None) -> dict | None:
+        """Engine live-board JSON (dialect `live_json` path), None if absent.
+        Only engines whose dialect declares the path are ever asked; a failure
+        (old build without the route, timeout) is silent — /metrics stays the
+        source of truth. Cached per path for 0.25 s so a 2 Hz sampler cannot
+        stampede an engine that regenerates the payload at 4 Hz anyway."""
+        path = path or dial.get("live_json")
+        if not path:
+            return None
+        now = time.time()
+        cached = (getattr(self, "_live_cache", None) or {}).get(path)
+        if cached and now - cached[0] < 0.25:
+            return cached[1]
+        out: dict | None = None
+        try:
+            req = urllib.request.Request(self.url + path,
+                                         headers={"User-Agent": "limcars-next/1.0"})
+            # the tandemllm live board is an SSE stream (event/id/data frames,
+            # 4 Hz): take the FIRST data frame and close — never read() the
+            # open stream, which would block the tick until the timeout.
+            with urllib.request.urlopen(req, timeout=0.8) as r:  # noqa: S310 — fixed http(s) url
+                seen: list[bytes] = []
+                for raw in r:
+                    if len(seen) < 64:
+                        seen.append(raw)
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    d = json.loads(line[5:].lstrip())
+                    if isinstance(d, dict):
+                        out = d
+                    break
+                if out is None:
+                    # not SSE — a plain JSON body (other engines' boards);
+                    # the loop consumed it, so parse what was buffered
+                    body = b"".join(seen).decode("utf-8", "replace")
+                    d = json.loads(body) if body.strip() else None
+                    if isinstance(d, dict):
+                        out = d
+        except Exception:  # noqa: BLE001 — the live board is an extra, never a dependency
+            pass
+        self._live_cache = getattr(self, "_live_cache", None) or {}
+        self._live_cache[path] = (now, out)
+        return out
 
     # A port can be re-served with another model (same URL, new engine): the
     # served id is re-read every MODEL_REFRESH_S and right after a restart, so
@@ -250,6 +539,9 @@ class EngineSampler(threading.Thread):
         return modelnames.pick(mid, known)
 
     def _tick(self) -> None:
+        # start any due recompute first: it runs off this thread while the
+        # scrape below is in flight
+        self._kv_ref_maybe()
         # 8 s, not 1.5 s: a loaded TandemLLM renders /metrics in 4-10 s
         # (it collects allocator, cache and disk-tier reports). A scrape
         # that missed by a second must not mark a live engine dead — three
@@ -280,6 +572,7 @@ class EngineSampler(threading.Thread):
         gauges = dialects.read_gauges(series, dial)
         counters = dialects.read_counters(series, dial)
         hists = dialects.read_hists(series, dial)
+        live_json = self._live_json(dial)
 
         dt = now - self._prev_t if self._prev is not None else 0.0
         prev = self._prev or {}
@@ -288,7 +581,12 @@ class EngineSampler(threading.Thread):
             "running": gauges.get("running"),
             "waiting": gauges.get("waiting"),
             "kv_pct": (gauges.get("kv_pct") or 0.0) * 100 if gauges.get("kv_pct") is not None else None,
-            "requests_total": counters.get("req_success"),
+            # tandemllm publishes the full finished-generations family under its
+            # own logical; other dialects never set it (read_counters writes the
+            # key as None only for mapped-but-absent series) and keep req_success.
+            "requests_total": (counters.get("requests_total")
+                               if counters.get("requests_total") is not None
+                               else counters.get("req_success")),
         }
 
         # --- instantaneous rates (counter difference over this tick) ---
@@ -350,6 +648,10 @@ class EngineSampler(threading.Thread):
                         and not dial.get("gen_completion_charged")):
             self._pf_last_move = now
         row["prefill_active"] = (now - self._pf_last_move) < 1.5
+        # engine live board: in-flight prefill speed + live marker (the tile's
+        # dim stays the heuristic's alone — the operator's UX; the marker only keeps
+        # seriesSample from nulling the chart line)
+        _apply_prefill_live(row, live_json)
         if dial.get("gen_completion_charged"):
             # gen tokens land when a request finishes (llama.cpp, TandemLLM):
             # a per-tick difference is a completion burst, not a speed. Pair
@@ -358,14 +660,33 @@ class EngineSampler(threading.Thread):
             # phase is claimed).
             paired = self._paired_rate("gen_tokens", "decode_seconds")
             if paired is None and "decode_tps" in dial.get("hist", {}):
-                # TandemLLM has no decode-seconds counter — use the engine's
-                # OWN per-request decode-speed histogram: the mean over the
-                # requests that completed in this window. The counter path
-                # above would read a 3k-token output landing in one 0.5 s
-                # tick as 6000 t/s — physically impossible, and it did.
-                d = self._hist_delta("decode_tps")
-                paired = (d[1] / d[2]) if d and d[2] else None
-            row["decode_tps_now"] = paired if running else None
+                if dial.get("decode_hist_per_request"):
+                    # TandemLLM: the histogram is PER REQUEST — with 4-5 lanes
+                    # in flight its mean is one request's speed, not the box's.
+                    # "now" is the engine's own aggregate (live board, the
+                    # number its dashboard prints); no board → the window rate
+                    # of gen_tokens (METRICS.md's own aggregate recommendation:
+                    # rate(qse_generation_tokens_total)). The per-request mean
+                    # survives beside it as decode_tps_req.
+                    agg = None
+                    if live_json:
+                        agg = _live_decode_agg(live_json.get("now") or {})
+                    if agg is None:
+                        agg = self._win_rate("gen_tokens")
+                    row["decode_tps_now"] = agg if running else None
+                    d = self._hist_delta("decode_tps")
+                    row["decode_tps_req"] = (d[1] / d[2]) if d and d[2] else None
+                else:
+                    # no decode-seconds counter to pair with: the engine's OWN
+                    # per-request decode-speed histogram — the mean over the
+                    # requests that completed in this window. The counter path
+                    # above would read a 3k-token output landing in one 0.5 s
+                    # tick as 6000 t/s — physically impossible, and it did.
+                    d = self._hist_delta("decode_tps")
+                    paired = (d[1] / d[2]) if d and d[2] else None
+                    row["decode_tps_now"] = paired if running else None
+            else:
+                row["decode_tps_now"] = paired if running else None
         if (row.get("decode_tps_now") or 0) > 0:
             self._gen_last_move = now
         if dial.get("gen_completion_charged") and "decode_tps" in dial.get("hist", {}):
@@ -432,11 +753,16 @@ class EngineSampler(threading.Thread):
                                               hour_rows)
 
         # --- request completion events (count jump) ---
-        cur_rs = counters.get("req_success")
-        if cur_rs is not None and prev.get("req_success") is not None and cur_rs > prev["req_success"]:
+        # prefer the full finished-generations family (tandemllm's req_success
+        # counts only stop/length rows — tool-call finishes never fired)
+        cur_rs = (counters.get("requests_total") if counters.get("requests_total") is not None
+                  else counters.get("req_success"))
+        prev_rs = (prev.get("requests_total") if prev.get("requests_total") is not None
+                   else prev.get("req_success"))
+        if cur_rs is not None and prev_rs is not None and cur_rs > prev_rs:
             self.broker.publish("requests", json.dumps({
                 "t": now, "engine": self.id,
-                "completed": int(cur_rs - prev["req_success"]),
+                "completed": int(cur_rs - prev_rs),
                 "running": row["running"], "waiting": row["waiting"]}))
 
         # --- Classic-dash extras: lifetime totals, spec internals, peak ---
@@ -487,12 +813,48 @@ class EngineSampler(threading.Thread):
             pool = int(gauges["kv_pool_tokens"])
             used = int(gauges.get("kv_used_tokens") or 0)
             row["kv_pool_tokens"], row["kv_used_tokens"], row["kv_free_tokens"] = pool, used, max(0, pool - used)
+        if live_json:
+            # tandemllm: the live board reports the context in TOKENS — the KV
+            # pool this engine publishes nowhere on /metrics (its state store
+            # is byte-denominated). Same shape as the Tarnwell gauges; the
+            # state store also lands in GiB beside the tokens (kv_pct here is
+            # a BYTE ratio, so the tile fallback can state the real unit).
+            # /health adds the shared pool's committed rows across all lanes.
+            row.update(_live_kv(live_json, series,
+                                self._live_json(dial, "/health")
+                                if dial.get("live_json") else None))
+        # kv_tok: the KV chart's token line — used tokens when the engine
+        # publishes a token pool (vLLM via cache_config_info, Tarnwell and
+        # tandemllm directly), else the percent scaled onto the known pool,
+        # else None (the client keeps drawing the percent chart).
+        if row.get("kv_used_tokens") is not None:
+            row["kv_tok"] = row["kv_used_tokens"]
+        elif pool and row.get("kv_pct") is not None:
+            row["kv_tok"] = round(pool * row["kv_pct"] / 100.0)
+        if self.kv_ref_tokens:
+            row["kv_ref_tokens"] = float(self.kv_ref_tokens)
+            if self.kv_ref_pin_gb is not None:
+                row["kv_ref_pin_gb"] = self.kv_ref_pin_gb
+            if self.kv_ref_launch:
+                # the sub-line shows it only when it disagrees materially
+                row["kv_ref_launch"] = float(self.kv_ref_launch)
+            if self._kv_ref_step is not None:
+                # stamped on exactly one row: the tick right after the step
+                row["kv_ref_step"] = float(self._kv_ref_step)
+                self._kv_ref_step = None
+        _anchor_tile_pct(row)
         self._kv_peak(now, row)
         ps = counters.get("proc_start")
         if ps:
             self.proc_start_t = ps
         row["cache_hit_med_1h"] = self._hour_median(
             "cache_hit_pct", row.get("cache_hit_pct"), hour_rows)
+        # headline basis: volume-weighted hour aggregate, identical pair to
+        # the token counters (see _cache_hit_agg); the persisted-bucket read
+        # wins so tile == counters across restarts. Explicit None test:
+        # a true 0.0% must not fall through an `or` to the live path.
+        _agg = self._cache_hit_persisted(now)
+        row["cache_hit_agg_1h"] = self._cache_hit_agg(3600.0) if _agg is None else _agg
 
         self._prev = counters
         self._prev_t = now
@@ -872,6 +1234,49 @@ class EngineSampler(threading.Thread):
         if dd <= 0:
             return None
         return max(0.0, min(100.0, scale * n / dd))
+
+    def _cache_hit_agg(self, seconds: float) -> float | None:
+        """Σprefix_hits ÷ Σprefix_queries over the last `seconds` — the SAME
+        numerator/denominator the token counters use (counters.py:
+        100*Σcached/Σprompt), so tile and counters cannot disagree. The hour
+        MEDIAN of per-tick ratios (cache_hit_med_1h) weights a 100-token tick
+        equal with a 1M-token one and drifted 3 points above the counters on
+        the live TandemLLM (tile 99.8% vs counters 96.8%, the operator caught it
+        2026-11-09); volume-weighted aggregation is the honest headline."""
+        since = time.time() - seconds
+        h = self._win_sum("prefix_hits", since=since)
+        q = self._win_sum("prefix_queries", since=since)
+        if h is None or not q or q <= 0:
+            return None
+        return max(0.0, min(100.0, 100.0 * h / q))
+
+    def _cache_hit_persisted(self, now: float) -> float | None:
+        """The counters' OWN 1-hour number, read from the persisted minute
+        buckets through the same store.counter_totals(engine, since,
+        real_only=True) call the counters panel uses — so the tile equals the
+        counters exactly even minutes after a dashboard restart: the sampler's
+        in-memory window dies with the process, the ledger does not. Re-read
+        on a 60 s TTL (the counters endpoint's own TTL); the live-delta
+        _cache_hit_agg stays the fallback when there is no store or no
+        measured bucket yet (fresh install)."""
+        if self.store is None:
+            return None
+        if now - getattr(self, "_agg1h_at", 0.0) < 60.0:
+            return self._agg1h
+        self._agg1h_at = now
+        try:
+            # the SAME store key the counters panel resolves by default
+            # (_stats_key -> smp.skey): buckets are written per model
+            # ("id@Model"); reading the bare id finds nothing once a model
+            # split exists and the tile would silently fall back to the
+            # live-delta window.
+            key = getattr(self, "skey", self.id)
+            t = self.store.counter_totals(key, int(now - 3600), real_only=True)
+            p, c = t.get("prompt") or 0.0, t.get("cached") or 0.0
+            self._agg1h = max(0.0, min(100.0, 100.0 * c / p)) if p > 0 else None
+        except Exception:
+            self._agg1h = None      # a ledger read must never blank the tile
+        return self._agg1h
 
     # --- histogram windowing ---
 

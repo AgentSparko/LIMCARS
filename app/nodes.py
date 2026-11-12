@@ -149,13 +149,13 @@ class NodeSampler(threading.Thread):
             if self.rejected else None)
         self.gpus: list[dict] = []
         self._prev: tuple | None = None   # (t, cpu_total, cpu_idle, rx, tx)
-        self._stop = threading.Event()
+        self._stop_ev = threading.Event()
         ctl = config.DATA / "ssh"
         ctl.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._ctl = str(ctl / "%C")
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_ev.set()
 
     def argv(self) -> list[str]:
         # Windows OpenSSH has no connection multiplexing: one handshake per tick
@@ -175,12 +175,12 @@ class NodeSampler(threading.Thread):
 
     def run(self) -> None:
         interval = 1.0 / self.hz
-        while not self._stop.is_set():
+        while not self._stop_ev.is_set():
             t0 = time.monotonic()
             self._tick()
             sleep = interval - (time.monotonic() - t0)
             if sleep > 0:
-                self._stop.wait(sleep)
+                self._stop_ev.wait(sleep)
 
     def _tick(self) -> None:
         if getattr(self, "rejected", None):
@@ -196,7 +196,7 @@ class NodeSampler(threading.Thread):
                 self.broker.publish("events", json.dumps(
                     {"t": time.time(), "type": "node_down", "node": self.id, "error": str(exc)[:200]}))
             self.alive, self.error, self._prev = False, str(exc)[:200], None
-            self._stop.wait(4.0)   # back off: an unreachable node is retried every ~5 s
+            self._stop_ev.wait(4.0)   # back off: an unreachable node is retried every ~5 s
             return
         self.alive, self.error = True, None
         now = row.pop("t")

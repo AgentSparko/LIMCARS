@@ -3,7 +3,7 @@
 // Same reading order: sidebar system tiles + side charts, hero cards,
 // latency/live/spec/savings bubble rows, six-chart grid, model table.
 
-import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, rateZerosToGaps, RATE_FIELDS, HOLD_LAST_NONZERO } from './charts.js?v=20261104h';
+import { SeriesStore, LineChart, spark, fmt, COLORS, seriesSample, fillIdleZeros, rateZerosToGaps, RATE_FIELDS, HOLD_LAST_NONZERO, kvPinNote, seenLabel } from './charts.js?v=20261112a';
 
 const state = {
   store: new SeriesStore(4000),
@@ -27,25 +27,46 @@ const BUBS = {
       main: l => tps(l.decode_tps_now),
       sub: l => l.loop_suspect
         ? `⚠ possible loop · every draft accepted for ${Math.round(l.spec_full_accept_s)} s`
-        : `tok/s now · avg ${tps(l.decode_tps_avg)}` },
-    { label: 'Prefill speed', series: 'prefill_tps_avg', tip: 'Uncached prompt tokens per second of actual prefill time. Cache hits are excluded and attribution is capped, so prompt tokens charged at completion never read as a fake prefill burst.', color: () => COLORS.teal, dimZero: true,
+        : `tok/s now · avg ${tps(l.decode_tps_avg)}`
+            + (l.decode_tps_req != null ? ` · ${tps(l.decode_tps_req)} tok/s per request` : '') },
+    { label: 'Prefill speed', series: 'prefill_tps_avg', tip: 'Uncached prompt tokens per second of actual prefill time. Cache hits are excluded and attribution is capped, so prompt tokens charged at completion never read as a fake prefill burst. While the engine\'s live board reports an in-flight prefill (TandemLLM publishes one mid-way through LONG prefills, when no counter has advanced yet), the tile shows THAT figure and says "engine live board"; until the engine produces its first live sample the windowed figure stands.', color: () => COLORS.teal, dimZero: true,
       dimWhen: 'prefill_active',
       sparkFmt: v => v.toFixed(1) + ' tok/s',
-      main: l => tps(l.prefill_tps_avg), sub: l => `uncached tok / prefill-sec · burst ${tps(l.prefill_tps_now)}` },
-    { label: 'KV cache used', hot: true, tip: "Share of the engine's KV token pool in use. Idle vLLM reports 0 while prefix-cached blocks stay resident, so the last non-zero reading is held. For models listed in kv_peak_models (DeepSeek V4.1, whose reading jumps for ~1 s every 128 tokens) it is the highest reading of the last few seconds, and says so.", series: 'kv_pct_shown', color: () => COLORS.yellow, holdZero: true,
+      main: l => tps(l.prefill_tps_avg), sub: l => (l.prefill_live ? 'engine live board' : 'uncached tok / prefill-sec') + ' · burst ' + tps(l.prefill_tps_now) },
+    { label: 'KV cache used', hot: true, tip: "Share of the engine's KV token pool in use. Idle vLLM reports 0 while prefix-cached blocks stay resident, so the last non-zero reading is held. For models listed in kv_peak_models (DeepSeek V4.1, whose reading jumps for ~1 s every 128 tokens) it is the highest reading of the last few seconds, and says so. ONE denominator per tile: the % always equals 100 x used divided by the SAME pool the fraction below prints. TandemLLM has no block pool: when a shared-pool fit is configured (kv_ref_tokens) both the % and the fraction use it — the pool implied by the used+free figures, recomputed from the engine's live memory state (kv_ref_cmd); without one they fall back to the per-lane window. The dashed chart line marks that same pool. The launch-priced figure is an annotation only, never the denominator: the engine commits pages dynamically past what the launch env priced (measured 2026-11-09: 614.2k used > 472.9k priced), and it shows beside the marker only while it disagrees materially. HONESTY MARKERS (drift study 2026-11-10): when the recompute runs with an operator-pinned floor (kv_ref_cmd --floor) the pool is the PINNED launch's, not this engine's — the tile then says so on its sub-line; a ring on the dashed line marks where the pool reference stepped, so a % jump with no usage change is not mistaken for a load spike.", series: 'kv_pct_shown', color: () => COLORS.yellow, holdZero: true,
       sparkFmt: v => v.toFixed(1) + ' %',
       main: l => pct(l.kv_pct_shown ?? l.kv_pct),
       sub: l => l.kv_pct_peak_s
-        ? `highest of last ${Math.round(l.kv_pct_peak_s)} s · now ${pct(l.kv_pct)} · ${fmtK(l.kv_pool_tokens ?? 0)} tok pool`
+        ? `highest of last ${Math.round(l.kv_pct_peak_s)} s · now ${pct(l.kv_pct)} · ${fmtK(l.kv_ref_tokens || l.kv_pool_tokens || 0)} tok pool`
+        : l.kv_ref_tokens
+        ? `${fmtK(l.kv_used_tokens ?? 0)} / ${fmtK(l.kv_ref_tokens)} tok used · ${fmtK(Math.max(0, l.kv_ref_tokens - (l.kv_used_tokens ?? 0)))} free`
+            // a pinned --floor makes the pool a stale launch-era number:
+            // name it FIRST, before any other note, so the understatement
+            // can never be read as headroom
+            + kvPinNote(l)
+            // the launch's env prices the side slots differently from the
+            // registry: show that figure beside the marker only when they
+            // disagree materially, so the gap is visible rather than picked
+            + (l.kv_ref_launch && Math.abs(l.kv_ref_launch - l.kv_ref_tokens) / l.kv_ref_tokens > 0.05
+                ? ` · priced ${fmtK(l.kv_ref_launch)} by the launch env` : '')
+            + (l.kv_pool_note ? ` · ${l.kv_pool_note}` : '')
+            // the engine's peak gate is what makes a long prefill WAIT, not fail:
+            // a 90k prompt prices ~5 GiB of workspace, so under that much
+            // headroom the next long request is already queued
+            + (l.mem_gate_headroom_gib != null && l.mem_gate_headroom_gib < 6
+                ? ` · ${l.mem_gate_headroom_gib.toFixed(1)} GiB left to the engine's peak` : '')
         : l.kv_pool_tokens
         ? `${fmtK(l.kv_used_tokens ?? 0)} / ${fmtK(l.kv_pool_tokens)} tok used · ${fmtK(l.kv_free_tokens ?? 0)} free`
+            + (l.kv_pool_note ? ` · ${l.kv_pool_note}` : '')
+        : l.kv_pool_gib
+        ? `${l.kv_used_gib} / ${l.kv_pool_gib} GiB state store · no token pool published`
         : '% of token pool' },
     { label: 'Running reqs', series: 'running', tip: "Requests being decoded now; 'waiting' are queued for a slot.", color: () => COLORS.green,
       sparkFmt: v => String(Math.round(v)),
       main: l => num(l.running), sub: l => `${num(l.waiting)} waiting` },
-    { label: 'TTFT', series: 'ttft_p50_ms', tip: 'Time to first token over the last hour. A p50 is shown only with n ≥ 20 requests: engine histogram buckets are coarse, so below that the true mean (sum ÷ count) is shown. n is always displayed.', color: () => COLORS.violet, hist: true,
+    { label: 'TTFT', series: 'ttft_p50_ms', tip: 'Time to first token over the LAST HOUR, all prefills — cache-hit (short) prefills included, none excluded. A p50 is shown only with n ≥ 20 requests: engine histogram buckets are coarse, so below that the true mean (sum ÷ count) is shown. n is always displayed. Not comparable with the engine\'s LIFETIME mean (every request since boot, cold-cache eras included) — that one runs higher by design.', color: () => COLORS.violet, hist: true,
       sparkFmt: v => Math.round(v) + ' ms',
-      main: l => histMs(l, 'ttft'), sub: l => 'time to first token · ' + histBasis(l, 'ttft') },
+      main: l => histMs(l, 'ttft'), sub: l => 'all prefills (cache-hit incl.) · ' + histBasis(l, 'ttft') },
     { label: 'e2e latency', series: 'e2e_p50_ms', tip: 'Request in → last token out, queue included. Same rule as TTFT: p50 only at n ≥ 20, otherwise the true mean, with n shown.', color: () => COLORS.violet, hist: true,
       sparkFmt: v => (v / 1000).toFixed(2) + ' s',
       main: l => sec(e2eHourNum(l) != null ? e2eHourNum(l) : histNum(l, 'e2e')),
@@ -57,10 +78,11 @@ const BUBS = {
         ? 'of verify steps accepted ≥1 draft · engine reports steps, not tokens'
         : `accept len ${l.spec_accept_len != null ? l.spec_accept_len.toFixed(2) : '–'} tok · `
               + `${l.draft_tok_per_step != null ? l.draft_tok_per_step.toFixed(1) : '–'} draft tok/step · DFlash` },
-    { label: 'Prefix cache hit', series: 'cache_hit_pct', tip: 'Share of prompt tokens served from the prefix cache — median over the last hour. Cached tokens are a subset of prompt tokens, never added on top.', life: true, color: () => COLORS.teal,
+    { label: 'Prefix cache hit', series: 'cache_hit_pct', tip: 'Share of prompt tokens served from the prefix cache over the last hour — Σcached ÷ Σprompt, the same numerator/denominator the token counters use (volume-weighted, not a median of windows: quiet high-hit ticks must not outvote busy ones). Cached tokens are a subset of prompt tokens, never added on top.', life: true, color: () => COLORS.teal,
       sparkFmt: v => v.toFixed(1) + ' %',
-      main: l => pct(l.cache_hit_med_1h != null ? l.cache_hit_med_1h : l.cache_hit_pct),
-      sub: l => `median · last hour · now ${pct(l.cache_hit_pct)} · lifetime ${pct(l.cache_hit_life_pct)}` },
+      main: l => pct(l.cache_hit_agg_1h != null ? l.cache_hit_agg_1h
+                    : l.cache_hit_med_1h != null ? l.cache_hit_med_1h : l.cache_hit_pct),
+      sub: l => `Σcached ÷ Σprompt · last hour · now ${pct(l.cache_hit_pct)} · lifetime ${pct(l.cache_hit_life_pct)}` },
     { label: 'Gen speed peak', series: 'gen_peak', tip: 'Highest decode speed seen in the last hour.', color: () => COLORS.cobalt,
       sparkFmt: v => v.toFixed(1) + ' tok/s',
       main: l => tps(l.gen_peak), sub: () => 'tok/s · last hour' },
@@ -85,7 +107,12 @@ const SIDE_TILES = [
   ['GPU clock', h => [h.gpu_clock_mhz != null ? num(h.gpu_clock_mhz) + ' MHz' : '–']],
   [h => h.vram_total_gb ? 'System RAM' : 'Unified RAM',
    h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–']],
-  ['SSD free', h => [h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–']],
+  // disk_free_gb is statvfs f_bavail (what we can actually write); the old
+  // total-used arithmetic counted ext4 root-reserved blocks as free (~37 GB
+  // here) — fallback only serves pre-fix ring rows seeded before the server restart.
+  ['SSD free', h => [h.disk_free_gb != null ? h.disk_free_gb.toFixed(0) + ' GB free'
+    : h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–'],
+   { disk: true }],
   // discrete GPUs only (hidden on unified-memory boxes like the DGX Spark)
   ['VRAM', h => [h.vram_total_gb ? (h.vram_total_gb - h.vram_used_gb).toFixed(1) + ' GB free'
                    + ` of ${Math.round(h.vram_total_gb)}` : '–'], { wide: true, vram: true }],
@@ -99,6 +126,14 @@ const SIDE_TILES = [
       ? [`R ${mbs(h.ssd_r_mbs)} MB/s`, `W ${mbs(h.ssd_w_mbs ?? 0)} MB/s`]
       : ['–', '–'],
     { duo: true, wide: true, id: 'st-ssd-io' }],
+  // voice lane (app/voice.py): RSS is the CPU-side view only — on unified
+  // memory the honest footprint is the Δ figure (MemAvailable drop since
+  // the process was first seen); latency only while the stack exposes one
+  ['Voice lane', h => h.voice_alive ? [`${h.voice_rss_gb ?? 0} GB RSS`,
+                         h.voice_delta_gb != null ? `Δ${h.voice_delta_gb} GB pool` : 'Δ–',
+                         h.voice_latency_ms != null ? `${h.voice_latency_stale ? '~' : ''}${Math.round(h.voice_latency_ms)} ms` : 'lat –']
+      : ['off'],
+    { duo: true, wide: true, id: 'st-voice' }],
 ];
 
 const _fin = v => v != null && Number.isFinite(v);
@@ -290,6 +325,7 @@ function adaptHwCharts(h) {
 
 function buildCharts() {
   const st = state.store, e = eng();
+  state._chartEngine = e;   // the engine the series keys below are bound to
   const grid = document.querySelector('#charts-grid');
   grid.innerHTML = '';
   state.charts = [];
@@ -317,8 +353,21 @@ function buildCharts() {
     { key: `${e}.decode_tps_now`, label: 'tok/s', color: () => COLORS.cobalt, fill: true }], { curFmt: v => v != null ? Math.round(v) + ' tok/s' : '' });
   mk(0, 'Prefill speed · last <span class="w">15 min</span>', [
     { key: `${e}.prefill_tps_avg`, label: 'Δtok/Δprefill-sec', color: () => COLORS.teal, fill: true }]);
-  mk(0, 'KV pool (0–100%) · last <span class="w">15 min</span>', [
-    { key: `${e}.kv_pct`, label: '%', color: () => COLORS.yellow, fill: true }], { yCeil: 100, yFmt: v => v.toFixed(0) });
+  // KV: the token line (kv_tok) when the engine publishes a token pool (vLLM,
+  // Tarnwell, tandemllm live board); the percent line stays for engines that
+  // only report a ratio. Whichever the engine cannot produce stays null.
+  mk(0, 'KV cache used · last <span class="w">15 min</span>', [
+    { key: `${e}.kv_tok`, label: 'K tok', color: () => COLORS.now, fill: true },
+    { key: `${e}.kv_pct`, label: '%', color: () => COLORS.yellow },
+    // the marker lives on the engine's meta — e is the id STRING from eng(),
+    // so e.meta was always undefined and the dashed line never drew
+    ...(state.engines[e]?.meta?.kv_ref_tokens
+        ? [{ key: `${e}.kv_ref_tokens`, label: 'pool est.',
+             color: () => COLORS.muted, dash: true },
+           { key: `${e}.kv_ref_step`, label: 'ref step',
+             color: () => COLORS.rose, mark: true }]
+        : [])],
+    { yFmt: v => v >= 1000 ? (v / 1000).toFixed(0) + 'K' : v.toFixed(0) });
   mk(0, 'Speculative accept length · last <span class="w">15 min</span>', [
     { key: `${e}.spec_accept_len`, label: 'tok accepted/step', color: () => COLORS.violet, fill: true }]);
 
@@ -431,7 +480,7 @@ async function renderClientChart() {
   const legend = document.querySelector('#cc-legend');
   const cur = document.querySelector('#cc-max');
   if (!d.series || !d.series.length) {
-    box.innerHTML = '<span class="muted small">collecting… (10 s samples, hot Hermes sessions only)</span>';
+    box.innerHTML = '<span class="muted small">collecting… (10 s samples, hot Hermes + DSH sessions only)</span>';
     if (legend) legend.innerHTML = '';
     if (cur) cur.textContent = '';
     return;
@@ -608,6 +657,11 @@ function refresh() {
     const [lbl, , opt] = SIDE_TILES[i];
     if (typeof lbl === 'function') el.querySelector('.l').textContent = lbl(h);
     if (opt?.vram) el.hidden = !h.vram_total_gb;
+    // disk watchdog states (app/diskwatch.py): red at warn, flashing at critical
+    if (opt?.disk) {
+      el.classList.toggle('warn', h.disk_alert === 'warn');
+      el.classList.toggle('crit', h.disk_alert === 'critical');
+    }
     const vEl = el.querySelector('.v');
     if (SIDE_TILES[i][2]?.duo) {
       vEl.innerHTML = vals.map(s => `<span>${s}</span>`).join('');
@@ -636,6 +690,7 @@ function refresh() {
   document.querySelector('#engine-caret').hidden = false;
   updateTabStatus(meta);
   renderStaleBanner(meta);
+  renderDiskBanner(hwLatest());
   adaptHwCharts(hwLatest());
   renderModelTable();
 }
@@ -695,6 +750,27 @@ function renderStaleBanner(meta) {
       : `⏸ No update from ${name} for ${fmtAge(age)} — values below may be stale.`;
 }
 
+// Disk watchdog banner (app/diskwatch.py): critical only — the tile already
+// goes red at warn. Names the largest reclaimable-LOOKING paths the server
+// scan found; read-only, never a delete suggestion the dashboard acts on.
+function renderDiskBanner(h) {
+  const b = document.querySelector('#disk-banner');
+  if (!b) return;
+  const crit = h.disk_alert === 'critical';
+  b.hidden = !crit;
+  if (!crit) return;
+  const free = h.disk_free_gb != null ? h.disk_free_gb.toFixed(1) + ' GiB' : 'unknown';
+  const warn = h.disk_warn_gib != null ? h.disk_warn_gib.toFixed(0) : '10';
+  const floor = h.disk_crit_gib != null ? h.disk_crit_gib.toFixed(0) : '5';
+  const scan = h.disk_alert_top;
+  const items = (scan && scan.items) || [];
+  const list = items.map(i => `${escH(i.path)} (${i.gib.toFixed(1)} GiB)`).join(' · ');
+  b.innerHTML = `🔴 <b>DISK CRITICAL</b> — ${free} writable free (warn &lt; ${warn} GiB, hard floor ${floor} GiB). `
+    + (list ? `Largest reclaimable-looking paths: ${list}`
+            : 'Scanning your home folder for reclaimable-looking paths…')
+    + (scan && scan.partial ? ' <span class="muted">(scan partial — time budget hit)</span>' : '');
+}
+
 function renderModelTable(force) {
   const nowMs = Date.now();
   if (!force && state._mtblAt && nowMs - state._mtblAt < 4000 && state._mtblExp === state.expanded) return;
@@ -716,7 +792,7 @@ function renderModelTable(force) {
       <td>${(() => { const v = histNum(l, 'e2e');
                      return v != null ? (v / 1000).toFixed(2) + ((l.e2e_n || 0) < 20 ? ' *' : '') : '–'; })()}</td>
       <td>${(state.store.at(`${meta.id}.decode_tps_now`) || []).length}</td>
-      <td>${meta.last_scrape ? new Date(meta.last_scrape * 1000).toTimeString().slice(0, 8) : '–'}</td></tr>` + detail;
+      <td title="${meta.last_scrape ? 'last scrape ' + new Date(meta.last_scrape * 1000).toTimeString().slice(0, 8) : ''}">${seenLabel(((state.engines[meta.id] || {}).rx) ? (Date.now() - state.engines[meta.id].rx) / 1000 : null)}</td></tr>` + detail;
   });
   t.innerHTML = `<tr><th>Model</th><th>Backend</th><th>Run</th><th>Wait</th><th>KV %</th>
     <th>Spec accept</th><th title="p50 over the 30 s window; * = true mean, too few requests in the window for a p50 to mean anything">TTFT ms</th><th title="request in to last token out, queue included; * = true mean, too few requests for a p50">e2e s</th><th>Samples</th><th>Seen</th></tr>` +
@@ -818,8 +894,37 @@ async function checkEngineSet() {
     if (have !== now && state.sseAbort) state.sseAbort.abort();
   } catch { /* server down: the reconnect path handles it */ }
 }
+
+// Self-heal after an engine swap. eng() silently falls back to a live engine
+// when the remembered one dies — that is why the TILES recovered on their own
+// after the swap — but the chart series keys were bound to the engine that
+// was selected when buildCharts ran, and only an explicit click (selectEngine)
+// retargeted them. The charts therefore kept reading the dead engine's store
+// keys and stayed empty until a manual reload (operator report, 2026-11-09: vLLM :8000
+// -> TandemLLM :8020; tiles live, charts blank, Ctrl+Shift+R "fixed" it).
+// Same retarget + re-seed a click does, minus the explicit flag: the rings
+// backfill the window the tab never watched.
+function retargetCharts() {
+  const cur = eng(), prev = state._chartEngine;
+  if (!cur || cur === prev) return;
+  state._chartEngine = cur;
+  for (const card of state.charts) {
+    if (card._fixedWin || !card._series) continue;
+    for (const s of card._series)
+      if (prev && s.key.startsWith(prev + '.')) s.key = cur + s.key.slice(prev.length);
+    card._lastCur = null;          // never show the previous engine's held reading
+    card._chart && card._chart.mark();
+  }
+  state._held = {}; state._heldNz = {}; state._cacheHitLife = [];
+  fetchCacheLife();
+  seed(false).catch(() => {});
+  refresh();
+  renderModelTable(true);
+}
+
 setInterval(() => {
   if (document.hidden || !state.connected) return;
+  retargetCharts();   // eng() may have fallen back silently (engine swap)
   const e = state.engines[eng()];
   if (!(e && (e.alive || (e.meta && e.meta.alive)))) checkEngineSet();
 }, 10000);
@@ -834,9 +939,70 @@ setInterval(() => {
   } else if (now - (state.lastHwSeed || 0) > 150000) {
     hwResync();   // silent stall of just the hw topic: refill from rings
   }
+  // engine-series equivalent: the selected engine is alive but the chart store
+  // never received a single point for it (the tab missed its whole stream —
+  // a zombie socket that stalled only the engine topic, or an engine that
+  // appeared while the stream was down): refill from the server's rings.
+  const sel = eng(), se = state.engines[sel];
+  if (se && (se.alive || (se.meta && se.meta.alive))
+      && !state.store.at(`${sel}.running`).length
+      && now - (state.lastEngSeed || 0) > 30000) {
+    state.lastEngSeed = now;
+    seed(false).catch(() => {}).then(retargetCharts);
+  }
 }, 30000);
 
 const lastId = {};
+// Live relay: the engine's own board cadence (tandemllm: 4 Hz while a request
+// is in flight, 1 Hz idle) feeds the TILE only; charts keep the sampler's
+// 2 Hz ring. The merge never invents: the engine's aggregate lands only while
+// it reports requests running; idle frames leave the sampler's 2 Hz row alone
+// (the tile dims through decode_active anyway).
+let liveAbort = null, liveKey = '';
+function liveRelay() {
+  const id = eng(), meta = (state.engines[id] || {}).meta;
+  const key = meta && meta.live && meta.alive ? id : '';
+  if (key === liveKey) return;
+  liveKey = key;
+  if (liveAbort) { try { liveAbort.abort(); } catch { /* noop */ } liveAbort = null; }
+  if (!key) return;
+  const ac = new AbortController();
+  liveAbort = ac;
+  (async () => {
+    try {
+      const res = await fetch(`/api/engine-live?engine=${encodeURIComponent(id)}`,
+                              { signal: ac.signal });
+      if (!res.ok || !res.body) return;
+      const rd = res.body.getReader();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) break;
+        buf += new TextDecoder().decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          const dl = frame.split('\n').find(l => l.startsWith('data:'));
+          if (!dl) continue;
+          let o; try { o = JSON.parse(dl.slice(5)); } catch { continue; }
+          const e = state.engines[id]; if (!e) continue;
+          const run = ((o.counts || {}).in_flight || 0) > 0;
+          const nw = o.now || {};
+          // the live field moves at the frame cadence; decode_tps only at the
+          // engine's 1 Hz history-sample rate (see sampler)
+          const agg = typeof nw.decode_live_tps === 'number' ? nw.decode_live_tps
+                      : typeof nw.decode_tps === 'number' ? nw.decode_tps : null;
+          if (run && typeof agg === 'number') {
+            e.latest = { ...e.latest, decode_tps_now: agg, decode_active: true };
+            if (e.meta) e.meta.latest = e.latest;
+          }
+        }
+      }
+    } catch { /* engine or relay down: the 2 Hz SSE feed stands alone */ }
+    if (liveKey === id) { liveKey = ''; liveAbort = null; }   // allow reopen
+  })();
+}
+setInterval(() => { if (!document.hidden && state.connected) liveRelay(); }, 5000);
 async function connect() {
   const topics = ['hw', 'requests', 'events', ...Object.keys(state.engines).map(id => `engine:${id}`),
                   ...Object.keys(state.nodes || {}).map(id => `hw:${id}`)].join(',');
@@ -844,6 +1010,7 @@ async function connect() {
   // reconnect after a server restart or a dropped socket never starts charts
   // from 0
   hwResync();
+  liveRelay();
   const ac = new AbortController();
   state.sseAbort = ac;
   state.lastStreamMsg = Date.now();
@@ -895,7 +1062,9 @@ async function connect() {
           e.latest = o; e.rx = Date.now();
           if (e.meta) { e.meta.latest = o; e.meta.alive = true; }
           for (const k of ['prefill_tps_now','decode_tps_now','prefill_tps_avg','decode_tps_avg',
-                           'running','waiting','kv_pct','kv_pct_shown','ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
+                           'running','waiting','kv_pct','kv_pct_shown','kv_tok',
+                           'kv_used_tokens','kv_pool_tokens','kv_free_tokens','kv_ref_tokens','kv_ref_launch','kv_ref_step','mem_gate_headroom_gib','mem_avail_gib','decode_tps_req',
+                           'ttft_p50_ms','itl_p50_ms','queue_time_p50_ms',
                            'e2e_p50_ms','cache_hit_pct','spec_accept_pct','spec_step_accept_pct','spec_accept_len',
                            'draft_tok_per_step','gen_peak','prompt_total','gen_total'])
             // seriesSample keeps the curve honest about what the number above it says:
@@ -915,6 +1084,7 @@ async function connect() {
         } else if (ev === 'events' && o.type === 'engine_down') {
           const e = state.engines[o.engine];
           if (e && e.meta) e.meta.alive = false;
+          retargetCharts();   // fast path: if the charts were bound to it, move now
         } else if (ev === 'requests') {
           state.reqFeed.unshift(o); if (state.reqFeed.length > 50) state.reqFeed.pop();
           renderFeed();
@@ -928,7 +1098,7 @@ async function connect() {
   // self-heal: re-pull snapshot rings so engine latest/bubbles never sit
   // stale after an outage (audit finding: lastId was dead state — reconnect
   // replayed nothing, so lost events stayed lost until a manual refresh)
-  seed(false).catch(() => {});
+  seed(false).catch(() => {}).then(retargetCharts);
   // Exponential backoff, capped at 30 s (was a fixed 2 s retry: with no engine
   // connected the stream was rejected every 2 s around the clock, which read as
   // the page refreshing itself nonstop). Reset once a stream actually opens.
@@ -1016,7 +1186,7 @@ async function openTraces() {
       const st = await (await fetch('/api/auth/status')).json();
       if (st.enabled) {
         if (!state.pw) {
-          const v = await pwDialog('🔒 Hermes Traces are password-protected',
+          const v = await pwDialog('🔒 Hermes + DSH Traces are password-protected',
                                    [{ label: 'Password' }]);
           const p = v && v[0];
           if (p) { state.pw = p; sessionStorage.setItem('lc-pw', p); }
@@ -1041,7 +1211,7 @@ async function openTraces() {
 function backToDash() {
   tracesPane.style.display = 'none';
   dashPane.style.display = '';
-  btnTraces.textContent = '🐝 Hermes Traces';
+  btnTraces.textContent = '🐝 Hermes + DSH Traces';
   btnTraces.classList.remove('on');
 }
 btnTraces.addEventListener('click', () => {
@@ -1862,19 +2032,26 @@ document.querySelector('#btn-probe').addEventListener('click', async () => {
 
 function selectEngine(id) {
   const prev = eng();
-  if (!state.engines[id] || id === prev) return;
+  if (!state.engines[id]) return;
+  // clicking the engine eng() already fell back to must still retarget the
+  // charts if they are bound elsewhere (the silent fallback does not rebuild
+  // them — see retargetCharts); only a click on the engine the charts already
+  // follow is a true no-op
+  if (id === prev && state._chartEngine === id) return;
   state.sel = id;
   state.selExplicit = true;   // clicked, not remembered — see eng()
   uiPrefs = writeUiPrefs({ engine: id });
   const u = new URL(location.href);
   u.searchParams.set('engine', id);
   history.replaceState(null, '', u);
+  const from = state._chartEngine || prev;   // where the keys actually point now
   for (const card of state.charts) {
     if (card._fixedWin || !card._series) continue;
     for (const s of card._series)
-      if (s.key.startsWith(prev + '.')) s.key = id + s.key.slice(prev.length);
+      if (s.key.startsWith(from + '.')) s.key = id + s.key.slice(from.length);
     card._chart && card._chart.mark();
   }
+  state._chartEngine = id;
   state._held = {}; state._heldNz = {}; state._cacheHitLife = [];
   fetchCacheLife();
   seed(false).catch(() => {});

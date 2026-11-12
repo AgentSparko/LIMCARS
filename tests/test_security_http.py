@@ -503,7 +503,7 @@ def test_reaching_the_dashboard_by_lan_address_still_works(live):
 # never compared, while the same button worked on the box itself (localhost is the
 # admin domain). Pinned at both ends so neither half can regress silently.
 
-def _gated(ip="192.168.1.50", pw="s3cret", good="s3cret"):
+def _gated(ip="10.0.0.50", pw="s3cret", good="s3cret"):
     h = _handler(ip, _Auth(enabled=True, good=good))
     h.headers = _Hdrs({"X-Limcars-Pw": [pw]} if pw is not None else {})
     return h
