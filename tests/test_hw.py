@@ -1,4 +1,6 @@
 """nvidia-smi parsing: unified (GB10), single discrete card, multi-GPU."""
+import sys
+import pytest
 from app.hw import _gpu_row, _parse_nvidia
 
 GB10 = "0, 96, 63, 41.0, [N/A], 2463, 3003, [N/A], [N/A], NVIDIA GB10\n"
@@ -50,6 +52,7 @@ def test_partial_memory_used_skips_vram_aggregate():
     assert "vram_used_gb" not in _gpu_row(_parse_nvidia(two))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_disk_free_is_f_bavail_not_f_bfree():
     """The disk guard must report what an unprivileged writer can allocate.
 

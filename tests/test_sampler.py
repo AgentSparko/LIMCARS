@@ -1,4 +1,6 @@
 """Sampler math tests: counter differences, reset handling, window stats."""
+import sys
+import pytest
 import time
 
 from app.sampler import EngineSampler
@@ -421,6 +423,7 @@ def test_kv_ref_tokens_is_per_engine_and_optional():
     assert other.snapshot()["kv_ref_source"] is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_kv_ref_cmd_recomputes_the_marker():
     """The recompute path: the wizard's figure is computed on demand and never
     stored, so a script that reads the engine's registry + launch is what keeps
@@ -438,6 +441,7 @@ def test_kv_ref_cmd_recomputes_the_marker():
     assert s.kv_ref_error is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_kv_ref_cmd_failure_keeps_the_last_good_marker():
     """A drift gate or a dead script must not blank or invent the line: the old
     number stays and the reason is recorded."""
@@ -451,6 +455,7 @@ def test_kv_ref_cmd_failure_keeps_the_last_good_marker():
     assert s.snapshot()["kv_ref_tokens"] == 836140
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_kv_ref_cmd_rejects_a_useless_number():
     cfg = {"live_hz": 2.0, "window_s": 30.0, "ring_seconds": 900}
     cmd = "echo '{\"context_tokens_fit\": 0}'"

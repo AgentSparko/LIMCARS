@@ -54,6 +54,7 @@ def test_gate_fails_closed_on_unreadable(tmp_path):
     assert vg.check_load(10.0, str(bad))["ok"] is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_reader_on_real_meminfo():
     assert vg.read_memavail_gib() > 0.0
 

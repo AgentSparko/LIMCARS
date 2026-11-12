@@ -4,6 +4,7 @@ Fixtures build a fake DSH data dir under tmp_path (session dirs + usage
 sqlite ledger + state.json) — never reads the live ~/.dsh. Times are
 injected; the ledger stores epoch milliseconds like the real one.
 """
+import sys
 import json
 import shutil
 import sqlite3
@@ -14,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from app import dsh_home
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="DSH session sources: POSIX paths and the zstd CLI")
 
 ZSTD = shutil.which("zstd") or ("/usr/bin/zstd" if Path("/usr/bin/zstd").exists() else None)
 HAS_ZSTD = ZSTD is not None

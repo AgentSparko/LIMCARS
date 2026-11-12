@@ -383,6 +383,8 @@ def _pids_on_port(port: int) -> list[int]:
     every real launch until the install-path autodetector needed it)."""
     out = []
     pat = re.compile(rf"server/app\.py.*--port[= ]+{port}\b")
+    if not os.path.isdir("/proc"):
+        return out
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue

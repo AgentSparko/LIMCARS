@@ -122,7 +122,7 @@ def _disk_free_bytes(path: str) -> int:
     try:
         st = os.statvfs(path)
         return st.f_bavail * st.f_frsize
-    except OSError:
+    except (OSError, AttributeError):
         return shutil.disk_usage(path).free
 
 

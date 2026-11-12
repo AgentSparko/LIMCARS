@@ -11,6 +11,7 @@ The tile's honesty contract:
 - latency failures hold the last good value for LAT_HOLD_TICKS, then go
   null rather than freeze a stale figure forever.
 """
+import sys
 import os
 
 import pytest
@@ -153,6 +154,7 @@ def test_find_pid_real_chain_finds_this_process():
         srv.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_rss_reads_real_process():
     rss = voice.rss_gb(os.getpid())
     assert rss is not None and rss > 0.01

@@ -56,6 +56,7 @@ def _tick(s):
     s._tick()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_planted_stale_pin_surfaces_on_the_engine():
     """The live incident, planted: a cmd pinned to floor 10 must leave the
     sampler carrying the pin so the tile can warn. Remove the floor_pinned
@@ -74,6 +75,7 @@ def test_unpinned_recompute_carries_no_pin():
     assert s.snapshot()["kv_ref_pin_gb"] is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_pin_clears_when_the_pin_is_dropped():
     """the operator's §5 fix live-fires this path: pinned -> unpinned recompute must
     clear the warning, not keep the stale pin (a stuck badge is decoration)."""
@@ -84,6 +86,7 @@ def test_pin_clears_when_the_pin_is_dropped():
     assert s.kv_ref_pin_gb is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_ref_step_is_stamped_exactly_once():
     """The first value is not a step; a changed value stamps ONE row with the
     OLD ref, and the row after is clean again (a persistent value would draw a
@@ -105,6 +108,7 @@ def test_ref_step_is_stamped_exactly_once():
     assert "kv_ref_step" not in s.ring.last()    # stamped exactly once
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_failure_keeps_last_good_and_invents_no_step():
     """A failing recompute keeps the marker AND stays silent: no step, no pin
     change (the old number stands until a good one arrives)."""

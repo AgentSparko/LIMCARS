@@ -6,6 +6,7 @@ the running process (its argv[0] and cwd through /proc) is the authority, and
 fake install trees at arbitrary locations — the marker file src/server/app.py
 is what identifies a TandemLLM root, never a configured path.
 """
+import sys
 import importlib.util
 import os
 import pathlib
@@ -45,6 +46,7 @@ def test_install_detected_from_install_root_cwd(tmp_path):
     assert got is not None and got[0] == os.path.realpath(str(root))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_install_detected_from_argv0_alone(tmp_path):
     """Even a wrong cwd must not mislead: argv[0] carries the whole location."""
     root = _fake_install(tmp_path, rel="srv/odd/place")
