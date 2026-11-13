@@ -9,6 +9,8 @@
 /* Net traffic: full-row tile, ↓ and ↑ side by side (user aesthetic ask) */
 .side-tiles .st.wide { grid-column: span 2; }
 .side-tiles .st.duo .v { display: flex; gap: 24px; white-space: nowrap; }
+.side-tiles .st.duo.stack .v { flex-wrap: wrap; gap: 0 10px; font-size: 12.5px; line-height: 1.45; }
+.side-tiles .st.duo.stack .v span:only-child { font-size: 19px; line-height: 1.3; }
 /* lost potential: one full-row strip under the savings bubbles, amber-alert
    tint, sentence text instead of a mono number */
 #bub-potential .bubble { grid-column: 1 / -1; border-color: rgba(224, 176, 64, .45); }

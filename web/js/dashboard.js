@@ -112,9 +112,19 @@ const SIDE_TILES = [
   // disk_free_gb is statvfs f_bavail (what we can actually write); the old
   // total-used arithmetic counted ext4 root-reserved blocks as free (~37 GB
   // here) — fallback only serves pre-fix ring rows seeded before the server restart.
-  ['SSD free', h => [h.disk_free_gb != null ? h.disk_free_gb.toFixed(0) + ' GB free'
-    : h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–'],
-   { disk: true, wide: true }],
+  ['SSD free', h => [h.disk_free_gb != null ? h.disk_free_gb.toFixed(0) + ' GB'
+    : h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB' : '–'],
+   { disk: true }],
+  // half-width beside SSD free; its three values wrap (stack) instead of widening the row:
+  // RSS (GB, CPU side), Δ pool drop, latency
+  // voice lane (app/voice.py): RSS is the CPU-side view only — on unified
+  // memory the honest footprint is the Δ figure (MemAvailable drop since
+  // the process was first seen); latency only while the stack exposes one
+  ['Voice lane', h => h.voice_alive ? [`RSS ${h.voice_rss_gb ?? 0}`,
+                         h.voice_delta_gb != null ? `Δ${h.voice_delta_gb} GB` : 'Δ–',
+                         h.voice_latency_ms != null ? `${h.voice_latency_stale ? '~' : ''}${Math.round(h.voice_latency_ms)} ms` : 'lat –']
+      : ['off'],
+    { duo: true, stack: true, id: 'st-voice' }],
   // discrete GPUs only (hidden on unified-memory boxes like the DGX Spark)
   ['VRAM', h => [h.vram_total_gb ? (h.vram_total_gb - h.vram_used_gb).toFixed(1) + ' GB free'
                    + ` of ${Math.round(h.vram_total_gb)}` : '–'], { wide: true, vram: true }],
@@ -128,14 +138,6 @@ const SIDE_TILES = [
       ? [`R ${mbs(h.ssd_r_mbs)} MB/s`, `W ${mbs(h.ssd_w_mbs ?? 0)} MB/s`]
       : ['–', '–'],
     { duo: true, wide: true, id: 'st-ssd-io' }],
-  // voice lane (app/voice.py): RSS is the CPU-side view only — on unified
-  // memory the honest footprint is the Δ figure (MemAvailable drop since
-  // the process was first seen); latency only while the stack exposes one
-  ['Voice lane', h => h.voice_alive ? [`${h.voice_rss_gb ?? 0} GB RSS`,
-                         h.voice_delta_gb != null ? `Δ${h.voice_delta_gb} GB pool` : 'Δ–',
-                         h.voice_latency_ms != null ? `${h.voice_latency_stale ? '~' : ''}${Math.round(h.voice_latency_ms)} ms` : 'lat –']
-      : ['off'],
-    { duo: true, wide: true, id: 'st-voice' }],
 ];
 
 const _fin = v => v != null && Number.isFinite(v);
@@ -231,7 +233,7 @@ function buildCards() {
     cardRefs.push({ el, d, hero: true, v: el.querySelector('.v'), sub: el.querySelector('.sub'), sp: el.querySelector('.spark') });
   }
   document.querySelector('#side-tiles').innerHTML = SIDE_TILES.map(([l, , opt]) =>
-    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}"${opt?.id ? ` id="${opt.id}"` : ''}${opt?.vram && !hwLatest().vram_total_gb ? ' hidden' : ''}>` +
+    `<div class="st${opt?.wide ? ' wide' : ''}${opt?.duo ? ' duo' : ''}${opt?.stack ? ' stack' : ''}"${opt?.id ? ` id="${opt.id}"` : ''}${opt?.vram && !hwLatest().vram_total_gb ? ' hidden' : ''}>` +
     `<div class="l">${typeof l === 'function' ? l(hwLatest()) : l}</div><div class="v">–</div></div>`).join('');
   const p = state.pricing;
   document.querySelector('#pricing-note').textContent = p
