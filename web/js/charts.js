@@ -227,6 +227,7 @@ export class LineChart {
       // 0..observed max. ON fits both ends of the data (zoom).
       let mx = 0;
       for (const pts of data) for (const [, v] of pts) { if (v > mx) mx = v; }
+      if (this.opts.robustY) mx = robustTop(data, mx);
       if (!Number.isFinite(mx) || mx <= 0) mx = 1;
       lo = 0;
       hi = this.yCeil || mx * 1.08;
@@ -238,6 +239,7 @@ export class LineChart {
       let mn = Infinity, mx = 0;
       for (const pts of data) for (const [, v] of pts) { if (v === null) continue; if (v < mn) mn = v; if (v > mx) mx = v; }
       if (!Number.isFinite(mn)) { mn = 0; mx = 1; }
+      if (this.opts.robustY) mx = robustTop(data, mx);
       if (mx <= mn) mx = mn + (Math.abs(mn) * 0.1 || 1);
       const pad = (mx - mn) * 0.10 || Math.abs(mx) * 0.05 || 1;
       // ON = always fit to the visible data range (never pinned to zero, or
@@ -250,7 +252,7 @@ export class LineChart {
     const max = hi, min = lo;
     const now = Date.now() / 1000;
     const x = t => PL + (t - (now - this.win)) / this.win * (W - PL - PR);
-    const y = v => H - PB - ((v - min) / (max - min)) * (H - PT - PB);
+    const y = v => H - PB - ((Math.min(Math.max(v, min), max) - min) / (max - min)) * (H - PT - PB);
 
     let out = '';
     // gridlines + y labels
@@ -337,6 +339,18 @@ export class LineChart {
     if (!rows.length) { tip.style.display = 'none'; return null; }
     return `<div class="t">${tLabel}</div>` + rows.join('<br>');
   }
+}
+
+// Scale top for bursty rate series: one short spike must not flatten the rest
+// of the window. Above 1.5x the 98th percentile, the top follows the
+// percentile and the spike is drawn clipped at the top edge.
+export function robustTop(data, mx) {
+  const vals = [];
+  for (const pts of data) for (const [, v] of pts) if (v !== null && Number.isFinite(v)) vals.push(v);
+  if (vals.length < 20) return mx;
+  vals.sort((a, b) => a - b);
+  const p = vals[Math.floor(0.98 * (vals.length - 1))];
+  return p > 0 && mx > 1.5 * p ? p * 1.15 : mx;
 }
 
 // ---------------- sparkline (bubbles) ----------------

@@ -100,18 +100,23 @@ def _apply_prefill_live(row: dict, live_json: dict | None) -> None:
     tok/s while the engine prefilled at ~1000 — a speed lie). Capped like
     every other prefill path (PREFILL_MAX).
 
-    The tile's DIM is the operator's lane-activity UX (his words 2026-11-09):
-    `prefill_active` stays exactly what the counter heuristic says — this
-    function must NOT light it from the board's `prefilling` flag. What the
-    marker `prefill_live` fixes instead is the CHART LINE: seriesSample
-    normally nulls a rate while its activity flag reads false, which made
-    the curve vanish through 60 s prefills even though the engine was
-    publishing a real speed. A marked value is measured, not a stale hold,
-    so the curve keeps drawing it while the tile dims as before.
+    The tile's DIM is the operator's lane-activity UX: dimming tells which lane is
+    actually working. The counter heuristic alone cannot see a prefill that
+    runs BESIDE decoding (the operator's bug, 2026-11-12): its "running but nothing
+    stepped" branch never fires while decoders step every tick, so only the
+    1.5 s admission edge lit the tile and a 60 s prefill read as idle.
+    Measured on the live engine (3-7 decoders + a 45k-word cold prompt):
+    the board said prefilling in 68 of 154 half-second samples, the tile was
+    lit in 23. The board's `prefilling` flag counts exactly the requests on
+    a slot with no first token, minus SRV-787 memory waits (queued ones are
+    `waiting`), i.e. prefill compute in flight, so it lights the dim too.
+    The speed rules above are unchanged: the live figure only replaces the
+    windowed one when the engine published a plausible value.
     """
     now = (live_json or {}).get("now") or {}
-    if not now.get("prefilling"):
+    if now.get("prefilling") is not True:
         return
+    row["prefill_active"] = True
     v = now.get("prefill_live_tps")
     if isinstance(v, (int, float)) and 0 < v <= PREFILL_MAX:
         row["prefill_tps_avg"] = float(v)
@@ -364,6 +369,9 @@ class EngineSampler(threading.Thread):
             "kv_ref_source": self.kv_ref_source,
             "kv_ref_launch": self.kv_ref_launch,
             "kv_ref_pin_gb": self.kv_ref_pin_gb,
+            # why a ref is absent/blanked (foreign identity, drift gate): a
+            # dash should be explainable from the API without reading the code
+            "kv_ref_error": self.kv_ref_error,
             "latest": self.ring.last(),
             "series": {k: [[t, r.get(k)] for t, r in rows] for k in SERIES_KEYS},
         }
@@ -398,7 +406,52 @@ class EngineSampler(threading.Thread):
         self._kv_ref_at = time.time()
         threading.Thread(target=self._kv_ref_refresh, args=(cmd,), daemon=True).start()
 
+    def _engine_identity(self) -> str | None:
+        """What answers on this url RIGHT NOW: "tandemllm", "proxy", a dialect
+        kind from the metrics family, or None (unreachable — transient).
+        Cheap probe: /health JSON shape first (the tandem contract carries
+        `inflight`/`uptime_s`; a vllm-proxy says so in `engine`), then a
+        /metrics family sniff for engines whose /health is not JSON."""
+        try:
+            d = json.loads(self._fetch("/health", timeout=2.0)
+                           .decode("utf-8", "replace"))
+            if isinstance(d, dict):
+                if "inflight" in d or "uptime_s" in d:
+                    return "tandemllm"
+                if "proxy" in str(d.get("engine") or ""):
+                    return "proxy"
+        except Exception:  # noqa: BLE001 — any health failure falls to /metrics
+            pass
+        try:
+            head = self._fetch("/metrics", timeout=2.0)[:200_000]
+            k = dialects.detect(head.decode("utf-8", "replace"))
+            if k:
+                return k
+        except Exception:  # noqa: BLE001 — unreachable is answered as None
+            pass
+        return None
+
     def _kv_ref_refresh(self, cmd: str) -> None:
+        # Identity gate (proxy incident 2026-11-12): kv_ref_cmd is a
+        # tandemllm-specific estimator (pool_estimate.py --from-running). When
+        # the url answered as a vllm-proxy it still exited 0 and priced the
+        # TandemLLM launch that was NOT running — a fresh number for the wrong
+        # engine (measured 663,179 while vLLM's own pool was 1,413,408). Never
+        # print a constant fallback for an engine that is not TandemLLM: the
+        # ref goes UNAVAILABLE (None) until the url answers as tandem again.
+        # An unreachable engine (identity None) keeps the last good marker —
+        # transient failures must not blank an honest number.
+        ident = self._engine_identity()
+        if ident is not None and ident != "tandemllm":
+            self.kv_ref_tokens = None
+            self.kv_ref_source = None
+            self.kv_ref_launch = None
+            self.kv_ref_pin_gb = None
+            self._kv_ref_step = None
+            self.kv_ref_error = (f"engine on this url answers as {ident} — "
+                                 "tandem ref unavailable")
+            self._kv_ref_busy = False
+            return
         try:
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             if p.returncode != 0:
@@ -495,8 +548,13 @@ class EngineSampler(threading.Thread):
             return
         try:
             models = json.loads(self._fetch("/v1/models", timeout=3.0))
-            entry = (models.get("data") or [{}])[0]
-            mid = entry.get("id")
+            # OpenAI shape {"data":[{"id":...}]} AND Ollama-style
+            # {"models":[{"name":...}]} answered by some llama-server forks
+            # (measured LFM3-Audio-2B :8181, 11-13). A None model prices the
+            # engine at the pricing.json DEFAULT rate — wrong money — and
+            # drops the @model history key.
+            entry = (models.get("data") or models.get("models") or [{}])[0]
+            mid = entry.get("id") or entry.get("name") or entry.get("model")
             self.model_root = entry.get("root") or None
             # TandemLLM serves every model under one configured id; its `tandem` block names
             # the model actually loaded (and changes when another one is picked)
@@ -568,6 +626,15 @@ class EngineSampler(threading.Thread):
                 {"t": now, "type": "engine_kind", "engine": self.id, "kind": self.kind}))
         self._refresh_model(now)
         dial = dialects.DIALECTS.get(self.kind, dialects.VLLM)
+        # vLLM-family engines publish their own token pool (cache_config_info's
+        # kv_cache_size_tokens, parsed above) — that measured pool IS the
+        # honest denominator for the KV tile: used/pool reads the same
+        # occupancy as the engine's own kv_cache_usage_perc. These engines
+        # never run a tandem kv_ref_cmd, so without this their ref line and
+        # the sub-line fraction would stay absent.
+        if self.kind in ("vllm", "gr8") and getattr(self, "_kv_pool", None):
+            self.kv_ref_tokens = float(self._kv_pool)
+            self.kv_ref_source = "engine-pool"
 
         gauges = dialects.read_gauges(series, dial)
         counters = dialects.read_counters(series, dial)
@@ -648,9 +715,9 @@ class EngineSampler(threading.Thread):
                         and not dial.get("gen_completion_charged")):
             self._pf_last_move = now
         row["prefill_active"] = (now - self._pf_last_move) < 1.5
-        # engine live board: in-flight prefill speed + live marker (the tile's
-        # dim stays the heuristic's alone — the operator's UX; the marker only keeps
-        # seriesSample from nulling the chart line)
+        # engine live board: in-flight prefill speed + live marker, and the
+        # phase itself while decoders keep the heuristic from seeing it (must
+        # run AFTER the heuristic assignment above, or it is overwritten)
         _apply_prefill_live(row, live_json)
         if dial.get("gen_completion_charged"):
             # gen tokens land when a request finishes (llama.cpp, TandemLLM):

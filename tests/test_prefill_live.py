@@ -90,21 +90,27 @@ def test_null_live_while_prefilling_keeps_windowed_value_not_the_idle_avg():
     assert row["prefill_tps_avg"] == 4800.0
 
 
-def test_board_flag_never_touches_prefill_active_dim_is_adrians_ux():
-    """the operator's correction (2026-11-09): the tile's DIM is ON PURPOSE — he
-    reads dimming to see which lane is actually working. prefill_active
-    belongs to the counter heuristic ALONE; the board's prefilling flag must
-    not light it. The chart line survives through long prefills via the
-    prefill_live marker instead (pinned in tests/js/series_sample.mjs)."""
+def test_board_prefilling_lights_the_dim_beside_decoding():
+    """the operator's bug (2026-11-12): a prefill running BESIDE decoding read as
+    idle, because decoders step every tick and the counter heuristic only
+    sees the admission edge. The board's prefilling flag is the phase truth,
+    so it lights prefill_active, with or without a live speed yet."""
     row = {"prefill_tps_avg": 4800.0, "prefill_active": False}
     _apply_prefill_live(row, _frame(prefilling=True, prefill_live_tps=None,
                                     prefill_live_count=0))
-    assert row == {"prefill_tps_avg": 4800.0, "prefill_active": False}
+    assert row == {"prefill_tps_avg": 4800.0, "prefill_active": True}
     row = {"prefill_tps_avg": 4800.0, "prefill_active": False}
     _apply_prefill_live(row, _frame(prefilling=True, prefill_live_tps=1050.0,
                                     prefill_live_count=1))
-    assert row["prefill_active"] is False        # dim untouched...
-    assert row["prefill_tps_avg"] == 1050.0      # ...value + marker are not
+    assert row["prefill_active"] is True
+    assert row["prefill_tps_avg"] == 1050.0
+
+
+def test_board_not_prefilling_leaves_the_heuristic_alone():
+    for flag in (False, None, "yes", 1):
+        row = {"prefill_tps_avg": 4800.0, "prefill_active": False}
+        _apply_prefill_live(row, _frame(prefilling=flag, prefill_live_tps=1050.0))
+        assert row == {"prefill_tps_avg": 4800.0, "prefill_active": False}, flag
 
 
 # ----------------------------------------------------------------- caps ----
@@ -116,7 +122,7 @@ def test_live_figure_respects_the_plausibility_cap():
     # absurd value: the windowed figure stands; the phase flag still lights
     # (prefilling is the engine's own truth about the phase, independent of
     # whether a plausible live speed exists yet)
-    assert row == {"prefill_tps_avg": 5000.0}      # absurd: windowed stands
+    assert row == {"prefill_tps_avg": 5000.0, "prefill_active": True}  # absurd: windowed stands
 
 
 # ----------------------------------------------------------------- junk ----
@@ -126,14 +132,14 @@ def test_junk_frames_are_inert():
         row = {"prefill_tps_avg": 700.0}
         _apply_prefill_live(row, live)
         assert row == {"prefill_tps_avg": 700.0}, live
-    # prefilling with a junk VALUE is fully inert (no marker, no override)
+    # prefilling with a junk VALUE: phase lit, but no marker and no override
     for live in (_frame(prefilling=True, prefill_live_tps=0),
                  _frame(prefilling=True, prefill_live_tps=-5),
                  _frame(prefilling=True, prefill_live_tps="fast"),
                  _frame(prefilling=True)):
         row = {"prefill_tps_avg": 700.0}
         _apply_prefill_live(row, live)
-        assert row == {"prefill_tps_avg": 700.0}, live
+        assert row == {"prefill_tps_avg": 700.0, "prefill_active": True}, live
 
 # ------------------------------------------------------- call-site pin ----
 
@@ -163,6 +169,6 @@ def test_tick_shows_live_prefill_through_the_real_scrape():
                 "prefill_live_count": 1}}
     s._tick()
     row = s.ring.last()
-    assert row["prefill_active"] is False         # DIM stays the heuristic's (the operator)
+    assert row["prefill_active"] is True          # board phase survives the heuristic
     assert row["prefill_tps_avg"] == 1050.0       # engine live board wins
     assert row["prefill_live"] == 1               # marker keeps the chart line alive

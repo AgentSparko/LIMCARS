@@ -17,6 +17,8 @@ cpu  {user} 0 100 {idle} 50 0 0 0 0 0
 MemTotal:       131072000 kB
 MemFree:         1000000 kB
 MemAvailable:   100663296 kB
+Cached:         8388608 kB
+Buffers:         524288 kB
 SwapTotal:       2097152 kB
 SwapFree:        1048576 kB
 @@load
@@ -48,6 +50,9 @@ def test_first_tick_static_fields_then_rates():
     n = _node()
     r1 = n.parse(_out(1000, 8000, 0, 0, "0, 96, 63, 41.0, [N/A], 2463, 3003, [N/A], [N/A], NVIDIA GB10"), 100.0)
     assert r1["mem_total_gb"] == 125.0 and r1["mem_avail_gb"] == 96.0 and r1["mem_used_gb"] == 29.0
+    # parity with the local sampler (aeeb003 fields): MemFree 1000000 kB ≈ 0.95 GiB,
+    # Cached+Buffers 8912896 kB ≈ 8.5 GiB
+    assert r1["mem_free_gb"] == 0.95 and r1["mem_cache_gb"] == 8.5
     assert r1["swap_used_gb"] == 1.0 and r1["load1"] == 1.5 and r1["cpu_temp_c"] == 61.5
     assert r1["disk_total_gb"] == 1000.0 and r1["disk_used_gb"] == 500.0
     assert "cpu_pct" not in r1 and "net_r_mbs" not in r1          # rates need two ticks

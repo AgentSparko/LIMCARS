@@ -206,7 +206,7 @@ def _hwmon_temp() -> dict:
 
 
 _BASE_KEYS = ("cpu_pct", "cpu_temp_c", "load1", "load5", "mem_used_gb", "mem_total_gb",
-              "mem_avail_gb", "swap_used_gb", "gpu_util", "gpu_temp_c",
+              "mem_avail_gb", "mem_free_gb", "mem_cache_gb", "swap_used_gb", "gpu_util", "gpu_temp_c",
               "gpu_power_w", "gpu_clock_mhz", "disk_r_mbs", "disk_w_mbs",
               "net_r_mbs", "net_w_mbs", "ssd_r_mbs", "ssd_w_mbs", "ssd_temp_c")
 
@@ -393,6 +393,10 @@ class HwSampler(threading.Thread):
             "mem_used_gb": round((vm.total - vm.available) / 2**30, 2),
             "mem_total_gb": round(vm.total / 2**30, 2),
             "mem_avail_gb": round(vm.available / 2**30, 2),
+            # MemAvailable counts the page cache as free, but GPU allocations on a
+            # unified-memory box don't wait for it to be reclaimed: keep both.
+            "mem_free_gb": round(vm.free / 2**30, 2),
+            "mem_cache_gb": round((getattr(vm, "cached", 0) + getattr(vm, "buffers", 0)) / 2**30, 2),
             "swap_used_gb": round(psutil.swap_memory().used / 2**30, 2),
             "disk_used_gb": round(du.used / 2**30, 2),
             "disk_total_gb": round(du.total / 2**30, 2),

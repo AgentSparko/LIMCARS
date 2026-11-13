@@ -51,6 +51,7 @@
  "tests/test_docker_recipe.py": "Tests for docker_recipe: container-owning pid -> complete `docker run`.",
  "tests/test_docs_knobs.py": "Docs and code must agree about the environment surface, in both directions. Born from a real defect: the README's security section advertised an `..._ALLOW_REMOTE_WRITES=1` escape hatch for the fail-c",
  "tests/test_dsh_sources.py": "DSH/DSB session sources: per-client chart rows + Traces browser entries. Fixtures build a fake DSH data dir under tmp_path (session dirs + usage sqlite ledger + state.json) \u2014 never reads the live ~/.d",
+ "tests/test_engine_info_models.py": "engine_info.info() must learn the served model from BOTH /v1/models shapes. Measured 2026-11-13: a llama-server fork (LFM3-Audio-2B on :8181) answers /v1/models Ollama-style {\"models\":[{\"name\":...}]} ",
  "tests/test_engine_selection.py": "The selected engine must drive the money endpoints. Regression lock for a defect that shipped in an earlier contribution: the header switcher existed and the client looked correct, but the client sent",
  "tests/test_engine_stop.py": "Stopping a containerised engine. A `docker run` engine puts root's process behind the pid the dashboard scanned, so the kill that works for a native engine raises PermissionError. The operator is usua",
  "tests/test_explicit_encodings.py": "Every text file opened in this repo must say what encoding it is. Found the hard way: a test that read `web/js/dashboard.js` with a bare `read_text()` passed on Linux (UTF-8 locale) and failed on the ",

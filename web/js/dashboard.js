@@ -106,13 +106,15 @@ const SIDE_TILES = [
   ['GPU power', h => [h.gpu_power_w != null ? h.gpu_power_w.toFixed(1) + ' W' : '–']],
   ['GPU clock', h => [h.gpu_clock_mhz != null ? num(h.gpu_clock_mhz) + ' MHz' : '–']],
   [h => h.vram_total_gb ? 'System RAM' : 'Unified RAM',
-   h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–']],
+   h => [h.mem_total_gb != null ? (h.mem_total_gb - h.mem_used_gb).toFixed(1) + ' GB free' : '–',
+         h.mem_free_gb != null ? h.mem_free_gb.toFixed(1) + ' true' : '–'],
+   { duo: true, wide: true }],   // a duo is nowrap: in a half-width cell it widens the whole side column
   // disk_free_gb is statvfs f_bavail (what we can actually write); the old
   // total-used arithmetic counted ext4 root-reserved blocks as free (~37 GB
   // here) — fallback only serves pre-fix ring rows seeded before the server restart.
   ['SSD free', h => [h.disk_free_gb != null ? h.disk_free_gb.toFixed(0) + ' GB free'
     : h.disk_total_gb != null ? (h.disk_total_gb - h.disk_used_gb).toFixed(0) + ' GB free' : '–'],
-   { disk: true }],
+   { disk: true, wide: true }],
   // discrete GPUs only (hidden on unified-memory boxes like the DGX Spark)
   ['VRAM', h => [h.vram_total_gb ? (h.vram_total_gb - h.vram_used_gb).toFixed(1) + ' GB free'
                    + ` of ${Math.round(h.vram_total_gb)}` : '–'], { wide: true, vram: true }],
@@ -350,9 +352,9 @@ function buildCharts() {
     return c;
   };
   mk(0, `Decode speed · last <span class="w">15 min</span>`, [
-    { key: `${e}.decode_tps_now`, label: 'tok/s', color: () => COLORS.cobalt, fill: true }], { curFmt: v => v != null ? Math.round(v) + ' tok/s' : '' });
+    { key: `${e}.decode_tps_now`, label: 'tok/s', color: () => COLORS.cobalt, fill: true }], { robustY: true, curFmt: v => v != null ? Math.round(v) + ' tok/s' : '' });
   mk(0, 'Prefill speed · last <span class="w">15 min</span>', [
-    { key: `${e}.prefill_tps_avg`, label: 'Δtok/Δprefill-sec', color: () => COLORS.teal, fill: true }]);
+    { key: `${e}.prefill_tps_avg`, label: 'Δtok/Δprefill-sec', color: () => COLORS.teal, fill: true }], { robustY: true });
   // KV: the token line (kv_tok) when the engine publishes a token pool (vLLM,
   // Tarnwell, tandemllm live board); the percent line stays for engines that
   // only report a ratio. Whichever the engine cannot produce stays null.
@@ -404,7 +406,12 @@ function buildCharts() {
   side('#sch-temp', [{ key: 'hw.cpu_temp_c', label: 'CPU °C', color: () => COLORS.rose },
                      { key: 'hw.gpu_temp_c', label: 'GPU °C', color: () => COLORS.cobalt }], v => v != null ? v.toFixed(1) + '°' : '', { yCeil: 100 });
   side('#sch-clock', [{ key: 'hw.gpu_clock_mhz', label: 'MHz', color: () => COLORS.teal, fill: true }], v => v != null ? Math.round(v) + ' MHz' : '', { yCeil: 3003 });
-  side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: () => COLORS.rose, fill: true }],
+  side('#sch-ram', [{ key: 'hw.mem_used_gb', label: 'GB used', color: () => COLORS.rose, fill: true },
+                    // true MemFree + page cache (aeeb003): MemAvailable counts the cache
+                    // as free, but GPU allocations on unified memory can't wait for it to
+                    // be reclaimed — the free line hugging the floor IS the signal.
+                    { key: 'hw.mem_free_gb', label: 'GB free (true)', color: () => COLORS.teal },
+                    { key: 'hw.mem_cache_gb', label: 'GB cache', color: () => COLORS.yellow }],
     v => v != null ? v.toFixed(1) + ' GB' : '', { yCeil: 128, autoY: false });
   // SSD: an hour, not 3 min — expert offload and downloads come in long runs
   side('#sch-ssd', [{ key: 'hw.ssd_r_mbs', label: 'read', color: () => COLORS.teal, fill: true },

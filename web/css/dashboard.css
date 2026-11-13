@@ -2,7 +2,7 @@
 .dash-layout { display: grid; grid-template-columns: 300px 1fr; gap: 14px; max-width: 1720px; margin: 0 auto; padding: 14px 18px 48px; }
 @media (max-width: 1000px) { .dash-layout { grid-template-columns: 1fr; } }
 .side { display: flex; flex-direction: column; gap: 10px; }
-.side-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.side-tiles { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
 .side-tiles .st { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px 6px; }
 .side-tiles .st .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .side-tiles .st .v { font: 700 19px/1.3 var(--mono); }
@@ -53,7 +53,7 @@ html[data-theme="light"] #bub-potential .bubble .label .pot-loss {
 .side-lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted,#7d8ba3);margin:8px 0 4px}
 .side-ck{display:flex;align-items:center;gap:7px;font-size:12px;padding:2.5px 0;cursor:pointer;color:#c6d2e3}
 .side-ck input{accent-color:var(--orange,#ff8c3a)}
-.side-tiles{grid-template-columns:1fr 1fr}
+.side-tiles{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 
 /* tokens-per-session bars */
 .st-row{display:flex;align-items:center;gap:8px;padding:2.5px 0;font-size:11.5px}

@@ -41,6 +41,7 @@
   "scripts/limcars_tidy.py",
   "scripts/limcars_upgrade_rehearsal.py",
   "scripts/pool_estimate.py",
+  "tests/js/chart_robust_y.mjs",
   "tests/js/kv_honesty.mjs",
   "tests/js/scrape_age.mjs",
   "tests/js/series_sample.mjs",
@@ -57,6 +58,7 @@
   "tests/test_docker_recipe.py",
   "tests/test_docs_knobs.py",
   "tests/test_dsh_sources.py",
+  "tests/test_engine_info_models.py",
   "tests/test_engine_selection.py",
   "tests/test_engine_stop.py",
   "tests/test_explicit_encodings.py",
@@ -226,7 +228,7 @@
     "re",
     "urllib.request"
    ],
-   "loc": 238
+   "loc": 244
   },
   "app/hermes_home.py": {
    "imports": [
@@ -250,7 +252,7 @@
     "threading",
     "time"
    ],
-   "loc": 445
+   "loc": 449
   },
   "app/live_engines.py": {
    "imports": [
@@ -301,7 +303,7 @@
     "threading",
     "time"
    ],
-   "loc": 272
+   "loc": 276
   },
   "app/pricing.py": {
    "imports": [
@@ -377,7 +379,7 @@
     "time",
     "urllib.request"
    ],
-   "loc": 1548
+   "loc": 1615
   },
   "app/server.py": {
    "imports": [
@@ -589,7 +591,17 @@
     "server.setup",
     "sys"
    ],
-   "loc": 572
+   "loc": 574
+  },
+  "tests/js/chart_robust_y.mjs": {
+   "imports": [
+    "../../web/js/charts.js",
+    "assert",
+    "node:assert/strict",
+    "node:test",
+    "test"
+   ],
+   "loc": 25
   },
   "tests/js/kv_honesty.mjs": {
    "imports": [
@@ -719,9 +731,21 @@
     "shutil",
     "sqlite3",
     "subprocess",
+    "sys",
     "time"
    ],
-   "loc": 610
+   "loc": 613
+  },
+  "tests/test_engine_info_models.py": {
+   "imports": [
+    "app",
+    "app.sampler",
+    "app.sse",
+    "io",
+    "json",
+    "urllib.request"
+   ],
+   "loc": 100
   },
   "tests/test_engine_selection.py": {
    "imports": [
@@ -767,16 +791,19 @@
   "tests/test_hw.py": {
    "imports": [
     "app.hw",
+    "app.sse",
     "os",
-    "shutil"
+    "pytest",
+    "shutil",
+    "sys"
    ],
-   "loc": 69
+   "loc": 84
   },
   "tests/test_hw_chart_keys.py": {
    "imports": [
     "app"
    ],
-   "loc": 11
+   "loc": 19
   },
   "tests/test_kv_tile_denominator.py": {
    "imports": [
@@ -801,7 +828,7 @@
     "subprocess",
     "sys"
    ],
-   "loc": 219
+   "loc": 311
   },
   "tests/test_llamacpp_contract.py": {
    "imports": [
@@ -853,7 +880,7 @@
    "imports": [
     "app.nodes"
    ],
-   "loc": 78
+   "loc": 83
   },
   "tests/test_nodes_ssh_opts.py": {
    "imports": [
@@ -869,9 +896,10 @@
     "importlib.util",
     "os",
     "pathlib",
-    "pytest"
+    "pytest",
+    "sys"
    ],
-   "loc": 108
+   "loc": 110
   },
   "tests/test_portability.py": {
    "imports": [
@@ -909,7 +937,7 @@
     "os",
     "sys"
    ],
-   "loc": 169
+   "loc": 175
   },
   "tests/test_price_schedule.py": {
    "imports": [
@@ -971,11 +999,13 @@
     "app.sse",
     "app.store",
     "json",
+    "pytest",
     "re",
+    "sys",
     "time",
     "urllib.request"
    ],
-   "loc": 667
+   "loc": 672
   },
   "tests/test_savings_history.py": {
    "imports": [
@@ -1099,9 +1129,10 @@
     "os",
     "pytest",
     "socket",
+    "sys",
     "urllib.request"
    ],
-   "loc": 195
+   "loc": 197
   },
   "tests/test_voice_gates.py": {
    "imports": [
@@ -1110,7 +1141,7 @@
     "pytest",
     "sys"
    ],
-   "loc": 251
+   "loc": 252
   },
   "tests/test_web_charts.py": {
    "imports": [
@@ -1138,13 +1169,13 @@
   },
   "web/js/charts.js": {
    "imports": [],
-   "loc": 454
+   "loc": 468
   },
   "web/js/dashboard.js": {
    "imports": [
     "./charts.js?v=20261112a"
    ],
-   "loc": 2495
+   "loc": 2502
   },
   "web/subagent-watch/app.js": {
    "imports": [],
@@ -1167,6 +1198,7 @@
    "fmt",
    "kvPinNote",
    "rateZerosToGaps",
+   "robustTop",
    "seenLabel",
    "seriesSample",
    "spark",

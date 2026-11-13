@@ -220,6 +220,10 @@ class NodeSampler(threading.Thread):
             avail = mem.get("MemAvailable", mem.get("MemFree", 0.0))
             row.update(mem_total_gb=round(mem["MemTotal"], 2), mem_avail_gb=round(avail, 2),
                        mem_used_gb=round(mem["MemTotal"] - avail, 2),
+                       # parity with the local HwSampler (aeeb003): MemFree is what a
+                       # GPU allocation sees NOW; the cache is only reclaimable later.
+                       mem_free_gb=round(mem.get("MemFree", 0.0), 2),
+                       mem_cache_gb=round(mem.get("Cached", 0.0) + mem.get("Buffers", 0.0), 2),
                        swap_used_gb=round(mem.get("SwapTotal", 0.0) - mem.get("SwapFree", 0.0), 2))
         load = (s.get("load") or [""])[0].split()
         if len(load) >= 2:

@@ -204,7 +204,13 @@ def info(url: str) -> dict:
         model = None
         try:
             md = json.loads(urllib.request.urlopen(url + "/v1/models", timeout=5).read())
-            model = (md.get("data") or [{}])[0].get("id")
+            # OpenAI shape {"data":[{"id":...}]} (vLLM, TandemLLM, standard
+            # llama.cpp) AND Ollama-style {"models":[{"name":...}]} that some
+            # llama-server forks answer (measured on LFM3-Audio-2B :8181,
+            # 11-13). A None model silently prices the engine at the
+            # pricing.json DEFAULT rate — wrong money on the ledger.
+            first = (md.get("data") or md.get("models") or [{}])[0]
+            model = first.get("id") or first.get("name") or first.get("model")
         except Exception:  # noqa: BLE001
             pass
         ver = None

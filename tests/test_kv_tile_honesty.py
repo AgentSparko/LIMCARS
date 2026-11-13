@@ -129,6 +129,94 @@ def test_step_key_is_seeded_not_only_live():
     assert "kv_ref_step" in SERIES_KEYS
 
 
+# ---- proxy incident 2026-11-12: identity gate on the ref consumer -----------
+# The engine slot was swapped to vLLM behind a proxy on the SAME url the
+# tandem kv_ref_cmd probes. The estimator exited 0 and priced the launch that
+# was not running (663,179 for a TandemLLM that was down, while vLLM's own
+# pool was 1,413,408). The tile must go UNAVAILABLE under a foreign identity,
+# never keep or recompute a constant fallback.
+
+PROXY_HEALTH = b'{"status": "ok", "engine": "vllm-proxy", "upstream": "127.0.0.1:8000"}'
+TANDEM_HEALTH = b'{"status": "ok", "uptime_s": 991.6, "inflight": {"running": 7}}'
+VLLM_BODY = ('# HELP vllm:cache_config_info Information of the LLMEngine\n'
+             'vllm:cache_config_info{kv_cache_size_tokens="1413408",'
+             'num_gpu_blocks="245",block_size="6624"} 1.0\n')
+
+
+def _stub(s, health=PROXY_HEALTH, metrics=b'{"error": "vllm-proxy forwards /v1/* only"}'):
+    if isinstance(metrics, str):
+        metrics = metrics.encode()
+    if isinstance(health, str):
+        health = health.encode()
+    s._fetch = lambda path, timeout=1.5: (metrics if path == "/metrics" else health)
+
+
+def test_proxy_identity_blanks_the_ref_never_a_fallback():
+    """The incident, planted: cmd would happily print 836140, but the url
+    answers as a vllm-proxy — the ref MUST be None with a named reason.
+    Remove the identity gate and this fails on the stale 836140."""
+    s = _sampler(PINNED)
+    s.kv_ref_tokens = 836140.0          # the static config marker, as live
+    _stub(s)
+    s._kv_ref_refresh(PINNED)
+    assert s.kv_ref_tokens is None
+    assert s.kv_ref_source is None
+    assert s.kv_ref_error and "proxy" in s.kv_ref_error
+    assert s.snapshot()["kv_ref_tokens"] is None
+
+
+def test_tandem_identity_still_runs_the_cmd():
+    """The gate must not blind the honest path: a tandem-shaped /health lets
+    the recompute through untouched."""
+    s = _sampler(PINNED)
+    _stub(s, health=TANDEM_HEALTH)
+    s._kv_ref_refresh(PINNED)
+    assert s.kv_ref_tokens == 836140.0
+    assert s.kv_ref_error is None
+
+
+def test_unreachable_engine_keeps_the_last_good_ref():
+    """Transient failure is not a swap: identity None (both probes raise)
+    keeps the marker — blanking on every hiccup would be its own lie."""
+    s = _sampler(PINNED)
+    _stub(s, health=TANDEM_HEALTH)
+    s._kv_ref_refresh(PINNED)
+    assert s.kv_ref_tokens == 836140.0
+
+    def raise_always(path, timeout=1.5):
+        raise OSError("connection refused")
+    s._fetch = raise_always
+    s._kv_ref_refresh(PINNED)
+    assert s.kv_ref_tokens == 836140.0
+
+
+def test_direct_foreign_engine_blanks_by_metrics_family():
+    """No proxy JSON to sniff (plain-text /health): the /metrics family is
+    the identity witness — a vllm body under a tandem cmd still blanks."""
+    s = _sampler(PINNED)
+    s.kv_ref_tokens = 836140.0
+    _stub(s, health=b"ok", metrics=VLLM_BODY)
+    s._kv_ref_refresh(PINNED)
+    assert s.kv_ref_tokens is None
+    assert s.kv_ref_error and "vllm" in s.kv_ref_error
+
+
+def test_vllm_engine_ref_is_its_measured_pool():
+    """A vLLM-family engine (no kv_ref_cmd at all) gets the ref from its own
+    cache_config_info: the tile denominator equals the engine's pool, so
+    used/pool matches kv_cache_usage_perc instead of staying absent."""
+    s = EngineSampler(CFG, {"id": "v", "url": "http://x", "kind": None},
+                      Broker(), store=None)
+    s._fetch = lambda path, timeout=1.5: (
+        VLLM_BODY.encode() if path == "/metrics" else b"ok")
+    s._live_json = lambda d, path=None: None
+    s._refresh_model = lambda now: None
+    s._tick()
+    assert s.kv_ref_tokens == 1413408.0
+    assert s.kv_ref_source == "engine-pool"
+    assert s.ring.last()["kv_ref_tokens"] == 1413408.0
+
+
 def test_client_push_list_carries_the_step_key():
     """SSE whitelist pin: a key missing from the engine push list blanks the
     chart once the page-load seed slides out of the window — the exact bug

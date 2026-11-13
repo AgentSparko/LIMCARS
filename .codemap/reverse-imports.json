@@ -85,6 +85,7 @@
   "tests/test_coldset.py",
   "tests/test_data_dir.py",
   "tests/test_dsh_sources.py",
+  "tests/test_engine_info_models.py",
   "tests/test_kv_tile_honesty.py",
   "tests/test_modelnames.py",
   "tests/test_portability.py",
@@ -389,6 +390,7 @@
   "app/voice.py",
   "scripts/limcars_contract_diff.py",
   "scripts/limcars_contract_snapshot.py",
+  "tests/test_engine_info_models.py",
   "tests/test_portability.py",
   "tests/test_sampler.py",
   "tests/test_voice.py"
@@ -504,16 +506,21 @@
   "tests/test_atlas_contract.py",
   "tests/test_data_dir.py",
   "tests/test_dialect_fixtures.py",
+  "tests/test_dsh_sources.py",
   "tests/test_explicit_encodings.py",
+  "tests/test_hw.py",
   "tests/test_kv_tile_denominator.py",
   "tests/test_kv_tile_honesty.py",
   "tests/test_llamacpp_contract.py",
   "tests/test_money_types.py",
+  "tests/test_pool_estimate.py",
   "tests/test_portability.py",
   "tests/test_prefill_live.py",
   "tests/test_recipes.py",
+  "tests/test_sampler.py",
   "tests/test_security_http.py",
   "tests/test_tarnwell_contract.py",
+  "tests/test_voice.py",
   "tests/test_voice_gates.py"
  ],
  "app.store": [
@@ -550,6 +557,7 @@
   "tests/test_dialects.py",
   "tests/test_docker_recipe.py",
   "tests/test_dsh_sources.py",
+  "tests/test_engine_info_models.py",
   "tests/test_engine_stop.py",
   "tests/test_gap_class.py",
   "tests/test_hw_chart_keys.py",
@@ -589,10 +597,23 @@
   "scripts/pool_estimate.py"
  ],
  "../../web/js/charts.js": [
+  "tests/js/chart_robust_y.mjs",
   "tests/js/kv_honesty.mjs",
   "tests/js/scrape_age.mjs",
   "tests/js/series_sample.mjs",
   "tests/js/spark_cap.mjs"
+ ],
+ "assert": [
+  "tests/js/chart_robust_y.mjs"
+ ],
+ "node:assert/strict": [
+  "tests/js/chart_robust_y.mjs"
+ ],
+ "node:test": [
+  "tests/js/chart_robust_y.mjs"
+ ],
+ "test": [
+  "tests/js/chart_robust_y.mjs"
  ],
  "app.auth": [
   "tests/test_auth.py"
@@ -600,7 +621,9 @@
  "app.sse": [
   "tests/test_core.py",
   "tests/test_diskwatch.py",
+  "tests/test_engine_info_models.py",
   "tests/test_engine_selection.py",
+  "tests/test_hw.py",
   "tests/test_kv_tile_denominator.py",
   "tests/test_kv_tile_honesty.py",
   "tests/test_modelnames.py",
@@ -620,6 +643,7 @@
   "tests/test_dialects.py",
   "tests/test_dsh_sources.py",
   "tests/test_engine_stop.py",
+  "tests/test_hw.py",
   "tests/test_kv_tile_honesty.py",
   "tests/test_nodes_ssh_opts.py",
   "tests/test_pool_estimate.py",
@@ -629,6 +653,7 @@
   "tests/test_recipes.py",
   "tests/test_render_contract.py",
   "tests/test_ring_storage.py",
+  "tests/test_sampler.py",
   "tests/test_scrape_age.py",
   "tests/test_security_http.py",
   "tests/test_self_tidy.py",
@@ -648,16 +673,11 @@
   "tests/test_voice.py"
  ],
  "io": [
-  "tests/test_docker_recipe.py"
- ],
- "app.counters": [
-  "tests/test_engine_selection.py",
-  "tests/test_lost_potential.py",
-  "tests/test_modelnames.py",
-  "tests/test_priced_history.py",
-  "tests/test_savings_history.py"
+  "tests/test_docker_recipe.py",
+  "tests/test_engine_info_models.py"
  ],
  "app.sampler": [
+  "tests/test_engine_info_models.py",
   "tests/test_engine_selection.py",
   "tests/test_kv_tile_denominator.py",
   "tests/test_kv_tile_honesty.py",
@@ -665,6 +685,13 @@
   "tests/test_prefill_live.py",
   "tests/test_sampler.py",
   "tests/test_scrape_age.py"
+ ],
+ "app.counters": [
+  "tests/test_engine_selection.py",
+  "tests/test_lost_potential.py",
+  "tests/test_modelnames.py",
+  "tests/test_priced_history.py",
+  "tests/test_savings_history.py"
  ],
  "app.server": [
   "tests/test_engine_selection.py",

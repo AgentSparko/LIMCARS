@@ -69,3 +69,15 @@ def test_disk_free_is_f_bavail_not_f_bfree():
     # On any filesystem with a reserve this is strictly below shutil's free;
     # on ones without it must at least never exceed it.
     assert _disk_free_bytes("/") <= shutil.disk_usage("/").free
+
+
+def test_tick_row_carries_true_free_and_page_cache():
+    """MemAvailable counts the page cache, which GPU allocations on unified memory
+    can't wait for; the row keeps MemFree and the cache beside it."""
+    from app.hw import HwSampler
+    from app.sse import Broker
+    s = HwSampler({}, Broker())
+    s._tick()
+    row = s.ring.last()
+    assert 0 <= row["mem_free_gb"] <= row["mem_avail_gb"] + 0.01
+    assert row["mem_cache_gb"] >= 0
