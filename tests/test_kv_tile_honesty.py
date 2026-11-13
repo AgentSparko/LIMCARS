@@ -165,6 +165,7 @@ def test_proxy_identity_blanks_the_ref_never_a_fallback():
     assert s.snapshot()["kv_ref_tokens"] is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_tandem_identity_still_runs_the_cmd():
     """The gate must not blind the honest path: a tandem-shaped /health lets
     the recompute through untouched."""
@@ -175,6 +176,7 @@ def test_tandem_identity_still_runs_the_cmd():
     assert s.kv_ref_error is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX shell / procfs")
 def test_unreachable_engine_keeps_the_last_good_ref():
     """Transient failure is not a swap: identity None (both probes raise)
     keeps the marker — blanking on every hiccup would be its own lie."""
